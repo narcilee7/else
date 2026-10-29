@@ -3,6 +3,8 @@
 //! 表面只能读投影、提交 Intent 与 Decision，不能绕过 Gateway 触碰执行层。
 //! W2 以库接口形式提供（进程内调用）；daemon 与远程 IPC 复用同一接口。
 
+mod abort;
+
 use std::path::{Path, PathBuf};
 
 use else_gateway::{
@@ -46,12 +48,15 @@ impl Runtime {
     pub fn open(dir: &Path) -> Result<Self> {
         let workspace = dir.join("workspace");
         std::fs::create_dir_all(&workspace)?;
-        Ok(Self {
+        let runtime = Self {
             ledger: Ledger::open(dir.join("else.db"))?,
             workspace,
             store: else_workspace::Store::new(dir.join("store"))?,
             branches: dir.join("branches"),
-        })
+        };
+        // 上次进程可能死在 Abort 的任意事件边界；重开后先完成安全收敛。
+        runtime.recover_aborts()?;
+        Ok(runtime)
     }
 
     /// 提交一个抽象 Intent（Intent Resolution 最小实现）：
@@ -133,6 +138,10 @@ impl Runtime {
             Ok(()) => (true, None),
             // 等待本人决策是正常终态，不是执行失败
             Err(GatewayError::NeedsApproval(_)) => (true, None),
+            // 故障注入代表进程已死：不得再写 RunFinished，直接丢弃 Runtime 重开。
+            Err(e @ GatewayError::Ledger(else_ledger::LedgerError::CrashInjected)) => {
+                return Err(e.into());
+            }
             Err(e) => (false, Some(e)),
         };
         ctx.record(
@@ -377,6 +386,9 @@ impl Runtime {
         let (success, error) = match result {
             Ok(()) => (true, None),
             Err(GatewayError::NeedsApproval(_)) => (true, None),
+            Err(e @ GatewayError::Ledger(else_ledger::LedgerError::CrashInjected)) => {
+                return Err(e.into());
+            }
             Err(e) => (false, Some(e)),
         };
         ctx.record(

@@ -14,7 +14,7 @@ use else_protocol::ids::AttentionId;
 use else_protocol::intent::IntentState;
 use serde_json::{json, Value};
 
-use crate::{ExecContext, GatewayError, Result};
+use crate::{ensure_not_fenced, ExecContext, GatewayError, Result};
 
 pub struct ToolGateway<'a> {
     ledger: &'a Ledger,
@@ -30,8 +30,9 @@ impl<'a> ToolGateway<'a> {
         &self.workspace
     }
 
-    /// 执行一次工具调用：幂等 → 落账 → 授权 → 执行 → 落账。
+    /// 执行一次工具调用：围栏 → 幂等 → 落账 → 授权 → 执行 → 围栏 → 落账。
     pub fn execute(&self, ctx: &ExecContext, call: ToolCall) -> Result<ToolOutcome> {
+        ensure_not_fenced(self.ledger, ctx)?;
         // 幂等：相同 idempotency_key 已完成的调用不重复执行（防重试/晚到回调）。
         if let Some(outcome) = self.find_completed(ctx, &call.idempotency_key)? {
             return Ok(outcome);
@@ -44,13 +45,24 @@ impl<'a> ToolGateway<'a> {
         )?;
 
         self.check_authority(ctx, &call)?;
-
+        ensure_not_fenced(self.ledger, ctx)?;
         let outcome = self.run_tool(&call);
+        self.complete(ctx, call.id, outcome)
+    }
+
+    /// 工具完成回调落账。Abort 后的晚到回调在这里被围栏，不能覆盖收尾结论。
+    pub fn complete(
+        &self,
+        ctx: &ExecContext,
+        call_id: else_protocol::ids::ToolCallId,
+        outcome: ToolOutcome,
+    ) -> Result<ToolOutcome> {
+        ensure_not_fenced(self.ledger, ctx)?;
         ctx.record(
             self.ledger,
             Actor::Tool,
             EventPayload::ToolCompleted {
-                call_id: call.id.clone(),
+                call_id,
                 outcome: outcome.clone(),
             },
         )?;

@@ -28,7 +28,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**M0 complete — W1–W4 done.** The CLI now closes the full loop: intent execution, human decisions with automatic resume or re-planning, verification against the original DoneWhen, and Checkpoint / Fork / Rerun / Compare. Checkpoints capture the event cursor, a CAS workspace snapshot, and in-flight effects; reruns restore into an isolated branch with a new generation. Compare reports verification, model usage, tool-effect outcomes, and artifact hashes across branches. Model providers are delegated to genai. 16 tests passing, clippy clean. Next: M1 execution semantics and resource governance.
+**M1 in progress — W1 done; M0 complete.** The CLI closes the full intent loop, including Checkpoint / Fork / Rerun / Compare. Abort is now a durable, recoverable state machine: in-flight effects receive explicit conclusions, stale decisions close, and cancelled or older generations cannot emit tool/model calls or late completions. Recovery is tested at every abort event boundary plus seeded random kill points. Model providers are delegated to genai. 21 tests passing, clippy clean. Next: the Subagent delegation tree.
 
 M0 delivers one vertical slice through the CLI: an abstract intent → execution → a decision only you can make → automatic re-planning → verification against the original outcome — plus Checkpoint / Fork / Rerun / Compare. No dashboards, no cloud, no multi-user.
 

@@ -10,7 +10,7 @@ use else_ledger::Ledger;
 use else_protocol::event::{Actor, EventPayload};
 use else_protocol::resource::ModelUsage;
 
-use crate::{ExecContext, GatewayError, Result};
+use crate::{ensure_not_fenced, ExecContext, GatewayError, Result};
 
 #[derive(Debug, Clone)]
 pub struct ModelRequest {
@@ -97,7 +97,7 @@ impl<'a> ModelGateway<'a> {
         Self { ledger, provider }
     }
 
-    /// 调用并入账：ModelCalled → Provider → ModelCompleted（Token/费用）。
+    /// 调用并入账：围栏 → ModelCalled → Provider → 围栏 → ModelCompleted。
     pub fn complete(
         &self,
         ctx: &ExecContext,
@@ -105,6 +105,7 @@ impl<'a> ModelGateway<'a> {
         model: &str,
         prompt: &str,
     ) -> Result<ModelResponse> {
+        ensure_not_fenced(self.ledger, ctx)?;
         ctx.record(
             self.ledger,
             Actor::Agent,
@@ -120,6 +121,7 @@ impl<'a> ModelGateway<'a> {
                 prompt: prompt.to_string(),
             })
             .map_err(GatewayError::Model)?;
+        ensure_not_fenced(self.ledger, ctx)?;
         ctx.record(
             self.ledger,
             Actor::System,

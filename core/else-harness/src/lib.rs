@@ -5,7 +5,7 @@
 //! （Plan 易失，Intent 不失败）；最后按原始 DoneWhen 验收。
 //! 真实 Harness 后续经 Spawn 协议接入，控制面契约不变。
 
-use else_gateway::{ExecContext, ModelGateway, Result, ToolGateway};
+use else_gateway::{ensure_not_fenced, ExecContext, ModelGateway, Result, ToolGateway};
 use else_ledger::{Ledger, StoredEvent};
 use else_protocol::artifact::{Artifact, ArtifactKind, OutcomeEvidence};
 use else_protocol::attention::DecisionChoice;
@@ -89,6 +89,7 @@ pub fn run(
     model_name: &str,
     options: RunOptions,
 ) -> Result<()> {
+    ensure_not_fenced(ledger, ctx)?;
     // 事件可见性：检查点水位之前 + 当前 Generation（分支隔离）
     let visible_events = |ledger: &Ledger| -> Result<Vec<StoredEvent>> {
         Ok(ledger
@@ -146,6 +147,7 @@ pub fn run(
                 idempotency_key: format!("plan-write-{plan_id}"),
             },
         )?;
+        ensure_not_fenced(ledger, ctx)?;
         ctx.record(
             ledger,
             Actor::Agent,
@@ -200,6 +202,7 @@ pub fn run(
 /// Verifier：证据必须支撑 spec 里的每一条 done_when。
 /// 通过则 OutcomeVerified + Completed，否则 Failed——不擅自降低验收标准。
 fn verify(ctx: &ExecContext, ledger: &Ledger, verification: &ToolOutcome) -> Result<()> {
+    ensure_not_fenced(ledger, ctx)?;
     let verified = verification.status == ToolStatus::Succeeded;
     if verified {
         let evidence = ctx

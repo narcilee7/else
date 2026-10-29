@@ -4,8 +4,8 @@
 //! - 所有副作用经过 Tool Gateway（授权检查、幂等、事件落账）；
 //! - 所有模型调用经过 Model Gateway（Token/费用入账）。
 //!
-//! W2 薄版：文件/shell 两工具、直连 Provider；Generation Fencing、
-//! Lease 校验、配额熔断在 M1 补齐。
+//! 当前：文件/shell 工具、genai Provider、调用与回调的 Generation Fencing；
+//! Lease 校验与配额熔断在 M1 后续补齐。
 
 pub mod model;
 pub mod tool;
@@ -15,6 +15,8 @@ pub use model::{
 };
 pub use tool::ToolGateway;
 
+use else_ledger::Ledger;
+use else_protocol::event::EventPayload;
 use else_protocol::ids::{AttentionId, RunId, ScopeId};
 use else_protocol::intent::IntentSpec;
 
@@ -49,6 +51,30 @@ impl ExecContext {
     }
 }
 
+/// Generation Fencing：旧世代与已请求 Abort 的世代不得再产生执行事件或外部动作。
+/// 检查放在 Gateway 入口与完成回调落账前，覆盖晚到回调。
+pub fn ensure_not_fenced(ledger: &Ledger, ctx: &ExecContext) -> Result<()> {
+    let events = ledger.read_intent(&ctx.spec.id)?;
+    let latest_generation = events
+        .iter()
+        .map(|event| event.envelope.generation)
+        .max()
+        .unwrap_or(ctx.generation);
+    let aborted = events.iter().any(|event| {
+        event.envelope.generation == ctx.generation
+            && matches!(
+                event.envelope.payload,
+                EventPayload::ScopeAbortRequested { .. }
+            )
+    });
+    if aborted || ctx.generation < latest_generation {
+        return Err(GatewayError::GenerationFenced {
+            generation: ctx.generation,
+        });
+    }
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum GatewayError {
     #[error("ledger: {0}")]
@@ -56,6 +82,9 @@ pub enum GatewayError {
     /// 超出授权边界：已提交 AttentionRequest，等待本人决策。
     #[error("needs human approval: {0}")]
     NeedsApproval(AttentionId),
+    /// 旧 Generation 或已 Abort 的 Generation 被围栏。
+    #[error("generation fenced: {generation}")]
+    GenerationFenced { generation: u64 },
     #[error("unknown tool: {0}")]
     UnknownTool(String),
     #[error("invalid path (must stay inside workspace): {0}")]

@@ -24,6 +24,11 @@ enum Command {
     Intent { outcome: String },
     /// 对已有 Intent 再启动一次执行
     Run { intent_id: String },
+    /// 取消执行并收敛在途副作用（可安全重复调用）
+    Abort {
+        intent_id: String,
+        reason: Option<String>,
+    },
     /// 列出全部 Intent
     List,
     /// 查看等待本人的 Decision
@@ -69,6 +74,13 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         }
         Command::Run { intent_id } => {
             let projection = runtime.run(&IntentId::from(intent_id))?;
+            print_projection(&projection);
+        }
+        Command::Abort { intent_id, reason } => {
+            let projection = runtime.abort(
+                &IntentId::from(intent_id),
+                reason.as_deref().unwrap_or("用户取消"),
+            )?;
             print_projection(&projection);
         }
         Command::List => {

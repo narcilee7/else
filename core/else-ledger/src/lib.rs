@@ -8,6 +8,8 @@ mod projection;
 
 pub use projection::IntentProjection;
 
+use std::cell::Cell;
+
 use else_protocol::event::EventEnvelope;
 use else_protocol::ids::IntentId;
 use else_protocol::PROTOCOL_VERSION;
@@ -40,6 +42,9 @@ pub enum LedgerError {
     Codec(#[from] serde_json::Error),
     #[error("unsupported protocol version: {found}, expected {expected}")]
     UnsupportedVersion { found: String, expected: String },
+    /// 故障注入：事件已持久化，随后模拟进程崩溃。
+    #[error("crash injected after durable event append")]
+    CrashInjected,
 }
 
 pub type Result<T> = std::result::Result<T, LedgerError>;
@@ -58,6 +63,7 @@ pub trait Projection {
 
 pub struct Ledger {
     conn: Connection,
+    crash_after_appends: Cell<Option<u64>>,
 }
 
 impl Ledger {
@@ -75,7 +81,17 @@ impl Ledger {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            crash_after_appends: Cell::new(None),
+        })
+    }
+
+    /// 测试故障注入：再持久化 N 条事件后返回 CrashInjected。
+    /// 调用方丢弃 Ledger 并重开，即模拟进程在事件边界被 kill。
+    #[doc(hidden)]
+    pub fn crash_after_appends(&self, appends: u64) {
+        self.crash_after_appends.set(Some(appends));
     }
 
     /// 追加事件并返回分配了 `seq` 的 StoredEvent。
@@ -101,6 +117,13 @@ impl Ledger {
                 payload,
             ],
         )?;
+        if let Some(remaining) = self.crash_after_appends.get() {
+            if remaining <= 1 {
+                self.crash_after_appends.set(None);
+                return Err(LedgerError::CrashInjected);
+            }
+            self.crash_after_appends.set(Some(remaining - 1));
+        }
         let seq = self.conn.last_insert_rowid() as u64;
         Ok(StoredEvent {
             seq,
