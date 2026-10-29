@@ -222,6 +222,7 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::AttentionRuled { .. } => "attention_ruled",
         P::DecisionResolved { .. } => "decision_resolved",
         P::ScopeSpawned { .. } => "scope_spawned",
+        P::SubagentSpawned { .. } => "subagent_spawned",
         P::ScopeAbortRequested { .. } => "scope_abort_requested",
         P::ScopeStateChanged { .. } => "scope_state_changed",
         P::CheckpointCreated { .. } => "checkpoint_created",

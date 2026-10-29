@@ -77,6 +77,8 @@ pub struct RunOptions {
     pub force_replan: bool,
     /// 强制走不依赖 shell 的替代路径（换路径重跑）。
     pub alternative: bool,
+    /// Subagent 验收只结束自身 Scope，不直接把根 Intent 标记为完成。
+    pub subagent: bool,
 }
 
 /// 执行一次 Run。等待本人决策（NeedsApproval）不是错误：
@@ -90,14 +92,18 @@ pub fn run(
     options: RunOptions,
 ) -> Result<()> {
     ensure_not_fenced(ledger, ctx)?;
-    // 事件可见性：检查点水位之前 + 当前 Generation（分支隔离）
+    // 事件可见性：Subagent 只看自身 Scope；分支看检查点水位之前 + 当前 Generation。
     let visible_events = |ledger: &Ledger| -> Result<Vec<StoredEvent>> {
         Ok(ledger
             .read_intent(&ctx.spec.id)?
             .into_iter()
             .filter(|e| {
-                options.cursor.is_none_or(|cursor| e.seq <= cursor)
-                    || e.envelope.generation == ctx.generation
+                if options.subagent {
+                    e.envelope.scope_id == ctx.scope_id
+                } else {
+                    options.cursor.is_none_or(|cursor| e.seq <= cursor)
+                        || e.envelope.generation == ctx.generation
+                }
             })
             .collect())
     };
@@ -196,12 +202,17 @@ pub fn run(
     };
 
     // 3. 验收：按原始 DoneWhen，不按最新 Plan
-    verify(ctx, ledger, &verification)
+    verify(ctx, ledger, &verification, options.subagent)
 }
 
 /// Verifier：证据必须支撑 spec 里的每一条 done_when。
-/// 通过则 OutcomeVerified + Completed，否则 Failed——不擅自降低验收标准。
-fn verify(ctx: &ExecContext, ledger: &Ledger, verification: &ToolOutcome) -> Result<()> {
+/// Subagent 只结束自身 Scope；根执行才改变 Intent 终态。
+fn verify(
+    ctx: &ExecContext,
+    ledger: &Ledger,
+    verification: &ToolOutcome,
+    subagent: bool,
+) -> Result<()> {
     ensure_not_fenced(ledger, ctx)?;
     let verified = verification.status == ToolStatus::Succeeded;
     if verified {
@@ -221,16 +232,30 @@ fn verify(ctx: &ExecContext, ledger: &Ledger, verification: &ToolOutcome) -> Res
             EventPayload::OutcomeVerified { evidence },
         )?;
     }
-    ctx.record(
-        ledger,
-        Actor::System,
-        EventPayload::IntentStateChanged {
-            state: if verified {
-                else_protocol::intent::IntentState::Completed
-            } else {
-                else_protocol::intent::IntentState::Failed
+    if subagent {
+        ctx.record(
+            ledger,
+            Actor::System,
+            EventPayload::ScopeStateChanged {
+                state: if verified {
+                    else_protocol::event::ScopeState::Completed
+                } else {
+                    else_protocol::event::ScopeState::Failed
+                },
             },
-        },
-    )?;
+        )?;
+    } else {
+        ctx.record(
+            ledger,
+            Actor::System,
+            EventPayload::IntentStateChanged {
+                state: if verified {
+                    else_protocol::intent::IntentState::Completed
+                } else {
+                    else_protocol::intent::IntentState::Failed
+                },
+            },
+        )?;
+    }
     Ok(())
 }

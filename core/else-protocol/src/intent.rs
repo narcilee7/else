@@ -34,6 +34,17 @@ pub struct Authority {
     pub forbidden: Vec<String>,
 }
 
+impl Authority {
+    /// 委托只能收窄：自主上限不得提高，父级禁令一条也不能丢。
+    pub fn permits_child(&self, child: &Authority) -> bool {
+        child.max_autonomous_effect <= self.max_autonomous_effect
+            && self
+                .forbidden
+                .iter()
+                .all(|rule| child.forbidden.contains(rule))
+    }
+}
+
 /// 注意力契约：什么时候值得打断用户。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttentionPolicy {

@@ -4,6 +4,7 @@
 //! W2 以库接口形式提供（进程内调用）；daemon 与远程 IPC 复用同一接口。
 
 mod abort;
+mod scope;
 
 use std::path::{Path, PathBuf};
 
@@ -29,6 +30,8 @@ pub enum ApiError {
     Workspace(#[from] else_workspace::WorkspaceError),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("subagent authority exceeds parent: {0}")]
+    PermissionEscalation(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -108,9 +111,12 @@ impl Runtime {
         let spec = projection
             .spec
             .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+        let scope_id = self
+            .latest_root_scope(intent_id)?
+            .unwrap_or_else(ScopeId::new);
         let ctx = ExecContext {
             spec,
-            scope_id: ScopeId::new(),
+            scope_id,
             run_id: RunId::new(),
             generation: 1,
         };
@@ -194,11 +200,26 @@ impl Runtime {
         if !projection.open_requests.contains_key(request_id) {
             return Err(ApiError::IntentNotFound(intent_id.clone()));
         }
+        let request_event = self
+            .ledger
+            .read_intent(intent_id)?
+            .into_iter()
+            .rev()
+            .find(|event| {
+                matches!(
+                    &event.envelope.payload,
+                    EventPayload::AttentionRequested { request } if &request.id == request_id
+                )
+            })
+            .ok_or_else(|| ApiError::NotFound(format!("attention {request_id}")))?;
+        let scope_id = request_event.envelope.scope_id;
+        let generation = request_event.envelope.generation;
+        let revision = projection.spec.map(|s| s.revision).unwrap_or(1);
         let envelope = EventEnvelope::new(
             intent_id.clone(),
-            ScopeId::new(),
-            1,
-            projection.spec.map(|s| s.revision).unwrap_or(1),
+            scope_id.clone(),
+            generation,
+            revision,
             Actor::User,
             EventPayload::DecisionResolved {
                 decision: Decision {
@@ -212,16 +233,16 @@ impl Runtime {
         self.ledger.append(&envelope)?;
         self.ledger.append(&EventEnvelope::new(
             intent_id.clone(),
-            ScopeId::new(),
-            1,
-            1,
+            scope_id.clone(),
+            generation,
+            revision,
             Actor::System,
             EventPayload::IntentStateChanged {
                 state: IntentState::Active,
             },
         ))?;
-        // 自动续跑：从事件恢复进度；approve 原路径继续，reject 自动重规划
-        self.run(intent_id)
+        // 在发起请求的同一 Scope 续跑：一次性授权不会跨委托泄漏。
+        self.run_scope(intent_id, &scope_id)
     }
 
     /// 创建检查点：事件水位 + 工作区快照 + 在途副作用结论，三者缺一不可。
@@ -381,6 +402,7 @@ impl Runtime {
                 cursor: Some(checkpoint.event_cursor),
                 force_replan: true,
                 alternative,
+                subagent: false,
             },
         );
         let (success, error) = match result {

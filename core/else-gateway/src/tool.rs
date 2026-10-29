@@ -127,7 +127,9 @@ impl<'a> ToolGateway<'a> {
         let mut request_keys = std::collections::HashMap::new();
         for event in events {
             // 授权按 Generation 隔离：旧世代的批准不泄漏到分支
-            if event.envelope.generation != ctx.generation {
+            if event.envelope.generation != ctx.generation
+                || event.envelope.scope_id != ctx.scope_id
+            {
                 continue;
             }
             match event.envelope.payload {
@@ -160,7 +162,9 @@ impl<'a> ToolGateway<'a> {
         let mut completed = std::collections::HashMap::new();
         for event in events {
             // 分支隔离：其他 Generation 的完成结果不命中本分支的幂等
-            if event.envelope.generation != ctx.generation {
+            if event.envelope.generation != ctx.generation
+                || event.envelope.scope_id != ctx.scope_id
+            {
                 continue;
             }
             match event.envelope.payload {

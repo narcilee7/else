@@ -1,21 +1,22 @@
-//! M1 Abort：持久化状态机、在途副作用收敛与崩溃恢复。
+//! M1 Abort：持久化状态机、Scope 树传播、在途副作用收敛与崩溃恢复。
 //!
 //! Cancelled 只表示执行安全收敛，不表示外部世界已经回滚。
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use else_gateway::ExecContext;
-use else_ledger::IntentProjection;
+use else_ledger::{IntentProjection, StoredEvent};
 use else_protocol::attention::{Decision, DecisionChoice};
 use else_protocol::effect::{EffectConclusion, ToolCall};
 use else_protocol::event::{Actor, EventPayload, ScopeState};
-use else_protocol::ids::{IntentId, RunId, ToolCallId};
+use else_protocol::ids::{IntentId, RunId, ScopeId, ToolCallId};
 use else_protocol::intent::IntentState;
 
+use crate::scope::scope_spec;
 use crate::{ApiError, Result, Runtime};
 
 impl Runtime {
-    /// 请求取消当前执行。重复 Abort 与终态 Abort 都是幂等操作。
+    /// 请求取消根执行及其全部后代。重复 Abort 与终态 Abort 都是幂等操作。
     pub fn abort(&self, intent_id: &IntentId, reason: &str) -> Result<IntentProjection> {
         let projection = self.projection(intent_id)?;
         let spec = projection
@@ -31,16 +32,22 @@ impl Runtime {
 
         let events = self.ledger.read_intent(intent_id)?;
         let source = events
-            .iter()
-            .rev()
-            .find(|event| event.envelope.run_id.is_some())
-            .or_else(|| events.last())
+            .last()
             .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+        let root = self
+            .latest_root_scope(intent_id)?
+            .unwrap_or_else(|| source.envelope.scope_id.clone());
+        let generation = projection
+            .scopes
+            .get(&root)
+            .map(|scope| scope.generation)
+            .unwrap_or(source.envelope.generation);
+        let run_id = latest_run_id(&events, &root).unwrap_or_default();
         let ctx = ExecContext {
             spec,
-            scope_id: source.envelope.scope_id.clone(),
-            run_id: source.envelope.run_id.clone().unwrap_or_else(RunId::new),
-            generation: source.envelope.generation,
+            scope_id: root,
+            run_id,
+            generation,
         };
         ctx.record(
             &self.ledger,
@@ -67,53 +74,139 @@ impl Runtime {
         Ok(())
     }
 
-    /// 从最后一次 ScopeAbortRequested 继续；每一步按事件是否存在决定，天然可重入。
+    /// 补齐传播、逐 Scope 收敛，最后关闭 Decision 与根 Intent。每一步都可重入。
     fn recover_abort(&self, intent_id: &IntentId) -> Result<()> {
         let events = self.ledger.read_intent(intent_id)?;
-        let Some(abort) = events.iter().rev().find(|event| {
-            matches!(
-                event.envelope.payload,
-                EventPayload::ScopeAbortRequested { .. }
-            )
-        }) else {
+        let Some(latest_abort_seq) = abort_events(&events).last().map(|event| event.seq) else {
             return Ok(());
         };
-        let abort_seq = abort.seq;
-        let scope_id = abort.envelope.scope_id.clone();
-        let generation = abort.envelope.generation;
-        let after_abort = |event: &&else_ledger::StoredEvent| {
-            event.seq > abort_seq
-                && event.envelope.scope_id == scope_id
-                && event.envelope.generation == generation
-        };
-        let scope_cancelled = events.iter().filter(after_abort).any(|event| {
-            matches!(
-                event.envelope.payload,
-                EventPayload::ScopeStateChanged {
-                    state: ScopeState::Cancelled
-                }
+        if has_intent_cancelled_after(&events, latest_abort_seq) {
+            return Ok(());
+        }
+
+        // 根取消事件先持久化；即使传播中途崩溃，也能按委托树补齐后代取消。
+        self.propagate_abort(intent_id)?;
+        let propagated = self.ledger.read_intent(intent_id)?;
+        let aborts = abort_events(&propagated);
+        for abort in aborts {
+            self.recover_scope_abort(intent_id, abort.seq)?;
+        }
+
+        let events = self.ledger.read_intent(intent_id)?;
+        let aborts = abort_events(&events);
+        let all_cancelled = aborts.iter().all(|abort| {
+            has_scope_cancelled_after(
+                &events,
+                abort.seq,
+                &abort.envelope.scope_id,
+                abort.envelope.generation,
             )
         });
-        let intent_cancelled = events.iter().filter(after_abort).any(|event| {
-            matches!(
-                event.envelope.payload,
-                EventPayload::IntentStateChanged {
-                    state: IntentState::Cancelled
-                }
-            )
-        });
-        if scope_cancelled && intent_cancelled {
+        if !all_cancelled {
             return Ok(());
         }
 
         let projection = self.projection(intent_id)?;
-        let spec = projection
-            .spec
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+        let latest_abort = aborts
+            .last()
+            .ok_or_else(|| ApiError::NotFound("abort event".into()))?;
         let ctx = ExecContext {
-            spec,
+            spec: scope_spec(&projection, &latest_abort.envelope.scope_id)
+                .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?,
+            scope_id: latest_abort.envelope.scope_id.clone(),
+            run_id: latest_abort.envelope.run_id.clone().unwrap_or_default(),
+            generation: latest_abort.envelope.generation,
+        };
+        // 旧 Decision 一并失效，用户不能批准已经取消的父子执行。
+        for request_id in projection.open_requests.keys() {
+            ctx.record(
+                &self.ledger,
+                Actor::System,
+                EventPayload::DecisionResolved {
+                    decision: Decision {
+                        request_id: request_id.clone(),
+                        choice: DecisionChoice::Dismissed,
+                        rationale: Some("Intent 已取消，旧决策请求失效".into()),
+                        decided_by: Actor::System,
+                    },
+                },
+            )?;
+        }
+        if !has_intent_cancelled_after(&events, latest_abort_seq) {
+            ctx.record(
+                &self.ledger,
+                Actor::System,
+                EventPayload::IntentStateChanged {
+                    state: IntentState::Cancelled,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    /// 取消沿 Scope 树只向后代传播，权限与生命周期都不会反向扩大。
+    fn propagate_abort(&self, intent_id: &IntentId) -> Result<()> {
+        let events = self.ledger.read_intent(intent_id)?;
+        let projection = self.projection(intent_id)?;
+        let aborts = abort_events(&events);
+        let mut requested: BTreeSet<(ScopeId, u64)> = aborts
+            .iter()
+            .map(|event| (event.envelope.scope_id.clone(), event.envelope.generation))
+            .collect();
+        for abort in aborts {
+            for scope_id in descendants(&projection, &abort.envelope.scope_id) {
+                let key = (scope_id.clone(), abort.envelope.generation);
+                if requested.contains(&key) {
+                    continue;
+                }
+                let Some(scope) = projection.scopes.get(&scope_id) else {
+                    continue;
+                };
+                if scope.state != ScopeState::Running {
+                    continue;
+                }
+                let ctx = ExecContext {
+                    spec: scope_spec(&projection, &scope_id)
+                        .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?,
+                    scope_id: scope_id.clone(),
+                    run_id: latest_run_id(&events, &scope_id).unwrap_or_default(),
+                    generation: abort.envelope.generation,
+                };
+                ctx.record(
+                    &self.ledger,
+                    Actor::System,
+                    EventPayload::ScopeAbortRequested {
+                        reason: "父 Scope 取消，沿委托树传播".into(),
+                    },
+                )?;
+                requested.insert(key);
+            }
+        }
+        Ok(())
+    }
+
+    fn recover_scope_abort(&self, intent_id: &IntentId, abort_seq: u64) -> Result<()> {
+        let events = self.ledger.read_intent(intent_id)?;
+        let abort = events
+            .iter()
+            .find(|event| event.seq == abort_seq)
+            .ok_or_else(|| ApiError::NotFound(format!("abort event {abort_seq}")))?;
+        let scope_id = abort.envelope.scope_id.clone();
+        let generation = abort.envelope.generation;
+        if has_scope_cancelled_after(&events, abort_seq, &scope_id, generation) {
+            return Ok(());
+        }
+        let after_abort = |event: &&StoredEvent| {
+            event.seq > abort_seq
+                && event.envelope.scope_id == scope_id
+                && event.envelope.generation == generation
+        };
+        let projection = self.projection(intent_id)?;
+        let ctx = ExecContext {
+            spec: scope_spec(&projection, &scope_id)
+                .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?,
             scope_id: scope_id.clone(),
-            run_id: abort.envelope.run_id.clone().unwrap_or_else(RunId::new),
+            run_id: abort.envelope.run_id.clone().unwrap_or_default(),
             generation,
         };
         let has_scope_state = |state: ScopeState| {
@@ -134,10 +227,12 @@ impl Runtime {
             }
         }
 
-        // 活跃 Run 必须有关闭事件，不能在重放后看起来仍在执行。
         let mut started = BTreeSet::new();
         let mut finished = BTreeSet::new();
-        for event in events.iter().filter(|event| event.seq < abort_seq) {
+        for event in events
+            .iter()
+            .filter(|event| event.seq < abort_seq && event.envelope.scope_id == scope_id)
+        {
             match &event.envelope.payload {
                 EventPayload::RunStarted { run_id, .. } => {
                     started.insert(run_id.clone());
@@ -159,8 +254,7 @@ impl Runtime {
             )?;
         }
 
-        // 只收尾 Abort 之前已在途的调用；Unknown 是结论，绝不假装已回滚。
-        let inflight = inflight_before(&events, abort_seq);
+        let inflight = inflight_before(&events, abort_seq, &scope_id);
         let concluded: BTreeSet<_> = events
             .iter()
             .filter(after_abort)
@@ -185,7 +279,6 @@ impl Runtime {
                 )?;
             }
         }
-
         if !has_scope_state(ScopeState::Compensating) {
             ctx.record(
                 &self.ledger,
@@ -195,41 +288,13 @@ impl Runtime {
                 },
             )?;
         }
-
-        // 取消同时关闭旧 Decision Queue，避免用户批准一个已经失效的执行。
-        for request_id in projection.open_requests.keys() {
-            ctx.record(
-                &self.ledger,
-                Actor::System,
-                EventPayload::DecisionResolved {
-                    decision: Decision {
-                        request_id: request_id.clone(),
-                        choice: DecisionChoice::Dismissed,
-                        rationale: Some("Intent 已取消，旧决策请求失效".into()),
-                        decided_by: Actor::System,
-                    },
-                },
-            )?;
-        }
-
-        if !scope_cancelled {
-            ctx.record(
-                &self.ledger,
-                Actor::System,
-                EventPayload::ScopeStateChanged {
-                    state: ScopeState::Cancelled,
-                },
-            )?;
-        }
-        if !intent_cancelled {
-            ctx.record(
-                &self.ledger,
-                Actor::System,
-                EventPayload::IntentStateChanged {
-                    state: IntentState::Cancelled,
-                },
-            )?;
-        }
+        ctx.record(
+            &self.ledger,
+            Actor::System,
+            EventPayload::ScopeStateChanged {
+                state: ScopeState::Cancelled,
+            },
+        )?;
         Ok(())
     }
 
@@ -240,10 +305,84 @@ impl Runtime {
     }
 }
 
-fn inflight_before(events: &[else_ledger::StoredEvent], abort_seq: u64) -> Vec<ToolCall> {
+fn abort_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.envelope.payload,
+                EventPayload::ScopeAbortRequested { .. }
+            )
+        })
+        .collect()
+}
+
+fn descendants(projection: &IntentProjection, root: &ScopeId) -> BTreeSet<ScopeId> {
+    let mut result = BTreeSet::new();
+    loop {
+        let mut changed = false;
+        for (scope_id, scope) in &projection.scopes {
+            if scope
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent == root || result.contains(parent))
+                && result.insert(scope_id.clone())
+            {
+                changed = true;
+            }
+        }
+        if !changed {
+            return result;
+        }
+    }
+}
+
+fn latest_run_id(events: &[StoredEvent], scope_id: &ScopeId) -> Option<RunId> {
+    events.iter().rev().find_map(|event| {
+        (event.envelope.scope_id == *scope_id)
+            .then(|| event.envelope.run_id.clone())
+            .flatten()
+    })
+}
+
+fn has_scope_cancelled_after(
+    events: &[StoredEvent],
+    seq: u64,
+    scope_id: &ScopeId,
+    generation: u64,
+) -> bool {
+    events.iter().any(|event| {
+        event.seq > seq
+            && event.envelope.scope_id == *scope_id
+            && event.envelope.generation == generation
+            && matches!(
+                event.envelope.payload,
+                EventPayload::ScopeStateChanged {
+                    state: ScopeState::Cancelled
+                }
+            )
+    })
+}
+
+fn has_intent_cancelled_after(events: &[StoredEvent], seq: u64) -> bool {
+    events.iter().any(|event| {
+        event.seq > seq
+            && matches!(
+                event.envelope.payload,
+                EventPayload::IntentStateChanged {
+                    state: IntentState::Cancelled
+                }
+            )
+    })
+}
+
+fn inflight_before(events: &[StoredEvent], abort_seq: u64, scope_id: &ScopeId) -> Vec<ToolCall> {
     let mut called: BTreeMap<ToolCallId, ToolCall> = BTreeMap::new();
     let mut done = BTreeSet::new();
-    for event in events.iter().filter(|event| event.seq < abort_seq) {
+    for event in events
+        .iter()
+        .filter(|event| event.seq < abort_seq && event.envelope.scope_id == *scope_id)
+    {
         match &event.envelope.payload {
             EventPayload::ToolCalled { call } => {
                 called.insert(call.id.clone(), call.clone());

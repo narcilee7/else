@@ -31,6 +31,18 @@ enum Command {
     },
     /// 列出全部 Intent
     List,
+    /// 查看 Scope 委托树与生命周期
+    Scopes { intent_id: String },
+    /// 委托一个子 Scope（权限只能低于或等于父级）
+    Delegate {
+        intent_id: String,
+        parent_scope: String,
+        task: String,
+        #[arg(long, default_value = "read_only", value_parser = ["read_only", "reversible", "compensatable", "irreversible", "unknown"])]
+        max_effect: String,
+    },
+    /// 启动或续跑指定 Scope
+    RunScope { intent_id: String, scope_id: String },
     /// 查看等待本人的 Decision
     Decisions { intent_id: String },
     /// 回答一个 Decision（选项 id 或自由文本）
@@ -87,6 +99,47 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             for spec in runtime.list_intents()? {
                 println!("{}  {}", spec.id, spec.outcome);
             }
+        }
+        Command::Scopes { intent_id } => {
+            let projection = runtime.projection(&IntentId::from(intent_id))?;
+            for (id, scope) in projection.scopes {
+                println!(
+                    "scope {id} parent={:?} state={:?} generation={}",
+                    scope.parent, scope.state, scope.generation
+                );
+            }
+        }
+        Command::Delegate {
+            intent_id,
+            parent_scope,
+            task,
+            max_effect,
+        } => {
+            use else_protocol::effect::SideEffectKind;
+            let max_effect = match max_effect.as_str() {
+                "read_only" => SideEffectKind::ReadOnly,
+                "reversible" => SideEffectKind::Reversible,
+                "compensatable" => SideEffectKind::Compensatable,
+                "irreversible" => SideEffectKind::Irreversible,
+                _ => SideEffectKind::Unknown,
+            };
+            let child = runtime.spawn_subagent(
+                &IntentId::from(intent_id),
+                &else_protocol::ids::ScopeId::from(parent_scope),
+                &task,
+                max_effect,
+            )?;
+            println!("child scope: {child}");
+        }
+        Command::RunScope {
+            intent_id,
+            scope_id,
+        } => {
+            let projection = runtime.run_scope(
+                &IntentId::from(intent_id),
+                &else_protocol::ids::ScopeId::from(scope_id),
+            )?;
+            print_projection(&projection);
         }
         Command::Decisions { intent_id } => {
             let projection = runtime.projection(&IntentId::from(intent_id))?;

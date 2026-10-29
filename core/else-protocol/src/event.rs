@@ -171,9 +171,14 @@ pub enum EventPayload {
         decision: Decision,
     },
 
-    /// Subagent 不能直接 spawn，必须由控制面创建子 Scope。
+    /// 分支创建：由检查点派生独立执行 Scope。
     ScopeSpawned {
         child: ScopeId,
+    },
+    /// Subagent 委托：父 Scope 由事件信封标识，子权限契约随事件持久化。
+    SubagentSpawned {
+        child: ScopeId,
+        spec: IntentSpec,
     },
     ScopeAbortRequested {
         reason: String,
