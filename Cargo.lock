@@ -539,6 +539,7 @@ dependencies = [
 name = "else-gateway"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "else-ledger",
  "else-protocol",
  "genai",

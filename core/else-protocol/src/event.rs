@@ -12,7 +12,7 @@ use crate::attention::{AttentionRequest, Decision, Ruling};
 use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
 use crate::ids::*;
 use crate::intent::{IntentSpec, IntentState};
-use crate::resource::ResourceLease;
+use crate::resource::{ResourceBudget, ResourceLease};
 use crate::PROTOCOL_VERSION;
 
 /// 事件的来源。
@@ -194,6 +194,9 @@ pub enum EventPayload {
         artifact: Artifact,
     },
 
+    ResourceBudgetSet {
+        budget: ResourceBudget,
+    },
     LeaseGranted {
         lease: ResourceLease,
     },

@@ -80,6 +80,7 @@ impl Runtime {
             run_id: RunId::new(),
             generation: scope.generation,
         };
+        let lease = self.admit_run(&ctx)?;
         ctx.record(
             &self.ledger,
             Actor::System,
@@ -117,6 +118,7 @@ impl Runtime {
                 success,
             },
         )?;
+        self.revoke_lease(&ctx, &lease)?;
         if let Some(error) = error {
             return Err(error.into());
         }

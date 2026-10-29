@@ -4,6 +4,7 @@
 //! W2 以库接口形式提供（进程内调用）；daemon 与远程 IPC 复用同一接口。
 
 mod abort;
+mod resources;
 mod scope;
 
 use std::path::{Path, PathBuf};
@@ -43,6 +44,7 @@ pub struct Runtime {
     workspace: PathBuf,
     store: else_workspace::Store,
     branches: PathBuf,
+    default_budget: else_protocol::resource::ResourceBudget,
 }
 
 impl Runtime {
@@ -56,6 +58,7 @@ impl Runtime {
             workspace,
             store: else_workspace::Store::new(dir.join("store"))?,
             branches: dir.join("branches"),
+            default_budget: resources::budget_from_env(),
         };
         // 上次进程可能死在 Abort 的任意事件边界；重开后先完成安全收敛。
         runtime.recover_aborts()?;
@@ -95,6 +98,16 @@ impl Runtime {
             Actor::User,
             EventPayload::IntentCreated { spec: spec.clone() },
         ))?;
+        self.ledger.append(&EventEnvelope::new(
+            spec.id.clone(),
+            ScopeId::new(),
+            1,
+            spec.revision,
+            Actor::System,
+            EventPayload::ResourceBudgetSet {
+                budget: self.default_budget,
+            },
+        ))?;
         Ok(spec)
     }
 
@@ -120,6 +133,7 @@ impl Runtime {
             run_id: RunId::new(),
             generation: 1,
         };
+        let lease = self.admit_run(&ctx)?;
         ctx.record(
             &self.ledger,
             Actor::System,
@@ -158,6 +172,7 @@ impl Runtime {
                 success,
             },
         )?;
+        self.revoke_lease(&ctx, &lease)?;
         if let Some(e) = error {
             return Err(e.into());
         }
@@ -382,6 +397,7 @@ impl Runtime {
                 child: scope_id.clone(),
             },
         )?;
+        let lease = self.admit_run(&ctx)?;
         ctx.record(
             &self.ledger,
             Actor::System,
@@ -421,6 +437,7 @@ impl Runtime {
                 success,
             },
         )?;
+        self.revoke_lease(&ctx, &lease)?;
         if let Some(e) = error {
             return Err(e.into());
         }

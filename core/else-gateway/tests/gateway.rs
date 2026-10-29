@@ -3,8 +3,10 @@
 use else_gateway::{ExecContext, GatewayError, ToolGateway};
 use else_ledger::Ledger;
 use else_protocol::effect::{SideEffectKind, ToolCall, ToolStatus};
+use else_protocol::event::{Actor, EventPayload};
 use else_protocol::ids::{IntentId, RunId, ScopeId, ToolCallId};
 use else_protocol::intent::{AttentionPolicy, Authority, IntentSpec};
+use else_protocol::resource::{ResourceClass, ResourceLease};
 use serde_json::json;
 
 fn ctx(spec_id: &IntentId) -> ExecContext {
@@ -32,6 +34,26 @@ fn ctx(spec_id: &IntentId) -> ExecContext {
     }
 }
 
+fn grant_lease(ledger: &Ledger, ctx: &ExecContext) {
+    ctx.record(
+        ledger,
+        Actor::System,
+        EventPayload::LeaseGranted {
+            lease: ResourceLease {
+                id: else_protocol::ids::LeaseId::new(),
+                scope_id: ctx.scope_id.clone(),
+                run_id: Some(ctx.run_id.clone()),
+                class: ResourceClass::Sandbox,
+                quantity: 1,
+                unit: "seconds".into(),
+                generation: ctx.generation,
+                expires_at: chrono::Utc::now() + chrono::Duration::seconds(60),
+            },
+        },
+    )
+    .unwrap();
+}
+
 fn call(tool: &str, effect: SideEffectKind, input: serde_json::Value, key: &str) -> ToolCall {
     ToolCall {
         id: ToolCallId::new(),
@@ -50,6 +72,7 @@ fn idempotent_call_is_not_executed_twice() {
     let ledger = Ledger::open_in_memory().unwrap();
     let gateway = ToolGateway::new(&ledger, workspace.clone());
     let ctx = ctx(&IntentId::new());
+    grant_lease(&ledger, &ctx);
 
     let first = gateway
         .execute(
@@ -88,6 +111,7 @@ fn excessive_side_effect_requires_human_approval() {
     let ledger = Ledger::open_in_memory().unwrap();
     let gateway = ToolGateway::new(&ledger, dir.path().to_path_buf());
     let ctx = ctx(&IntentId::new());
+    grant_lease(&ledger, &ctx);
 
     let err = gateway
         .execute(
@@ -114,6 +138,7 @@ fn path_escaping_workspace_fails_closed() {
     let ledger = Ledger::open_in_memory().unwrap();
     let gateway = ToolGateway::new(&ledger, dir.path().to_path_buf());
     let ctx = ctx(&IntentId::new());
+    grant_lease(&ledger, &ctx);
 
     let outcome = gateway
         .execute(

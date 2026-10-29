@@ -227,6 +227,7 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::ScopeStateChanged { .. } => "scope_state_changed",
         P::CheckpointCreated { .. } => "checkpoint_created",
         P::ArtifactProduced { .. } => "artifact_produced",
+        P::ResourceBudgetSet { .. } => "resource_budget_set",
         P::LeaseGranted { .. } => "lease_granted",
         P::LeaseRevoked { .. } => "lease_revoked",
     }

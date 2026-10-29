@@ -28,6 +28,35 @@ pub enum ResourceClass {
     HumanAttention,
 }
 
+/// 每个 Intent 的硬预算。预算随事件持久化，重启后 Admission 使用同一契约。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceBudget {
+    pub max_model_tokens: u64,
+    pub max_model_spend_usd_micros: u64,
+    pub max_tool_calls: u64,
+    pub max_sandbox_seconds: u64,
+}
+
+impl Default for ResourceBudget {
+    fn default() -> Self {
+        Self {
+            max_model_tokens: 1_000_000,
+            max_model_spend_usd_micros: 1_000_000,
+            max_tool_calls: 10_000,
+            max_sandbox_seconds: 86_400,
+        }
+    }
+}
+
+/// 从事件累计的资源账；后代事件自然计入根 Intent。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceUsage {
+    pub model_tokens: u64,
+    pub model_spend_usd_micros: u64,
+    pub tool_calls: u64,
+    pub sandbox_seconds: u64,
+}
+
 /// 资源租约：资源不足就不允许启动（Admission），
 /// 而不是启动后无限超卖。Lease 到期必须续租或回收。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -53,6 +53,8 @@ enum Command {
     },
     /// 查看事件流（调试视图）
     Log { intent_id: String },
+    /// 查看模型、工具与环境资源预算及实际消耗
+    Resources { intent_id: String },
     /// 创建检查点（事件水位 + 工作区快照 + 在途副作用结论）
     Checkpoint { intent_id: String },
     /// 从检查点派生分支并重跑（--alternative 走替代路径）
@@ -170,6 +172,24 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                         .unwrap_or_else(|_| "<codec error>".into())
                 );
             }
+        }
+        Command::Resources { intent_id } => {
+            let report = runtime.resources(&IntentId::from(intent_id))?;
+            println!(
+                "model: tokens={}/{} spend_usd_micros={}/{}",
+                report.usage.model_tokens,
+                report.budget.max_model_tokens,
+                report.usage.model_spend_usd_micros,
+                report.budget.max_model_spend_usd_micros
+            );
+            println!(
+                "tools: calls={}/{}",
+                report.usage.tool_calls, report.budget.max_tool_calls
+            );
+            println!(
+                "sandbox: seconds={}/{}",
+                report.usage.sandbox_seconds, report.budget.max_sandbox_seconds
+            );
         }
         Command::Checkpoint { intent_id } => {
             let checkpoint = runtime.checkpoint(&IntentId::from(intent_id))?;

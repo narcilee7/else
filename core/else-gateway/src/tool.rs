@@ -14,6 +14,7 @@ use else_protocol::ids::AttentionId;
 use else_protocol::intent::IntentState;
 use serde_json::{json, Value};
 
+use crate::resource::{ensure_active_lease, ensure_tool_capacity};
 use crate::{ensure_not_fenced, ExecContext, GatewayError, Result};
 
 pub struct ToolGateway<'a> {
@@ -37,6 +38,8 @@ impl<'a> ToolGateway<'a> {
         if let Some(outcome) = self.find_completed(ctx, &call.idempotency_key)? {
             return Ok(outcome);
         }
+        ensure_active_lease(self.ledger, ctx)?;
+        ensure_tool_capacity(self.ledger, ctx)?;
 
         ctx.record(
             self.ledger,
@@ -58,6 +61,7 @@ impl<'a> ToolGateway<'a> {
         outcome: ToolOutcome,
     ) -> Result<ToolOutcome> {
         ensure_not_fenced(self.ledger, ctx)?;
+        ensure_active_lease(self.ledger, ctx)?;
         ctx.record(
             self.ledger,
             Actor::Tool,

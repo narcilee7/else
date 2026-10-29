@@ -227,6 +227,7 @@ impl Runtime {
             }
         }
 
+        self.revoke_active_leases(&ctx, &events)?;
         let mut started = BTreeSet::new();
         let mut finished = BTreeSet::new();
         for event in events

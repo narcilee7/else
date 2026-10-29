@@ -8,6 +8,7 @@ use else_protocol::attention::AttentionRequest;
 use else_protocol::event::{EventPayload, ScopeState};
 use else_protocol::ids::{AttentionId, ScopeId};
 use else_protocol::intent::{IntentSpec, IntentState};
+use else_protocol::resource::{ResourceBudget, ResourceUsage};
 
 use crate::{Projection, StoredEvent};
 
@@ -31,6 +32,8 @@ pub struct IntentProjection {
     pub artifacts: Vec<Artifact>,
     pub checkpoints: Vec<Checkpoint>,
     pub scopes: BTreeMap<ScopeId, ScopeProjection>,
+    pub resource_budget: ResourceBudget,
+    pub resource_usage: ResourceUsage,
     /// 已重放到的事件水位。
     pub cursor: u64,
 }
@@ -94,6 +97,30 @@ impl Projection for IntentProjection {
                         spec: None,
                     })
                     .state = *state;
+            }
+            EventPayload::ResourceBudgetSet { budget } => {
+                self.resource_budget = *budget;
+            }
+            EventPayload::ModelCompleted { usage, .. } => {
+                self.resource_usage.model_tokens = self
+                    .resource_usage
+                    .model_tokens
+                    .saturating_add(usage.input_tokens.saturating_add(usage.output_tokens));
+                self.resource_usage.model_spend_usd_micros = self
+                    .resource_usage
+                    .model_spend_usd_micros
+                    .saturating_add(usage.cost_usd_micros);
+            }
+            EventPayload::ToolCalled { .. } => {
+                self.resource_usage.tool_calls = self.resource_usage.tool_calls.saturating_add(1);
+            }
+            EventPayload::LeaseGranted { lease }
+                if lease.class == else_protocol::resource::ResourceClass::Sandbox =>
+            {
+                self.resource_usage.sandbox_seconds = self
+                    .resource_usage
+                    .sandbox_seconds
+                    .saturating_add(lease.quantity);
             }
             EventPayload::ArtifactProduced { artifact } => {
                 self.artifacts.push(artifact.clone());

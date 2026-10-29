@@ -4,7 +4,7 @@
 //! - 进程内 Provider 适配：genai（rust-genai），不手写协议适配；
 //! - 独立网关（M3）：TensorZero / LiteLLM 等现成数据面。
 //!
-//! 配额、Lease、降级路由在 M1/M3 接入，策略面保持不变。
+//! 当前已接入 Lease、配额与真实用量复核；降级路由在 M3 接入。
 
 use else_ledger::Ledger;
 use else_protocol::event::{Actor, EventPayload};
@@ -27,6 +27,15 @@ pub struct ModelResponse {
 /// Provider 适配层。实现必须幂等可读：调用失败返回错误，由上层决定重试。
 pub trait ModelProvider: Send + Sync {
     fn complete(&self, request: &ModelRequest) -> std::result::Result<ModelResponse, String>;
+
+    /// 调用前资源预估；真实用量返回后会再次校验并覆盖入账。
+    fn estimate(&self, request: &ModelRequest) -> ModelUsage {
+        ModelUsage {
+            input_tokens: request.prompt.len() as u64 / 2,
+            output_tokens: 64,
+            cost_usd_micros: 0,
+        }
+    }
 }
 
 /// 确定性 Mock：本地演示与测试用，不产生真实外部调用。
@@ -39,12 +48,16 @@ impl ModelProvider for MockProvider {
                 "1. 解析目标与约束\n2. 生成计划并写入工作区\n3. 校验产物后请求验收\n\n目标：{}",
                 request.prompt
             ),
-            usage: ModelUsage {
-                input_tokens: request.prompt.len() as u64 / 2,
-                output_tokens: 64,
-                cost_usd_micros: 1_500,
-            },
+            usage: self.estimate(request),
         })
+    }
+
+    fn estimate(&self, request: &ModelRequest) -> ModelUsage {
+        ModelUsage {
+            input_tokens: request.prompt.len() as u64 / 2,
+            output_tokens: 64,
+            cost_usd_micros: 1_500,
+        }
     }
 }
 
@@ -97,7 +110,7 @@ impl<'a> ModelGateway<'a> {
         Self { ledger, provider }
     }
 
-    /// 调用并入账：围栏 → ModelCalled → Provider → 围栏 → ModelCompleted。
+    /// 调用并入账：围栏 + Lease + 预估 → Provider → 实际用量复核 → ModelCompleted。
     pub fn complete(
         &self,
         ctx: &ExecContext,
@@ -106,6 +119,12 @@ impl<'a> ModelGateway<'a> {
         prompt: &str,
     ) -> Result<ModelResponse> {
         ensure_not_fenced(self.ledger, ctx)?;
+        crate::resource::ensure_active_lease(self.ledger, ctx)?;
+        let request = ModelRequest {
+            model: model.to_string(),
+            prompt: prompt.to_string(),
+        };
+        crate::resource::ensure_model_capacity(self.ledger, ctx, self.provider.estimate(&request))?;
         ctx.record(
             self.ledger,
             Actor::Agent,
@@ -116,12 +135,11 @@ impl<'a> ModelGateway<'a> {
         )?;
         let response = self
             .provider
-            .complete(&ModelRequest {
-                model: model.to_string(),
-                prompt: prompt.to_string(),
-            })
+            .complete(&request)
             .map_err(GatewayError::Model)?;
         ensure_not_fenced(self.ledger, ctx)?;
+        crate::resource::ensure_active_lease(self.ledger, ctx)?;
+        crate::resource::ensure_model_capacity(self.ledger, ctx, response.usage)?;
         ctx.record(
             self.ledger,
             Actor::System,

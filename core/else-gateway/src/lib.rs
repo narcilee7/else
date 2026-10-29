@@ -4,10 +4,10 @@
 //! - 所有副作用经过 Tool Gateway（授权检查、幂等、事件落账）；
 //! - 所有模型调用经过 Model Gateway（Token/费用入账）。
 //!
-//! 当前：文件/shell 工具、genai Provider、调用与回调的 Generation Fencing；
-//! Lease 校验与配额熔断在 M1 后续补齐。
+//! 当前：文件/shell 工具、genai Provider、Generation Fencing、Lease 与配额熔断。
 
 pub mod model;
+pub mod resource;
 pub mod tool;
 
 pub use model::{
@@ -85,6 +85,15 @@ pub enum GatewayError {
     /// 旧 Generation 或已 Abort 的 Generation 被围栏。
     #[error("generation fenced: {generation}")]
     GenerationFenced { generation: u64 },
+    #[error("active resource lease required: {0}")]
+    LeaseRequired(String),
+    #[error("resource exhausted: {resource}, requested {requested} {unit}, remaining {remaining} {unit}")]
+    ResourceExhausted {
+        resource: String,
+        requested: u64,
+        remaining: u64,
+        unit: &'static str,
+    },
     #[error("unknown tool: {0}")]
     UnknownTool(String),
     #[error("invalid path (must stay inside workspace): {0}")]

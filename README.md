@@ -28,7 +28,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**M1 in progress — W2 done; M0 complete.** Subagents now run in a replayable Scope tree: delegated authority can only narrow, approvals and execution progress stay scope-local, and child completion never completes the root intent. Abort propagates through children and grandchildren and recovers after a kill at any propagation boundary. The CLI exposes `scopes`, `delegate`, `run-scope`, and `abort`. Model providers are delegated to genai. 25 tests passing, clippy clean. Next: Admission + Lease + Accounting.
+**M1 in progress — W3 done; M0 complete.** Resource governance now shares the event ledger with execution: every run passes admission and receives a scoped lease, tool/model gateways enforce budget and lease before acting, and actual model usage is rechecked before accounting. Tool calls, model tokens/spend, and sandbox reservations replay into one root budget across all descendants. Abort revokes leases left by crashed runs. The CLI exposes `resources` and rejects over-budget runs before execution. 33 tests passing, clippy clean. Next: local Seatbelt / bubblewrap sandboxing.
 
 M0 delivers one vertical slice through the CLI: an abstract intent → execution → a decision only you can make → automatic re-planning → verification against the original outcome — plus Checkpoint / Fork / Rerun / Compare. No dashboards, no cloud, no multi-user.
 
