@@ -58,6 +58,10 @@ pub struct AttentionRequest {
     /// 推荐选项及默认动作。
     pub options: Vec<DecisionOption>,
     pub default_option: Option<String>,
+    /// 关联的工具调用幂等键：本人批准后，Gateway 对同一键的调用放行
+    /// （一次性授权，不扩大全局权限）。旧事件无此字段，反序列化为 None。
+    #[serde(default)]
+    pub related_call_key: Option<String>,
 }
 
 /// Attention Kernel 的四种裁决。

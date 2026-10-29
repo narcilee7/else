@@ -48,6 +48,7 @@ fn request() -> AttentionRequest {
             recommended: true,
         }],
         default_option: Some("approve".into()),
+        related_call_key: None,
     }
 }
 

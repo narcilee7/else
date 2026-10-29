@@ -45,13 +45,16 @@ impl Runtime {
         })
     }
 
-    /// 提交一个抽象 Intent（Intent Resolution 的最小实现，W3 补全假设与验收）。
+    /// 提交一个抽象 Intent（Intent Resolution 最小实现）：
+    /// 系统补全默认验收标准与显式假设，补全内容可修正，不是隐蔽事实。
     pub fn create_intent(&self, outcome: &str) -> Result<IntentSpec> {
         let spec = IntentSpec {
             id: IntentId::new(),
             revision: 1,
             outcome: outcome.to_string(),
-            done_when: vec![],
+            done_when: vec![else_protocol::intent::Criterion {
+                description: "计划产物写入工作区且校验通过".into(),
+            }],
             constraints: vec![],
             authority: Authority {
                 max_autonomous_effect: SideEffectKind::Reversible,
@@ -62,7 +65,10 @@ impl Runtime {
                 batch_interval_minutes: 30,
             },
             deadline: None,
-            assumptions: vec![],
+            assumptions: vec![else_protocol::intent::Assumption {
+                text: "假设：在当前工作区推进该目标（系统补全，可修正）".into(),
+                confirmed: false,
+            }],
         };
         self.ledger.append(&EventEnvelope::new(
             spec.id.clone(),
@@ -76,9 +82,16 @@ impl Runtime {
     }
 
     /// 启动一次执行（一个 Harness、一次 Run）。返回最新投影。
+    /// 终态幂等：Completed/Failed/Cancelled 不重复执行。
     pub fn run(&self, intent_id: &IntentId) -> Result<IntentProjection> {
-        let spec = self
-            .projection(intent_id)?
+        let projection = self.projection(intent_id)?;
+        if matches!(
+            projection.state,
+            Some(IntentState::Completed | IntentState::Failed | IntentState::Cancelled)
+        ) {
+            return Ok(projection);
+        }
+        let spec = projection
             .spec
             .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
         let ctx = ExecContext {
@@ -143,14 +156,15 @@ impl Runtime {
         Ok(specs.into_values().collect())
     }
 
-    /// 本人决策：落 DecisionResolved 事件，Intent 回到 Active。
-    /// W3 在此接续自动重规划与续跑。
+    /// 本人决策：落 DecisionResolved 事件，Intent 回到 Active，
+    /// 随后自动续跑——批准则原路径继续，否决则自动重规划。
+    /// 返回续跑后的最新投影。
     pub fn decide(
         &self,
         intent_id: &IntentId,
         request_id: &AttentionId,
         choice: DecisionChoice,
-    ) -> Result<()> {
+    ) -> Result<IntentProjection> {
         let projection = self.projection(intent_id)?;
         if !projection.open_requests.contains_key(request_id) {
             return Err(ApiError::IntentNotFound(intent_id.clone()));
@@ -181,7 +195,8 @@ impl Runtime {
                 state: IntentState::Active,
             },
         ))?;
-        Ok(())
+        // 自动续跑：从事件恢复进度；approve 原路径继续，reject 自动重规划
+        self.run(intent_id)
     }
 
     pub fn events(&self, intent_id: &IntentId) -> Result<Vec<StoredEvent>> {

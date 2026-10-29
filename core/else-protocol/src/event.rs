@@ -136,6 +136,11 @@ pub enum EventPayload {
         usage: crate::resource::ModelUsage,
     },
 
+    /// 验收通过：Verifier 按原始 DoneWhen（而非最新 Plan）核对证据。
+    OutcomeVerified {
+        evidence: Vec<crate::artifact::OutcomeEvidence>,
+    },
+
     ToolCalled {
         call: ToolCall,
     },

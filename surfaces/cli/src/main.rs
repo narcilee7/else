@@ -78,12 +78,12 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 "approve" | "reject" => DecisionChoice::Option(choice),
                 other => DecisionChoice::FreeText(other.to_string()),
             };
-            runtime.decide(
+            let projection = runtime.decide(
                 &IntentId::from(intent_id),
                 &AttentionId::from(request_id),
                 choice,
             )?;
-            println!("decision recorded. (自动续跑与重规划将在 W3 接入)");
+            print_projection(&projection);
         }
         Command::Log { intent_id } => {
             for event in runtime.events(&IntentId::from(intent_id))? {

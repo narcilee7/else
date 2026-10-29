@@ -62,6 +62,10 @@ impl<'a> ToolGateway<'a> {
         if call.effect <= ctx.spec.authority.max_autonomous_effect {
             return Ok(());
         }
+        // 一次性授权：本人已批准过同一幂等键的调用 → 放行，不扩大全局权限。
+        if self.approved(ctx, &call.idempotency_key)? {
+            return Ok(());
+        }
         let request = AttentionRequest {
             id: AttentionId::new(),
             kind: AttentionKind::Authorization,
@@ -87,6 +91,7 @@ impl<'a> ToolGateway<'a> {
                 },
             ],
             default_option: Some("reject".into()),
+            related_call_key: Some(call.idempotency_key.clone()),
         };
         let request_id = request.id.clone();
         ctx.record(
@@ -102,6 +107,34 @@ impl<'a> ToolGateway<'a> {
             },
         )?;
         Err(GatewayError::NeedsApproval(request_id))
+    }
+
+    /// 一次性授权查找：同一幂等键的调用是否已被本人批准。
+    fn approved(&self, ctx: &ExecContext, key: &str) -> Result<bool> {
+        let events = self.ledger.read_intent(&ctx.spec.id)?;
+        let mut request_keys = std::collections::HashMap::new();
+        for event in events {
+            match event.envelope.payload {
+                EventPayload::AttentionRequested { request } => {
+                    if let Some(call_key) = request.related_call_key {
+                        request_keys.insert(request.id, call_key);
+                    }
+                }
+                EventPayload::DecisionResolved { decision } => {
+                    let approved = matches!(
+                        decision.choice,
+                        else_protocol::attention::DecisionChoice::Option(ref id) if id == "approve"
+                    );
+                    if approved
+                        && request_keys.get(&decision.request_id).map(String::as_str) == Some(key)
+                    {
+                        return Ok(true);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
     }
 
     /// 幂等查找：同一 Intent 内相同幂等键的已完成调用。

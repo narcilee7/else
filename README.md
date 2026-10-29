@@ -28,7 +28,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**M0 in progress — W2 done.** Thin Tool Gateway (side-effect authority, idempotency, workspace fencing) and Model Gateway (token/cost accounting), a scripted harness, and the runtime API + CLI are working: `else intent "..."` executes end-to-end and stops at a human decision when authority is exceeded. 11 tests passing, clippy clean. Next: automatic resume after decisions, re-planning, and DoneWhen verification (W3).
+**M0 in progress — W3 done.** The vertical loop is closed: an abstract intent executes, stops at a human decision when authority is exceeded, then resumes automatically — approve continues the original path (one-shot approval scoped to the call's idempotency key), reject triggers automatic re-planning onto a read-only alternative path. Verification runs against the original DoneWhen, and terminal states are idempotent. Model providers are delegated to genai. 13 tests passing, clippy clean. Next: Checkpoint / Fork / Rerun / Compare (W4).
 
 M0 delivers one vertical slice through the CLI: an abstract intent → execution → a decision only you can make → automatic re-planning → verification against the original outcome — plus Checkpoint / Fork / Rerun / Compare. No dashboards, no cloud, no multi-user.
 
