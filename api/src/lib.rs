@@ -23,6 +23,10 @@ pub enum ApiError {
     Gateway(#[from] GatewayError),
     #[error("intent not found: {0}")]
     IntentNotFound(IntentId),
+    #[error("workspace: {0}")]
+    Workspace(#[from] else_workspace::WorkspaceError),
+    #[error("not found: {0}")]
+    NotFound(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -32,16 +36,21 @@ pub type Result<T> = std::result::Result<T, ApiError>;
 pub struct Runtime {
     ledger: Ledger,
     workspace: PathBuf,
+    store: else_workspace::Store,
+    branches: PathBuf,
 }
 
 impl Runtime {
-    /// 打开本地 Runtime：`dir/else.db`（事件库）+ `dir/workspace/`（工作区）。
+    /// 打开本地 Runtime：`dir/else.db`（事件库）+ `dir/workspace/`（工作区）
+    /// + `dir/store/`（CAS 工件存储）+ `dir/branches/`（分支工作区）。
     pub fn open(dir: &Path) -> Result<Self> {
         let workspace = dir.join("workspace");
         std::fs::create_dir_all(&workspace)?;
         Ok(Self {
             ledger: Ledger::open(dir.join("else.db"))?,
             workspace,
+            store: else_workspace::Store::new(dir.join("store"))?,
+            branches: dir.join("branches"),
         })
     }
 
@@ -111,7 +120,14 @@ impl Runtime {
 
         let tools = ToolGateway::new(&self.ledger, self.workspace.clone());
         let model = ModelGateway::new(&self.ledger, self.provider()?);
-        let result = else_harness::run(&ctx, &self.ledger, &tools, &model, &self.model_name());
+        let result = else_harness::run(
+            &ctx,
+            &self.ledger,
+            &tools,
+            &model,
+            &self.model_name(),
+            else_harness::RunOptions::default(),
+        );
 
         let (success, error) = match result {
             Ok(()) => (true, None),
@@ -197,6 +213,258 @@ impl Runtime {
         ))?;
         // 自动续跑：从事件恢复进度；approve 原路径继续，reject 自动重规划
         self.run(intent_id)
+    }
+
+    /// 创建检查点：事件水位 + 工作区快照 + 在途副作用结论，三者缺一不可。
+    pub fn checkpoint(&self, intent_id: &IntentId) -> Result<else_protocol::artifact::Checkpoint> {
+        let projection = self.projection(intent_id)?;
+        let spec = projection
+            .spec
+            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+        let artifact = self.store.snapshot(&self.workspace, &RunId::new())?;
+        let cursor = self.ledger.cursor()?;
+        let ctx = ExecContext {
+            spec: spec.clone(),
+            scope_id: ScopeId::new(),
+            run_id: RunId::new(),
+            generation: 1,
+        };
+        ctx.record(
+            &self.ledger,
+            Actor::System,
+            EventPayload::ArtifactProduced {
+                artifact: artifact.clone(),
+            },
+        )?;
+        let checkpoint = else_protocol::artifact::Checkpoint {
+            id: else_protocol::ids::CheckpointId::new(),
+            scope_id: ctx.scope_id.clone(),
+            generation: 1,
+            intent_revision: spec.revision,
+            event_cursor: cursor,
+            artifact_root: Some(artifact.id.clone()),
+            inflight: self.inflight(intent_id)?,
+            created_at: chrono::Utc::now(),
+        };
+        ctx.record(
+            &self.ledger,
+            Actor::System,
+            EventPayload::CheckpointCreated {
+                checkpoint: checkpoint.clone(),
+            },
+        )?;
+        Ok(checkpoint)
+    }
+
+    /// 在途副作用：已调用但尚未完成的工具调用。
+    fn inflight(
+        &self,
+        intent_id: &IntentId,
+    ) -> Result<Vec<else_protocol::artifact::InFlightEffect>> {
+        let events = self.ledger.read_intent(intent_id)?;
+        let mut called = std::collections::BTreeMap::new();
+        let mut done = std::collections::BTreeSet::new();
+        for event in events {
+            match event.envelope.payload {
+                EventPayload::ToolCalled { call } => {
+                    called.insert(call.id.clone(), call);
+                }
+                EventPayload::ToolCompleted { call_id, .. } => {
+                    done.insert(call_id);
+                }
+                _ => {}
+            }
+        }
+        Ok(called
+            .into_values()
+            .filter(|call| !done.contains(&call.id))
+            .map(|call| else_protocol::artifact::InFlightEffect {
+                call_id: call.id,
+                conclusion: else_protocol::effect::EffectConclusion::Unknown,
+                note: format!("{} 尚未有结论", call.tool),
+            })
+            .collect())
+    }
+
+    /// 从检查点派生分支并重跑（Fork → Rerun）：
+    /// 恢复快照到独立分支工作区，Generation 递增与主线隔离；
+    /// `alternative` 强制走不依赖 shell 的替代路径。返回 (分支 Scope, Generation)。
+    pub fn rerun(
+        &self,
+        intent_id: &IntentId,
+        checkpoint_id: &else_protocol::ids::CheckpointId,
+        alternative: bool,
+    ) -> Result<(ScopeId, u64)> {
+        let events = self.ledger.read_intent(intent_id)?;
+        let checkpoint = events
+            .iter()
+            .rev()
+            .find_map(|e| match &e.envelope.payload {
+                EventPayload::CheckpointCreated { checkpoint }
+                    if &checkpoint.id == checkpoint_id =>
+                {
+                    Some(checkpoint.clone())
+                }
+                _ => None,
+            })
+            .ok_or_else(|| ApiError::NotFound(format!("checkpoint {checkpoint_id}")))?;
+        let artifact_root = checkpoint
+            .artifact_root
+            .clone()
+            .ok_or_else(|| ApiError::NotFound("checkpoint artifact root".into()))?;
+        let manifest = events
+            .iter()
+            .rev()
+            .find_map(|e| match &e.envelope.payload {
+                EventPayload::ArtifactProduced { artifact } if artifact.id == artifact_root => {
+                    artifact.manifest.clone()
+                }
+                _ => None,
+            })
+            .ok_or_else(|| ApiError::NotFound("snapshot manifest".into()))?;
+        let spec = events.iter().rev().find_map(|e| match &e.envelope.payload {
+            EventPayload::IntentCreated { spec } | EventPayload::IntentRevised { spec, .. } => {
+                Some(spec.clone())
+            }
+            _ => None,
+        });
+        let spec = spec.ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+        let generation = events
+            .iter()
+            .map(|e| e.envelope.generation)
+            .max()
+            .unwrap_or(1)
+            + 1;
+        let scope_id = ScopeId::new();
+        let branch_ws = self.branches.join(scope_id.to_string());
+        self.store.restore(&manifest, &branch_ws)?;
+
+        let ctx = ExecContext {
+            spec,
+            scope_id: scope_id.clone(),
+            run_id: RunId::new(),
+            generation,
+        };
+        ctx.record(
+            &self.ledger,
+            Actor::System,
+            EventPayload::ScopeSpawned {
+                child: scope_id.clone(),
+            },
+        )?;
+        ctx.record(
+            &self.ledger,
+            Actor::System,
+            EventPayload::RunStarted {
+                run_id: ctx.run_id.clone(),
+                harness: else_harness::SCRIPTED.into(),
+            },
+        )?;
+        let tools = ToolGateway::new(&self.ledger, branch_ws);
+        let model = ModelGateway::new(&self.ledger, self.provider()?);
+        let result = else_harness::run(
+            &ctx,
+            &self.ledger,
+            &tools,
+            &model,
+            &self.model_name(),
+            else_harness::RunOptions {
+                cursor: Some(checkpoint.event_cursor),
+                force_replan: true,
+                alternative,
+            },
+        );
+        let (success, error) = match result {
+            Ok(()) => (true, None),
+            Err(GatewayError::NeedsApproval(_)) => (true, None),
+            Err(e) => (false, Some(e)),
+        };
+        ctx.record(
+            &self.ledger,
+            Actor::System,
+            EventPayload::RunFinished {
+                run_id: ctx.run_id.clone(),
+                success,
+            },
+        )?;
+        if let Some(e) = error {
+            return Err(e.into());
+        }
+        Ok((scope_id, generation))
+    }
+
+    /// 三维度 Compare（按 Generation）：Outcome Evidence、模型与副作用账、工件差异。
+    pub fn compare(&self, intent_id: &IntentId) -> Result<String> {
+        let events = self.ledger.read_intent(intent_id)?;
+        let mut tool_names = std::collections::HashMap::new();
+        for event in &events {
+            if let EventPayload::ToolCalled { call } = &event.envelope.payload {
+                tool_names.insert(call.id.clone(), call.tool.clone());
+            }
+        }
+        let mut by_generation: std::collections::BTreeMap<u64, Vec<&StoredEvent>> =
+            Default::default();
+        for event in &events {
+            by_generation
+                .entry(event.envelope.generation)
+                .or_default()
+                .push(event);
+        }
+        let mut out = String::new();
+        let mut plan_hashes = Vec::new();
+        for (generation, events) in by_generation {
+            let mut input = 0;
+            let mut output = 0;
+            let mut cost = 0;
+            let mut verified = false;
+            let mut tools = Vec::new();
+            let mut plan_path: Option<String> = None;
+            for event in events {
+                match &event.envelope.payload {
+                    EventPayload::ModelCompleted { usage, .. } => {
+                        input += usage.input_tokens;
+                        output += usage.output_tokens;
+                        cost += usage.cost_usd_micros;
+                    }
+                    EventPayload::OutcomeVerified { .. } => verified = true,
+                    EventPayload::ToolCompleted { call_id, outcome } => {
+                        let name = tool_names
+                            .get(call_id)
+                            .cloned()
+                            .unwrap_or_else(|| "?".into());
+                        tools.push(format!("{name}({:?})", outcome.effect));
+                    }
+                    EventPayload::ArtifactProduced { artifact }
+                        if artifact.locator.ends_with("plan.md") =>
+                    {
+                        plan_path = Some(artifact.locator.clone());
+                    }
+                    _ => {}
+                }
+            }
+            out.push_str(&format!(
+                "generation {generation}:\n  outcome_verified: {verified}\n  model: input={input} output={output} cost_usd_micros={cost}\n  tools: {}\n",
+                tools.join(", ")
+            ));
+            if let Some(path) = plan_path {
+                match else_workspace::Store::hash_file(std::path::Path::new(&path)) {
+                    Ok(hash) => {
+                        plan_hashes.push((generation, hash.clone()));
+                        out.push_str(&format!("  plan.md hash: {}\n", &hash[..16]));
+                    }
+                    Err(_) => out.push_str("  plan.md: <missing>\n"),
+                }
+            }
+        }
+        if plan_hashes.len() >= 2 {
+            let same = plan_hashes.windows(2).all(|w| w[0].1 == w[1].1);
+            out.push_str(if same {
+                "compare: 各分支 plan.md 内容一致\n"
+            } else {
+                "compare: 各分支 plan.md 内容不同（产物可并排查看）\n"
+            });
+        }
+        Ok(out)
     }
 
     pub fn events(&self, intent_id: &IntentId) -> Result<Vec<StoredEvent>> {

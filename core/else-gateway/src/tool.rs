@@ -114,6 +114,10 @@ impl<'a> ToolGateway<'a> {
         let events = self.ledger.read_intent(&ctx.spec.id)?;
         let mut request_keys = std::collections::HashMap::new();
         for event in events {
+            // 授权按 Generation 隔离：旧世代的批准不泄漏到分支
+            if event.envelope.generation != ctx.generation {
+                continue;
+            }
             match event.envelope.payload {
                 EventPayload::AttentionRequested { request } => {
                     if let Some(call_key) = request.related_call_key {
@@ -137,12 +141,16 @@ impl<'a> ToolGateway<'a> {
         Ok(false)
     }
 
-    /// 幂等查找：同一 Intent 内相同幂等键的已完成调用。
+    /// 幂等查找：同一 Intent、同一 Generation 内相同幂等键的已完成调用。
     fn find_completed(&self, ctx: &ExecContext, key: &str) -> Result<Option<ToolOutcome>> {
         let events = self.ledger.read_intent(&ctx.spec.id)?;
         let mut call_keys = std::collections::HashMap::new();
         let mut completed = std::collections::HashMap::new();
         for event in events {
+            // 分支隔离：其他 Generation 的完成结果不命中本分支的幂等
+            if event.envelope.generation != ctx.generation {
+                continue;
+            }
             match event.envelope.payload {
                 EventPayload::ToolCalled { call } => {
                     call_keys.insert(call.id, call.idempotency_key);

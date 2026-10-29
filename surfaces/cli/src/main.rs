@@ -36,6 +36,17 @@ enum Command {
     },
     /// 查看事件流（调试视图）
     Log { intent_id: String },
+    /// 创建检查点（事件水位 + 工作区快照 + 在途副作用结论）
+    Checkpoint { intent_id: String },
+    /// 从检查点派生分支并重跑（--alternative 走替代路径）
+    Rerun {
+        intent_id: String,
+        checkpoint_id: String,
+        #[arg(long)]
+        alternative: bool,
+    },
+    /// 按 Generation 比较各执行分支（Outcome/副作用/产物）
+    Compare { intent_id: String },
 }
 
 fn main() {
@@ -94,6 +105,31 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                         .unwrap_or_else(|_| "<codec error>".into())
                 );
             }
+        }
+        Command::Checkpoint { intent_id } => {
+            let checkpoint = runtime.checkpoint(&IntentId::from(intent_id))?;
+            println!("checkpoint: {}", checkpoint.id);
+            println!("event_cursor: {}", checkpoint.event_cursor);
+            println!("inflight_effects: {}", checkpoint.inflight.len());
+        }
+        Command::Rerun {
+            intent_id,
+            checkpoint_id,
+            alternative,
+        } => {
+            let intent_id = IntentId::from(intent_id);
+            let (scope_id, generation) = runtime.rerun(
+                &intent_id,
+                &else_protocol::ids::CheckpointId::from(checkpoint_id),
+                alternative,
+            )?;
+            println!("branch scope: {scope_id}");
+            println!("generation: {generation}");
+            let projection = runtime.projection(&intent_id)?;
+            print_projection(&projection);
+        }
+        Command::Compare { intent_id } => {
+            print!("{}", runtime.compare(&IntentId::from(intent_id))?);
         }
     }
     Ok(())

@@ -9,6 +9,8 @@ else-protocol = { path = "../core/else-protocol" }
 else-ledger = { path = "../core/else-ledger" }
 else-gateway = { path = "../core/else-gateway" }
 else-harness = { path = "../core/else-harness" }
+else-workspace = { path = "../core/else-workspace" }
+chrono.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

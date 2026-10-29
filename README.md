@@ -28,7 +28,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**M0 in progress — W3 done.** The vertical loop is closed: an abstract intent executes, stops at a human decision when authority is exceeded, then resumes automatically — approve continues the original path (one-shot approval scoped to the call's idempotency key), reject triggers automatic re-planning onto a read-only alternative path. Verification runs against the original DoneWhen, and terminal states are idempotent. Model providers are delegated to genai. 13 tests passing, clippy clean. Next: Checkpoint / Fork / Rerun / Compare (W4).
+**M0 complete — W1–W4 done.** The CLI now closes the full loop: intent execution, human decisions with automatic resume or re-planning, verification against the original DoneWhen, and Checkpoint / Fork / Rerun / Compare. Checkpoints capture the event cursor, a CAS workspace snapshot, and in-flight effects; reruns restore into an isolated branch with a new generation. Compare reports verification, model usage, tool-effect outcomes, and artifact hashes across branches. Model providers are delegated to genai. 16 tests passing, clippy clean. Next: M1 execution semantics and resource governance.
 
 M0 delivers one vertical slice through the CLI: an abstract intent → execution → a decision only you can make → automatic re-planning → verification against the original outcome — plus Checkpoint / Fork / Rerun / Compare. No dashboards, no cloud, no multi-user.
 

@@ -68,6 +68,17 @@ impl Progress {
     }
 }
 
+/// 运行选项：分支重跑时的可见水位与路径选择。
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RunOptions {
+    /// 检查点事件水位：只有水位之前或当前 Generation 的事件对本次运行可见。
+    pub cursor: Option<u64>,
+    /// 分支重跑：无视既有计划，重新规划（Rerun 不是续跑）。
+    pub force_replan: bool,
+    /// 强制走不依赖 shell 的替代路径（换路径重跑）。
+    pub alternative: bool,
+}
+
 /// 执行一次 Run。等待本人决策（NeedsApproval）不是错误：
 /// 它向上传播，由 Runtime 结束本次 Run 并保留现场，Decision 后续跑。
 pub fn run(
@@ -76,13 +87,25 @@ pub fn run(
     tools: &ToolGateway,
     model: &ModelGateway,
     model_name: &str,
+    options: RunOptions,
 ) -> Result<()> {
-    let progress = Progress::from_events(&ledger.read_intent(&ctx.spec.id)?);
+    // 事件可见性：检查点水位之前 + 当前 Generation（分支隔离）
+    let visible_events = |ledger: &Ledger| -> Result<Vec<StoredEvent>> {
+        Ok(ledger
+            .read_intent(&ctx.spec.id)?
+            .into_iter()
+            .filter(|e| {
+                options.cursor.is_none_or(|cursor| e.seq <= cursor)
+                    || e.envelope.generation == ctx.generation
+            })
+            .collect())
+    };
+    let progress = Progress::from_events(&visible_events(ledger)?);
 
     // 1. 规划 / 重规划：模型调用经 Model Gateway 入账
-    if progress.needs_plan() {
-        let replan = progress.needs_replan();
-        let prompt = if replan {
+    if options.force_replan || progress.needs_plan() {
+        let replan = !options.force_replan && progress.needs_replan();
+        let prompt = if options.alternative || replan {
             format!(
                 "此前执行路径被本人否决。给出不依赖 shell 的替代方案：以只读方式校验工作区产物。目标：{}",
                 ctx.spec.outcome
@@ -143,10 +166,10 @@ pub fn run(
     }
 
     // 规划/重规划已落事件，重算进度以选择正确的校验路径
-    let progress = Progress::from_events(&ledger.read_intent(&ctx.spec.id)?);
+    let progress = Progress::from_events(&visible_events(ledger)?);
 
     // 2. 校验：替代路径用只读校验；原路径用 shell（越权则提交本人授权）
-    let verification = if progress.on_alternative_path() {
+    let verification = if options.alternative || progress.on_alternative_path() {
         tools.execute(
             ctx,
             ToolCall {
