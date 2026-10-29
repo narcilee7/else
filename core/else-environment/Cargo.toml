@@ -1,0 +1,11 @@
+[package]
+name = "else-environment"
+version = "0.1.0"
+edition.workspace = true
+description = "else execution environments: deny-by-default local sandbox profiles and backends"
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

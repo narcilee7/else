@@ -6,6 +6,7 @@ members = [
     "core/else-gateway",
     "core/else-harness",
     "core/else-workspace",
+    "core/else-environment",
     "api",
     "surfaces/cli",
 ]

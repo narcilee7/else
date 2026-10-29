@@ -28,7 +28,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**M1 in progress — W3 done; M0 complete.** Resource governance now shares the event ledger with execution: every run passes admission and receives a scoped lease, tool/model gateways enforce budget and lease before acting, and actual model usage is rechecked before accounting. Tool calls, model tokens/spend, and sandbox reservations replay into one root budget across all descendants. Abort revokes leases left by crashed runs. The CLI exposes `resources` and rejects over-budget runs before execution. 33 tests passing, clippy clean. Next: local Seatbelt / bubblewrap sandboxing.
+**M1 complete — W4 done; M0 complete.** Local shell execution now requires a real OS sandbox: macOS Seatbelt and Linux bubblewrap backends share a deny-by-default profile, with only the workspace writable, no direct network, scrubbed environment variables, and no unsandboxed fallback. File tools also reject symlink escapes. Resource governance, Abort/Fencing, Subagent delegation, and replayable accounting remain integrated. 40 tests passing on macOS with real Seatbelt file/network denial and CLI verification; the bubblewrap policy has unit coverage and still needs Linux CI runtime verification. Next: M2 Intent Resolution and Context Compiler.
 
 M0 delivers one vertical slice through the CLI: an abstract intent → execution → a decision only you can make → automatic re-planning → verification against the original outcome — plus Checkpoint / Fork / Rerun / Compare. No dashboards, no cloud, no multi-user.
 

@@ -153,3 +153,90 @@ fn path_escaping_workspace_fails_closed() {
         .unwrap();
     assert_eq!(outcome.status, ToolStatus::Failed);
 }
+
+#[test]
+fn shell_is_executed_by_native_sandbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    if else_environment::Sandbox::new(else_environment::SandboxProfile::new(&workspace)).is_err() {
+        return;
+    }
+    let ledger = Ledger::open_in_memory().unwrap();
+    let gateway = ToolGateway::new(&ledger, workspace.clone());
+    let ctx = ctx(&IntentId::new());
+    grant_lease(&ledger, &ctx);
+
+    let outcome = gateway
+        .execute(
+            &ctx,
+            call(
+                "shell",
+                SideEffectKind::Reversible,
+                json!({"command": "set -e; printf isolated > shell.txt; if cat /etc/passwd >/dev/null 2>&1; then exit 41; fi; echo gateway-sandbox"}),
+                "sandboxed-shell",
+            ),
+        )
+        .unwrap();
+    assert_eq!(outcome.status, ToolStatus::Succeeded);
+    assert_eq!(outcome.output["code"], 0);
+    assert!(outcome.output["sandbox"].as_str().is_some());
+    assert!(outcome.output["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("gateway-sandbox"));
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("shell.txt")).unwrap(),
+        "isolated"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_escaping_workspace_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let outside = dir.path().join("outside.txt");
+    std::fs::write(&outside, "unchanged").unwrap();
+    std::os::unix::fs::symlink(&outside, workspace.join("link.txt")).unwrap();
+    std::os::unix::fs::symlink(
+        dir.path().join("dangling-outside.txt"),
+        workspace.join("dangling.txt"),
+    )
+    .unwrap();
+    let ledger = Ledger::open_in_memory().unwrap();
+    let gateway = ToolGateway::new(&ledger, workspace);
+    let ctx = ctx(&IntentId::new());
+    grant_lease(&ledger, &ctx);
+
+    for (index, (tool, input)) in [
+        ("fs.read", json!({"path": "link.txt"})),
+        (
+            "fs.write",
+            json!({"path": "link.txt", "content": "overwritten"}),
+        ),
+        (
+            "fs.write",
+            json!({"path": "dangling.txt", "content": "created"}),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let outcome = gateway
+            .execute(
+                &ctx,
+                call(
+                    tool,
+                    SideEffectKind::Reversible,
+                    input,
+                    &format!("symlink-{index}"),
+                ),
+            )
+            .unwrap();
+        assert_eq!(outcome.status, ToolStatus::Failed);
+    }
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "unchanged");
+    assert!(!dir.path().join("dangling-outside.txt").exists());
+}

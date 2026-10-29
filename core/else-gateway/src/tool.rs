@@ -232,34 +232,71 @@ impl<'a> ToolGateway<'a> {
 
     fn shell(&self, input: &Value) -> std::result::Result<(Value, EffectConclusion), Value> {
         let command = input["command"].as_str().unwrap_or_default();
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .current_dir(&self.workspace)
-            .output()
+        let sandbox =
+            else_environment::Sandbox::new(else_environment::SandboxProfile::new(&self.workspace))
+                .map_err(|e| json!({ "error": e.to_string() }))?;
+        let backend = sandbox.backend().name();
+        let output = sandbox
+            .run_shell(command)
             .map_err(|e| json!({ "error": e.to_string() }))?;
         Ok((
             json!({
                 "code": output.status.code(),
                 "stdout": String::from_utf8_lossy(&output.stdout),
                 "stderr": String::from_utf8_lossy(&output.stderr),
+                "sandbox": backend,
             }),
             EffectConclusion::Applied,
         ))
     }
 
-    /// 路径必须留在工作区内：拒绝绝对路径与 `..`。
+    /// 路径必须留在工作区内：拒绝绝对路径、`..` 与符号链接逃逸。
+    /// 对尚不存在的写目标，从最近的现存祖先解析并重新拼接。
     fn resolve(&self, input: &Value) -> std::result::Result<PathBuf, Value> {
         let raw = input["path"].as_str().unwrap_or_default();
         let path = Path::new(raw);
-        let invalid = path.is_absolute()
-            || path
-                .components()
-                .any(|c| matches!(c, Component::ParentDir | Component::RootDir));
+        let invalid = raw.is_empty()
+            || path.is_absolute()
+            || path.components().any(|c| {
+                matches!(
+                    c,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            });
         if invalid {
             return Err(json!({ "error": format!("path escapes workspace: {raw}") }));
         }
-        Ok(self.workspace.join(path))
+        let workspace = self
+            .workspace
+            .canonicalize()
+            .map_err(|e| json!({ "error": format!("resolve workspace: {e}") }))?;
+        let candidate = workspace.join(path);
+        let mut existing = candidate.as_path();
+        loop {
+            match std::fs::symlink_metadata(existing) {
+                Ok(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    existing = existing.parent().ok_or_else(
+                        || json!({ "error": format!("path has no existing ancestor: {raw}") }),
+                    )?;
+                }
+                Err(error) => return Err(json!({ "error": error.to_string() })),
+            }
+        }
+        let canonical = existing
+            .canonicalize()
+            .map_err(|e| json!({ "error": format!("resolve {raw}: {e}") }))?;
+        if !canonical.starts_with(&workspace) {
+            return Err(json!({ "error": format!("path escapes workspace: {raw}") }));
+        }
+        let suffix = candidate
+            .strip_prefix(existing)
+            .map_err(|e| json!({ "error": e.to_string() }))?;
+        if suffix.as_os_str().is_empty() {
+            Ok(canonical)
+        } else {
+            Ok(canonical.join(suffix))
+        }
     }
 }
 

@@ -536,10 +536,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "else-environment"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "else-gateway"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "else-environment",
  "else-ledger",
  "else-protocol",
  "genai",
