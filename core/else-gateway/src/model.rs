@@ -1,13 +1,14 @@
 //! Model Gateway：模型是资源，调用必须入账。
 //!
-//! W2 薄版：直连 Provider（OpenAI 兼容端点）或 Mock。
-//! 配额、Lease、降级路由在 M1/M3 接入；Provider 适配层届时可替换为
-//! LiteLLM Proxy / OpenRouter 等现成数据面，策略面保持不变。
+//! 策略面自研（入账、授权、配额），数据面复用：
+//! - 进程内 Provider 适配：genai（rust-genai），不手写协议适配；
+//! - 独立网关（M3）：TensorZero / LiteLLM 等现成数据面。
+//!
+//! 配额、Lease、降级路由在 M1/M3 接入，策略面保持不变。
 
 use else_ledger::Ledger;
 use else_protocol::event::{Actor, EventPayload};
 use else_protocol::resource::ModelUsage;
-use serde_json::{json, Value};
 
 use crate::{ExecContext, GatewayError, Result};
 
@@ -47,32 +48,39 @@ impl ModelProvider for MockProvider {
     }
 }
 
-/// OpenAI 兼容端点（/chat/completions）。成本单价表后置，先记录 Token。
-pub struct OpenAiCompatProvider {
-    pub base_url: String,
-    pub api_key: String,
+/// 多 Provider 适配：复用 genai（rust-genai），不手写协议适配。
+/// 支持 OpenAI/Anthropic/Gemini/Ollama/Moonshot 等 27+ Provider 原生协议；
+/// 密钥走各 Provider 标准环境变量（OPENAI_API_KEY、ANTHROPIC_API_KEY 等）。
+/// M1 引入 tokio 全链路异步后，此处的同步桥接随之移除。
+pub struct GenAiProvider {
+    client: genai::Client,
+    runtime: tokio::runtime::Runtime,
 }
 
-impl ModelProvider for OpenAiCompatProvider {
-    fn complete(&self, request: &ModelRequest) -> std::result::Result<ModelResponse, String> {
-        let body: Value = ureq::post(&format!("{}/chat/completions", self.base_url))
-            .set("Authorization", &format!("Bearer {}", self.api_key))
-            .send_json(json!({
-                "model": request.model,
-                "messages": [{"role": "user", "content": request.prompt}],
-            }))
-            .map_err(|e| e.to_string())?
-            .into_json()
+impl GenAiProvider {
+    pub fn new() -> std::result::Result<Self, String> {
+        let client = genai::Client::new().map_err(|e| e.to_string())?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
             .map_err(|e| e.to_string())?;
-        let text = body["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+        Ok(Self { client, runtime })
+    }
+}
+
+impl ModelProvider for GenAiProvider {
+    fn complete(&self, request: &ModelRequest) -> std::result::Result<ModelResponse, String> {
+        let chat_req =
+            genai::chat::ChatRequest::new(vec![genai::chat::ChatMessage::user(&request.prompt)]);
+        let response = self
+            .runtime
+            .block_on(self.client.exec_chat(&request.model, chat_req, None))
+            .map_err(|e| e.to_string())?;
         Ok(ModelResponse {
-            text,
+            text: response.first_text().unwrap_or_default().to_string(),
             usage: ModelUsage {
-                input_tokens: body["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
-                output_tokens: body["usage"]["completion_tokens"].as_u64().unwrap_or(0),
+                input_tokens: response.usage.prompt_tokens.unwrap_or(0) as u64,
+                output_tokens: response.usage.completion_tokens.unwrap_or(0) as u64,
                 cost_usd_micros: 0,
             },
         })

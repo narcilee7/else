@@ -21,9 +21,10 @@ pub fn run(
     ledger: &Ledger,
     tools: &ToolGateway,
     model: &ModelGateway,
+    model_name: &str,
 ) -> Result<()> {
     // 1. 规划：模型调用经 Model Gateway，Token/费用入账
-    let plan = model.complete(ctx, "planning", "mock-model", &ctx.spec.outcome)?;
+    let plan = model.complete(ctx, "planning", model_name, &ctx.spec.outcome)?;
     ctx.record(
         ledger,
         Actor::Agent,

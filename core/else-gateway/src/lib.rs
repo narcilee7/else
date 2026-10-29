@@ -11,7 +11,7 @@ pub mod model;
 pub mod tool;
 
 pub use model::{
-    MockProvider, ModelGateway, ModelProvider, ModelRequest, ModelResponse, OpenAiCompatProvider,
+    GenAiProvider, MockProvider, ModelGateway, ModelProvider, ModelRequest, ModelResponse,
 };
 pub use tool::ToolGateway;
 

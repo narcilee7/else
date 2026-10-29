@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use else_gateway::{
-    ExecContext, GatewayError, MockProvider, ModelGateway, OpenAiCompatProvider, ToolGateway,
+    ExecContext, GatewayError, GenAiProvider, MockProvider, ModelGateway, ToolGateway,
 };
 use else_ledger::{IntentProjection, Ledger, Projection, StoredEvent};
 use else_protocol::attention::{Decision, DecisionChoice};
@@ -97,8 +97,8 @@ impl Runtime {
         )?;
 
         let tools = ToolGateway::new(&self.ledger, self.workspace.clone());
-        let model = ModelGateway::new(&self.ledger, self.provider());
-        let result = else_harness::run(&ctx, &self.ledger, &tools, &model);
+        let model = ModelGateway::new(&self.ledger, self.provider()?);
+        let result = else_harness::run(&ctx, &self.ledger, &tools, &model, &self.model_name());
 
         let (success, error) = match result {
             Ok(()) => (true, None),
@@ -188,14 +188,19 @@ impl Runtime {
         Ok(self.ledger.read_intent(intent_id)?)
     }
 
-    /// Provider 选择：配置了 OpenAI 兼容端点则直连，否则确定性 Mock。
-    fn provider(&self) -> Box<dyn else_gateway::ModelProvider> {
-        match (
-            std::env::var("ELSE_MODEL_BASE_URL"),
-            std::env::var("ELSE_MODEL_API_KEY"),
-        ) {
-            (Ok(base_url), Ok(api_key)) => Box::new(OpenAiCompatProvider { base_url, api_key }),
-            _ => Box::new(MockProvider),
+    /// 默认模型：环境变量 ELSE_MODEL（genai 模型名，如 `gpt-4o-mini`、
+    /// `claude-sonnet-4-5`、`ollama::llama3.2`、`moonshot::moonshot-v1-8k`）。
+    /// 缺省 `mock-model` 走确定性 Mock，不产生真实外部调用。
+    fn model_name(&self) -> String {
+        std::env::var("ELSE_MODEL").unwrap_or_else(|_| "mock-model".into())
+    }
+
+    /// Provider 选择：数据面复用 genai，密钥走各 Provider 标准环境变量。
+    fn provider(&self) -> Result<Box<dyn else_gateway::ModelProvider>> {
+        if self.model_name() == "mock-model" {
+            return Ok(Box::new(MockProvider));
         }
+        let provider = GenAiProvider::new().map_err(GatewayError::Model)?;
+        Ok(Box::new(provider))
     }
 }
