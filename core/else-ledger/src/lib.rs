@@ -188,6 +188,8 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::PlanReplaced { .. } => "plan_replaced",
         P::RunStarted { .. } => "run_started",
         P::RunFinished { .. } => "run_finished",
+        P::ModelCalled { .. } => "model_called",
+        P::ModelCompleted { .. } => "model_completed",
         P::ToolCalled { .. } => "tool_called",
         P::ToolCompleted { .. } => "tool_completed",
         P::SideEffectConcluded { .. } => "side_effect_concluded",

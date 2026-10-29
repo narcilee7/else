@@ -3,6 +3,10 @@ resolver = "2"
 members = [
     "core/else-protocol",
     "core/else-ledger",
+    "core/else-gateway",
+    "core/else-harness",
+    "api",
+    "surfaces/cli",
 ]
 
 [workspace.package]

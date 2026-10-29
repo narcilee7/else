@@ -1,0 +1,16 @@
+[package]
+name = "else-api"
+version = "0.1.0"
+edition.workspace = true
+description = "else runtime API: one API for all surfaces (CLI/Web/desktop/App/IM)"
+
+[dependencies]
+else-protocol = { path = "../core/else-protocol" }
+else-ledger = { path = "../core/else-ledger" }
+else-gateway = { path = "../core/else-gateway" }
+else-harness = { path = "../core/else-harness" }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true

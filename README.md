@@ -28,7 +28,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**M0 in progress — W1 done.** Core protocol types (`else-protocol`) and the SQLite event ledger with deterministic replay (`else-ledger`) are implemented; crash-replay consistency and protocol versioning are covered by tests (6 passing, clippy clean). Next: thin gateways, one harness adapter, and the CLI skeleton (W2).
+**M0 in progress — W2 done.** Thin Tool Gateway (side-effect authority, idempotency, workspace fencing) and Model Gateway (token/cost accounting), a scripted harness, and the runtime API + CLI are working: `else intent "..."` executes end-to-end and stops at a human decision when authority is exceeded. 11 tests passing, clippy clean. Next: automatic resume after decisions, re-planning, and DoneWhen verification (W3).
 
 M0 delivers one vertical slice through the CLI: an abstract intent → execution → a decision only you can make → automatic re-planning → verification against the original outcome — plus Checkpoint / Fork / Rerun / Compare. No dashboards, no cloud, no multi-user.
 

@@ -43,3 +43,13 @@ pub struct ResourceLease {
     pub generation: u64,
     pub expires_at: DateTime<Utc>,
 }
+
+/// 一次模型调用的资源消耗（Accounting）。
+/// 成本未知时 `cost_usd_micros = 0`，由后续对账补全；
+/// 所有后代消耗同时计入子节点和根 Intent。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd_micros: u64,
+}

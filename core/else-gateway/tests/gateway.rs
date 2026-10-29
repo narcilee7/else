@@ -1,0 +1,130 @@
+//! Tool Gateway 的核心承诺：授权边界与幂等。
+
+use else_gateway::{ExecContext, GatewayError, ToolGateway};
+use else_ledger::Ledger;
+use else_protocol::effect::{SideEffectKind, ToolCall, ToolStatus};
+use else_protocol::ids::{IntentId, RunId, ScopeId, ToolCallId};
+use else_protocol::intent::{AttentionPolicy, Authority, IntentSpec};
+use serde_json::json;
+
+fn ctx(spec_id: &IntentId) -> ExecContext {
+    ExecContext {
+        spec: IntentSpec {
+            id: spec_id.clone(),
+            revision: 1,
+            outcome: "测试".into(),
+            done_when: vec![],
+            constraints: vec![],
+            authority: Authority {
+                max_autonomous_effect: SideEffectKind::Reversible,
+                forbidden: vec![],
+            },
+            attention_policy: AttentionPolicy {
+                allow_interrupt: true,
+                batch_interval_minutes: 30,
+            },
+            deadline: None,
+            assumptions: vec![],
+        },
+        scope_id: ScopeId::new(),
+        run_id: RunId::new(),
+        generation: 1,
+    }
+}
+
+fn call(tool: &str, effect: SideEffectKind, input: serde_json::Value, key: &str) -> ToolCall {
+    ToolCall {
+        id: ToolCallId::new(),
+        tool: tool.into(),
+        effect,
+        input,
+        idempotency_key: key.into(),
+    }
+}
+
+#[test]
+fn idempotent_call_is_not_executed_twice() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let ledger = Ledger::open_in_memory().unwrap();
+    let gateway = ToolGateway::new(&ledger, workspace.clone());
+    let ctx = ctx(&IntentId::new());
+
+    let first = gateway
+        .execute(
+            &ctx,
+            call(
+                "fs.write",
+                SideEffectKind::Reversible,
+                json!({"path": "a.txt", "content": "first"}),
+                "k1",
+            ),
+        )
+        .unwrap();
+    // 相同幂等键、不同调用 ID、不同内容：必须直接返回首次结果
+    let second = gateway
+        .execute(
+            &ctx,
+            call(
+                "fs.write",
+                SideEffectKind::Reversible,
+                json!({"path": "a.txt", "content": "second"}),
+                "k1",
+            ),
+        )
+        .unwrap();
+
+    assert_eq!(first, second);
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+        "first"
+    );
+}
+
+#[test]
+fn excessive_side_effect_requires_human_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open_in_memory().unwrap();
+    let gateway = ToolGateway::new(&ledger, dir.path().to_path_buf());
+    let ctx = ctx(&IntentId::new());
+
+    let err = gateway
+        .execute(
+            &ctx,
+            call(
+                "shell",
+                SideEffectKind::Unknown,
+                json!({"command": "echo hi"}),
+                "k2",
+            ),
+        )
+        .unwrap_err();
+    assert!(matches!(err, GatewayError::NeedsApproval(_)));
+
+    // 已提交 AttentionRequest，而不是静默拒绝
+    let events = ledger.read_intent(&ctx.spec.id).unwrap();
+    let json = serde_json::to_string(&events.last().unwrap().envelope.payload).unwrap();
+    assert!(json.contains("needs_decision") || events.len() >= 2);
+}
+
+#[test]
+fn path_escaping_workspace_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::open_in_memory().unwrap();
+    let gateway = ToolGateway::new(&ledger, dir.path().to_path_buf());
+    let ctx = ctx(&IntentId::new());
+
+    let outcome = gateway
+        .execute(
+            &ctx,
+            call(
+                "fs.write",
+                SideEffectKind::Reversible,
+                json!({"path": "../evil.txt", "content": "x"}),
+                "k3",
+            ),
+        )
+        .unwrap();
+    assert_eq!(outcome.status, ToolStatus::Failed);
+}

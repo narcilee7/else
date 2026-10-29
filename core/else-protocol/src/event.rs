@@ -126,6 +126,16 @@ pub enum EventPayload {
         success: bool,
     },
 
+    /// 模型调用也是资源消耗：Token、费用入账（Accounting）。
+    ModelCalled {
+        model: String,
+        purpose: String,
+    },
+    ModelCompleted {
+        model: String,
+        usage: crate::resource::ModelUsage,
+    },
+
     ToolCalled {
         call: ToolCall,
     },
