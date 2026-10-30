@@ -1,13 +1,26 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub(super) fn command(executable: &Path, workspace: &Path, shell_command: &str) -> Command {
+use crate::NetworkPolicy;
+
+pub(super) fn command(
+    executable: &Path,
+    workspace: &Path,
+    shell_command: &str,
+    network: NetworkPolicy,
+    read_paths: &[PathBuf],
+) -> Command {
     let mut command = Command::new(executable);
     command
         .arg("--die-with-parent")
         .arg("--new-session")
         // 包含独立网络命名空间：没有出口网络，也不依赖宿主机防火墙。
-        .arg("--unshare-all")
+        .arg("--unshare-all");
+    // 显式放通出站（Harness 原生 Provider 流量）：与宿主共享网络命名空间。
+    if network == NetworkPolicy::AllowOutbound {
+        command.arg("--share-net");
+    }
+    command
         .arg("--clearenv")
         .arg("--proc")
         .arg("/proc")
@@ -17,6 +30,13 @@ pub(super) fn command(executable: &Path, workspace: &Path, shell_command: &str) 
     for path in ["/usr", "/bin", "/sbin", "/lib", "/lib64"] {
         if Path::new(path).exists() {
             command.arg("--ro-bind").arg(path).arg(path);
+        }
+    }
+    // 额外只读路径（Harness 二进制与运行时依赖）。
+    for path in read_paths {
+        let path = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if path.exists() {
+            command.arg("--ro-bind").arg(&path).arg(&path);
         }
     }
     command
@@ -53,6 +73,8 @@ mod tests {
             Path::new("/usr/bin/bwrap"),
             Path::new("/tmp/workspace"),
             "echo ok",
+            NetworkPolicy::Deny,
+            &[],
         );
         let args = command
             .get_args()
@@ -60,6 +82,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(args.iter().any(|arg| arg == "--unshare-all"));
         assert!(args.iter().any(|arg| arg == "--die-with-parent"));
+        assert!(!args.iter().any(|arg| arg == "--share-net"));
         assert!(!args.iter().any(|arg| arg == "/etc"));
         let bind = args
             .windows(3)
@@ -67,5 +90,21 @@ mod tests {
             .expect("one writable workspace binding");
         assert_eq!(bind[1], "/tmp/workspace");
         assert_eq!(bind[2], "/tmp/workspace");
+    }
+
+    #[test]
+    fn allow_outbound_shares_host_network() {
+        let command = command(
+            Path::new("/usr/bin/bwrap"),
+            Path::new("/tmp/workspace"),
+            "echo ok",
+            NetworkPolicy::AllowOutbound,
+            &[],
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>();
+        assert!(args.iter().any(|arg| arg == "--share-net"));
     }
 }

@@ -26,10 +26,12 @@ fn ctx(intent_id: &IntentId, generation: u64) -> ExecContext {
             },
             deadline: None,
             assumptions: vec![],
+            project: None,
         },
         scope_id: ScopeId::new(),
         run_id: RunId::new(),
         generation,
+        snapshot_id: None,
     }
 }
 
@@ -66,6 +68,7 @@ fn aborted_generation_rejects_new_work_model_calls_and_late_callbacks() {
         Actor::User,
         EventPayload::ScopeAbortRequested {
             reason: "停止旧执行".into(),
+            scope_only: None,
         },
     )
     .unwrap();
@@ -111,6 +114,7 @@ fn newer_generation_fences_old_execution_without_an_abort_event() {
         EventPayload::RunStarted {
             run_id: new.run_id.clone(),
             harness: "scripted".into(),
+            capabilities: None,
         },
     )
     .unwrap();

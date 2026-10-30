@@ -8,5 +8,6 @@ description = "else harness adapters: hosted executors behind a stable control-p
 else-protocol = { path = "../else-protocol" }
 else-ledger = { path = "../else-ledger" }
 else-gateway = { path = "../else-gateway" }
+else-environment = { path = "../else-environment" }
 uuid.workspace = true
 serde_json.workspace = true

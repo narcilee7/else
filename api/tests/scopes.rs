@@ -19,7 +19,7 @@ fn root_scope(runtime: &Runtime, intent_id: &IntentId) -> ScopeId {
 }
 
 fn setup_tree(runtime: &Runtime) -> (else_protocol::intent::IntentSpec, ScopeId, ScopeId, ScopeId) {
-    let spec = runtime.create_intent("验证委托树").unwrap();
+    let spec = runtime.create_intent("验证委托树", None).unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(runtime, &spec.id);
     let child = runtime
@@ -77,7 +77,7 @@ fn assert_tree_cancelled(
 fn delegation_is_replayable_and_cannot_widen_authority() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("权限收窄").unwrap();
+    let spec = runtime.create_intent("权限收窄", None).unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
 
@@ -111,7 +111,7 @@ fn delegation_is_replayable_and_cannot_widen_authority() {
 fn completing_subagent_does_not_complete_root_intent() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("父子终态隔离").unwrap();
+    let spec = runtime.create_intent("父子终态隔离", None).unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
     let child = runtime

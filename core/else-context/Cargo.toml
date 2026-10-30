@@ -1,0 +1,10 @@
+[package]
+name = "else-context"
+version = "0.1.0"
+edition.workspace = true
+description = "else context plane: intent resolution, tiered memory, context compiler"
+
+[dependencies]
+else-protocol = { path = "../else-protocol" }
+else-ledger = { path = "../else-ledger" }
+chrono.workspace = true

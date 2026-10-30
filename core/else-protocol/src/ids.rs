@@ -56,3 +56,4 @@ define_id!(
     SnapshotId,
     "Context Snapshot：一次执行使用的一致上下文版本。"
 );
+define_id!(MemoryId, "一条记忆记录（候选或已晋升）。");

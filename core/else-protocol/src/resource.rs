@@ -73,12 +73,38 @@ pub struct ResourceLease {
     pub expires_at: DateTime<Utc>,
 }
 
+/// 用量证据等级：真实数据记 Reported，估算记 Estimated，
+/// 无法获得记 Unknown 并采用保守预算，不能记成零成本。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageBasis {
+    /// 来自 Provider / Harness 回报的真实数据；缺省值兼容旧事件（网关实测）。
+    #[default]
+    Reported,
+    Estimated,
+    Unknown,
+}
+
 /// 一次模型调用的资源消耗（Accounting）。
-/// 成本未知时 `cost_usd_micros = 0`，由后续对账补全；
 /// 所有后代消耗同时计入子节点和根 Intent。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd_micros: u64,
+    /// 用量证据等级；Unknown 时按保守预算记账，不视为零成本。
+    #[serde(default)]
+    pub basis: UsageBasis,
+}
+
+impl ModelUsage {
+    /// Harness 无法回报用量时的保守估计：按一次完整响应记账。
+    pub fn unknown() -> Self {
+        Self {
+            input_tokens: 4_096,
+            output_tokens: 4_096,
+            cost_usd_micros: 0,
+            basis: UsageBasis::Unknown,
+        }
+    }
 }

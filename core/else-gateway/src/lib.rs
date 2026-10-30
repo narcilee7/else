@@ -17,7 +17,7 @@ pub use tool::ToolGateway;
 
 use else_ledger::Ledger;
 use else_protocol::event::EventPayload;
-use else_protocol::ids::{AttentionId, RunId, ScopeId};
+use else_protocol::ids::{AttentionId, RunId, ScopeId, SnapshotId};
 use else_protocol::intent::IntentSpec;
 
 /// 一次执行的上下文：授权依据（IntentSpec）与执行定位。
@@ -28,10 +28,12 @@ pub struct ExecContext {
     pub scope_id: ScopeId,
     pub run_id: RunId,
     pub generation: u64,
+    /// 本次执行基于的 Context Snapshot；落账事件自动携带。
+    pub snapshot_id: Option<SnapshotId>,
 }
 
 impl ExecContext {
-    /// 以当前执行上下文落一条事件（自动携带 generation/revision/run_id）。
+    /// 以当前执行上下文落一条事件（自动携带 generation/revision/run_id/snapshot）。
     pub fn record(
         &self,
         ledger: &else_ledger::Ledger,
@@ -47,6 +49,7 @@ impl ExecContext {
             payload,
         );
         envelope.run_id = Some(self.run_id.clone());
+        envelope.snapshot_id = self.snapshot_id.clone();
         ledger.append(&envelope)
     }
 }
@@ -62,10 +65,14 @@ pub fn ensure_not_fenced(ledger: &Ledger, ctx: &ExecContext) -> Result<()> {
         .unwrap_or(ctx.generation);
     let aborted = events.iter().any(|event| {
         event.envelope.generation == ctx.generation
-            && matches!(
-                event.envelope.payload,
-                EventPayload::ScopeAbortRequested { .. }
-            )
+            && match &event.envelope.payload {
+                // Intent 级取消围栏同代所有执行；scope_only 取消（Revision 联动）
+                // 只围栏目标 Scope 自身，同代无关分支继续有效。
+                EventPayload::ScopeAbortRequested { scope_only, .. } => {
+                    scope_only != &Some(true) || event.envelope.scope_id == ctx.scope_id
+                }
+                _ => false,
+            }
     });
     if aborted || ctx.generation < latest_generation {
         return Err(GatewayError::GenerationFenced {

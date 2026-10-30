@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "core/else-protocol",
     "core/else-ledger",
+    "core/else-context",
     "core/else-gateway",
     "core/else-harness",
     "core/else-workspace",

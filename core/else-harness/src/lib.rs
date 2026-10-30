@@ -3,17 +3,77 @@
 //! ScriptedHarness 是确定性的内置执行器，W3 起可重入：
 //! 从事件流恢复进度，Decision 后续跑；本人否决路径时自动重规划
 //! （Plan 易失，Intent 不失败）；最后按原始 DoneWhen 验收。
-//! 真实 Harness 后续经 Spawn 协议接入，控制面契约不变。
+//! 真实 Harness 经 MVP-2 适配契约（adapter 模块）接入，控制面契约不变。
+
+pub mod adapter;
+pub mod real;
 
 use else_gateway::{ensure_not_fenced, ExecContext, ModelGateway, Result, ToolGateway};
 use else_ledger::{Ledger, StoredEvent};
 use else_protocol::artifact::{Artifact, ArtifactKind, OutcomeEvidence};
 use else_protocol::attention::DecisionChoice;
-use else_protocol::effect::{SideEffectKind, ToolCall, ToolOutcome, ToolStatus};
+use else_protocol::effect::{SideEffectKind, ToolCall, ToolStatus};
 use else_protocol::event::{Actor, EventPayload};
 use else_protocol::ids::{ArtifactId, ToolCallId};
 
 pub const SCRIPTED: &str = "scripted";
+
+/// 内置真实 Harness 适配器注册表（MVP-2：Codex 与 Claude Code）。
+pub fn builtin_adapters() -> Vec<Box<dyn adapter::HarnessAdapter>> {
+    vec![Box::new(real::codex()), Box::new(real::claude_code())]
+}
+
+/// 按名解析适配器。
+pub fn find_adapter(name: &str) -> Option<Box<dyn adapter::HarnessAdapter>> {
+    builtin_adapters()
+        .into_iter()
+        .find(|adapter| adapter.name() == name)
+}
+
+/// Harness 可用性：二进制在 PATH 或常见位置可解析。
+/// scripted 是内置执行器，永远可用。
+pub fn adapter_available(name: &str) -> bool {
+    if name == SCRIPTED {
+        return true;
+    }
+    let binary = match name {
+        real::CODEX => "codex",
+        real::CLAUDE_CODE => "claude",
+        _ => return false,
+    };
+    std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).any(|dir| dir.join(binary).is_file()))
+        .unwrap_or(false)
+}
+
+/// 规则式 Harness 选择（MVP-3）：显式指定 > 任务类型 > 可用性 > 内置兜底。
+/// 不学习、不路由，规则可解释、可复现。
+pub fn select_harness(task: &str, hint: Option<&str>) -> &'static str {
+    if let Some(hint) = hint {
+        if hint != "auto" && adapter_available(hint) {
+            return match hint {
+                real::CODEX => real::CODEX,
+                real::CLAUDE_CODE => real::CLAUDE_CODE,
+                _ => SCRIPTED,
+            };
+        }
+    }
+    let coding_signals = [
+        "代码", "code", "coding", "修复", "bug", "实现", "refactor", "重构", "函数", "测试",
+    ];
+    let looks_coding = coding_signals
+        .iter()
+        .any(|signal| task.to_lowercase().contains(signal));
+    if looks_coding {
+        // 编码任务优先真实 Harness；不可用则降级下一个，最后 scripted 兜底。
+        for candidate in [real::CODEX, real::CLAUDE_CODE] {
+            if adapter_available(candidate) {
+                return candidate;
+            }
+        }
+    }
+    SCRIPTED
+}
 
 /// 从事件流恢复的进度：Plan 易失，进度判断只依赖事件，不依赖进程内存。
 struct Progress {
@@ -202,19 +262,23 @@ pub fn run(
     };
 
     // 3. 验收：按原始 DoneWhen，不按最新 Plan
-    verify(ctx, ledger, &verification, options.subagent)
+    verify(
+        ctx,
+        ledger,
+        verification.status == ToolStatus::Succeeded,
+        options.subagent,
+    )
 }
 
 /// Verifier：证据必须支撑 spec 里的每一条 done_when。
 /// Subagent 只结束自身 Scope；根执行才改变 Intent 终态。
-fn verify(
+pub(crate) fn verify(
     ctx: &ExecContext,
     ledger: &Ledger,
-    verification: &ToolOutcome,
+    verified: bool,
     subagent: bool,
 ) -> Result<()> {
     ensure_not_fenced(ledger, ctx)?;
-    let verified = verification.status == ToolStatus::Succeeded;
     if verified {
         let evidence = ctx
             .spec

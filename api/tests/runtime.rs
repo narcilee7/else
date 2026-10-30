@@ -20,7 +20,7 @@ fn payloads(runtime: &Runtime, intent_id: &IntentId) -> Vec<String> {
 fn approve_path_resumes_and_completes() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("今天达到可对外发布").unwrap();
+    let spec = runtime.create_intent("今天达到可对外发布", None).unwrap();
 
     // 默认验收标准与显式假设由系统补全（Intent Resolution 最小实现）
     assert!(!spec.done_when.is_empty());
@@ -53,7 +53,7 @@ fn approve_path_resumes_and_completes() {
 fn reject_path_replans_and_completes_without_asking_again() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("验证自动重规划").unwrap();
+    let spec = runtime.create_intent("验证自动重规划", None).unwrap();
     let projection = runtime.run(&spec.id).unwrap();
     let request_id = projection.open_requests.keys().next().unwrap().clone();
 
@@ -85,7 +85,7 @@ fn reject_path_replans_and_completes_without_asking_again() {
 fn terminal_state_run_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("终态幂等").unwrap();
+    let spec = runtime.create_intent("终态幂等", None).unwrap();
     let projection = runtime.run(&spec.id).unwrap();
     let request_id = projection.open_requests.keys().next().unwrap().clone();
     runtime
@@ -107,7 +107,7 @@ fn reopening_runtime_replays_same_state() {
     let dir = tempfile::tempdir().unwrap();
     let spec_id = {
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_intent("验证恢复").unwrap();
+        let spec = runtime.create_intent("验证恢复", None).unwrap();
         runtime.run(&spec.id).unwrap();
         spec.id
     };

@@ -48,12 +48,14 @@ impl Runtime {
             scope_id: root,
             run_id,
             generation,
+            snapshot_id: None,
         };
         ctx.record(
             &self.ledger,
             Actor::User,
             EventPayload::ScopeAbortRequested {
                 reason: reason.to_string(),
+                scope_only: None,
             },
         )?;
         self.recover_abort(intent_id)?;
@@ -75,7 +77,8 @@ impl Runtime {
     }
 
     /// 补齐传播、逐 Scope 收敛，最后关闭 Decision 与根 Intent。每一步都可重入。
-    fn recover_abort(&self, intent_id: &IntentId) -> Result<()> {
+    /// scope_only 取消（Intent Revision 联动）只收敛子树，不关闭 Intent。
+    pub(crate) fn recover_abort(&self, intent_id: &IntentId) -> Result<()> {
         let events = self.ledger.read_intent(intent_id)?;
         let Some(latest_abort_seq) = abort_events(&events).last().map(|event| event.seq) else {
             return Ok(());
@@ -94,6 +97,10 @@ impl Runtime {
 
         let events = self.ledger.read_intent(intent_id)?;
         let aborts = abort_events(&events);
+        let intent_level: Vec<_> = aborts.iter().filter(|abort| !scope_only(abort)).collect();
+        if intent_level.is_empty() {
+            return Ok(());
+        }
         let all_cancelled = aborts.iter().all(|abort| {
             has_scope_cancelled_after(
                 &events,
@@ -107,7 +114,7 @@ impl Runtime {
         }
 
         let projection = self.projection(intent_id)?;
-        let latest_abort = aborts
+        let latest_abort = *intent_level
             .last()
             .ok_or_else(|| ApiError::NotFound("abort event".into()))?;
         let ctx = ExecContext {
@@ -116,6 +123,7 @@ impl Runtime {
             scope_id: latest_abort.envelope.scope_id.clone(),
             run_id: latest_abort.envelope.run_id.clone().unwrap_or_default(),
             generation: latest_abort.envelope.generation,
+            snapshot_id: None,
         };
         // 旧 Decision 一并失效，用户不能批准已经取消的父子执行。
         for request_id in projection.open_requests.keys() {
@@ -132,7 +140,7 @@ impl Runtime {
                 },
             )?;
         }
-        if !has_intent_cancelled_after(&events, latest_abort_seq) {
+        if !has_intent_cancelled_after(&events, latest_abort.seq) {
             ctx.record(
                 &self.ledger,
                 Actor::System,
@@ -171,12 +179,17 @@ impl Runtime {
                     scope_id: scope_id.clone(),
                     run_id: latest_run_id(&events, &scope_id).unwrap_or_default(),
                     generation: abort.envelope.generation,
+                    snapshot_id: None,
                 };
                 ctx.record(
                     &self.ledger,
                     Actor::System,
                     EventPayload::ScopeAbortRequested {
                         reason: "父 Scope 取消，沿委托树传播".into(),
+                        scope_only: match &abort.envelope.payload {
+                            EventPayload::ScopeAbortRequested { scope_only, .. } => *scope_only,
+                            _ => None,
+                        },
                     },
                 )?;
                 requested.insert(key);
@@ -208,6 +221,7 @@ impl Runtime {
             scope_id: scope_id.clone(),
             run_id: abort.envelope.run_id.clone().unwrap_or_default(),
             generation,
+            snapshot_id: None,
         };
         let has_scope_state = |state: ScopeState| {
             events.iter().filter(after_abort).any(|event| {
@@ -316,6 +330,17 @@ fn abort_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
             )
         })
         .collect()
+}
+
+/// scope_only 取消只收敛 Scope 子树（Intent Revision 联动），不关闭 Intent。
+fn scope_only(event: &StoredEvent) -> bool {
+    matches!(
+        event.envelope.payload,
+        EventPayload::ScopeAbortRequested {
+            scope_only: Some(true),
+            ..
+        }
+    )
 }
 
 fn descendants(projection: &IntentProjection, root: &ScopeId) -> BTreeSet<ScopeId> {

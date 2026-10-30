@@ -8,11 +8,14 @@ mod bubblewrap;
 mod seatbelt;
 
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Command, Output};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkPolicy {
     Deny,
+    /// 放通全部出站（MVP-2：Harness 原生 Provider 流量）。
+    /// 这是显式策略选择，不是默认；按域名收敛后置，使用方必须声明 Opaque。
+    AllowOutbound,
 }
 
 /// 同一 Profile 后续可由本地或云后端解析；M1 不开放自定义例外。
@@ -20,6 +23,9 @@ pub enum NetworkPolicy {
 pub struct SandboxProfile {
     pub workspace: PathBuf,
     pub network: NetworkPolicy,
+    /// 额外只读路径（Harness 可执行文件及其运行时依赖，如 Homebrew）。
+    /// 只读不写；调用方必须显式声明，不存在隐式放行。
+    pub read_paths: Vec<PathBuf>,
 }
 
 impl SandboxProfile {
@@ -27,7 +33,20 @@ impl SandboxProfile {
         Self {
             workspace: workspace.into(),
             network: NetworkPolicy::Deny,
+            read_paths: vec![],
         }
+    }
+
+    /// 显式放通出站网络（Harness 原生模型流量）；默认拒绝不变。
+    pub fn with_network(mut self, network: NetworkPolicy) -> Self {
+        self.network = network;
+        self
+    }
+
+    /// 追加只读路径（Harness 二进制与运行时依赖）。
+    pub fn with_read_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.read_paths = paths;
+        self
     }
 }
 
@@ -136,13 +155,41 @@ impl Sandbox {
 
     /// 在沙箱内执行 shell；进程启动失败与后端缺失都是错误，绝不直接调用宿主机 sh。
     pub fn run_shell(&self, shell_command: &str) -> Result<Output> {
+        Ok(self.base_command(shell_command, &[])?.output()?)
+    }
+
+    /// 在沙箱内启动长生命周期进程（Harness）：stdout/stderr 接管给调用方流式读取。
+    /// `env` 是按任务显式注入的凭据白名单；沙箱默认清空环境，不继承宿主变量。
+    /// 取消语义为 kill：进程死亡即沙箱销毁，没有需要单独回收的环境状态。
+    pub fn spawn_shell(
+        &self,
+        shell_command: &str,
+        env: &[(String, String)],
+    ) -> Result<std::process::Child> {
+        let mut command = self.base_command(shell_command, env)?;
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        Ok(command.spawn()?)
+    }
+
+    fn base_command(&self, shell_command: &str, env: &[(String, String)]) -> Result<Command> {
         let mut command = match self.backend {
-            Backend::Seatbelt => {
-                seatbelt::command(&self.executable, &self.profile.workspace, shell_command)?
-            }
-            Backend::Bubblewrap => {
-                bubblewrap::command(&self.executable, &self.profile.workspace, shell_command)
-            }
+            Backend::Seatbelt => seatbelt::command(
+                &self.executable,
+                &self.profile.workspace,
+                shell_command,
+                self.profile.network,
+                &self.profile.read_paths,
+            )?,
+            Backend::Bubblewrap => bubblewrap::command(
+                &self.executable,
+                &self.profile.workspace,
+                shell_command,
+                self.profile.network,
+                &self.profile.read_paths,
+            ),
         };
         command
             .current_dir(&self.profile.workspace)
@@ -151,7 +198,10 @@ impl Sandbox {
             .env("TMPDIR", &self.profile.workspace)
             .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
             .env("LC_ALL", "C");
-        Ok(command.output()?)
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        Ok(command)
     }
 }
 

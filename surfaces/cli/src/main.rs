@@ -21,9 +21,21 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// 提交一个抽象 Intent 并启动执行
-    Intent { outcome: String },
+    Intent {
+        outcome: String,
+        /// 项目作用域：历史结论与纠正按项目召回，不泛化到全局
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// 对已有 Intent 再启动一次执行
-    Run { intent_id: String },
+    Run {
+        intent_id: String,
+        /// 执行器：scripted 或已注册的真实 Harness
+        #[arg(long, default_value = "scripted")]
+        harness: String,
+    },
+    /// 列出可用的 Harness 适配器及其能力声明
+    Harnesses,
     /// 取消执行并收敛在途副作用（可安全重复调用）
     Abort {
         intent_id: String,
@@ -41,8 +53,14 @@ enum Command {
         #[arg(long, default_value = "read_only", value_parser = ["read_only", "reversible", "compensatable", "irreversible", "unknown"])]
         max_effect: String,
     },
-    /// 启动或续跑指定 Scope
-    RunScope { intent_id: String, scope_id: String },
+    /// 启动或续跑指定 Scope；--harness auto 按规则选择执行器（MVP-3 Dispatch）
+    RunScope {
+        intent_id: String,
+        scope_id: String,
+        /// 执行器：scripted（默认）/ auto / codex / claude-code
+        #[arg(long, default_value = "scripted")]
+        harness: String,
+    },
     /// 查看等待本人的 Decision
     Decisions { intent_id: String },
     /// 回答一个 Decision（选项 id 或自由文本）
@@ -66,6 +84,56 @@ enum Command {
     },
     /// 按 Generation 比较各执行分支（Outcome/副作用/产物）
     Compare { intent_id: String },
+    /// 修订 Intent 目标（revision +1）；运行中的子分支默认取消，
+    /// 用 --unaffected-scope 声明不受影响的分支
+    Revise {
+        intent_id: String,
+        #[arg(long)]
+        outcome: Option<String>,
+        #[arg(long = "constraint")]
+        constraints: Vec<String>,
+        #[arg(long, default_value = "用户修订目标")]
+        reason: String,
+        #[arg(long = "unaffected-scope")]
+        unaffected_scopes: Vec<String>,
+    },
+    /// 查看与维护分层记忆（list / promote / revoke / correct）
+    Memory {
+        #[command(subcommand)]
+        command: Option<MemoryCommand>,
+        /// list：按项目作用域过滤
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MemoryCommand {
+    /// 列出记忆（默认行为）
+    List,
+    /// 用户确认晋升候选到指定作用域（global / project:P / intent:ID）
+    Promote {
+        candidate_id: String,
+        #[arg(long)]
+        scope: Option<String>,
+    },
+    /// 撤销一条记忆
+    Revoke {
+        memory_id: String,
+        #[arg(long, default_value = "用户撤销")]
+        reason: String,
+    },
+    /// 项目级纠正（UserStated）：只进入指定项目作用域，不泛化到全局
+    Correct {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        subject: String,
+        #[arg(long, default_value = "user_correction")]
+        predicate: String,
+        #[arg(long)]
+        value: String,
+    },
 }
 
 fn main() {
@@ -79,16 +147,50 @@ fn main() {
 fn dispatch(cli: Cli) -> else_api::Result<()> {
     let runtime = Runtime::open(&cli.dir)?;
     match cli.command {
-        Command::Intent { outcome } => {
-            let spec = runtime.create_intent(&outcome)?;
+        Command::Intent { outcome, project } => {
+            let spec = runtime.create_intent(&outcome, project)?;
             let intent_id = spec.id.clone();
             println!("intent: {intent_id}");
             let projection = runtime.run(&intent_id)?;
             print_projection(&projection);
         }
-        Command::Run { intent_id } => {
-            let projection = runtime.run(&IntentId::from(intent_id))?;
+        Command::Run { intent_id, harness } => {
+            let intent_id = IntentId::from(intent_id);
+            let projection = if harness == else_harness::SCRIPTED {
+                runtime.run(&intent_id)?
+            } else {
+                let adapters = else_harness::builtin_adapters();
+                let Some(adapter) = adapters.iter().find(|a| a.name() == harness) else {
+                    let available = adapters
+                        .iter()
+                        .map(|a| a.name())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Err(else_api::ApiError::NotFound(format!(
+                        "harness {harness}（可用：scripted{available}）",
+                        available = if available.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", {available}")
+                        }
+                    )));
+                };
+                runtime.run_adapter(&intent_id, adapter.as_ref())?
+            };
             print_projection(&projection);
+        }
+        Command::Harnesses => {
+            println!("scripted（内置确定性执行器）");
+            for adapter in else_harness::builtin_adapters() {
+                let caps = adapter.capabilities();
+                println!(
+                    "{}（cancel={:?} usage={:?} tool_effects={:?}）",
+                    adapter.name(),
+                    caps.cancel,
+                    caps.usage,
+                    caps.tool_effects
+                );
+            }
         }
         Command::Abort { intent_id, reason } => {
             let projection = runtime.abort(
@@ -136,10 +238,12 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         Command::RunScope {
             intent_id,
             scope_id,
+            harness,
         } => {
-            let projection = runtime.run_scope(
+            let projection = runtime.dispatch_scope(
                 &IntentId::from(intent_id),
                 &else_protocol::ids::ScopeId::from(scope_id),
+                Some(&harness),
             )?;
             print_projection(&projection);
         }
@@ -215,6 +319,106 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         }
         Command::Compare { intent_id } => {
             print!("{}", runtime.compare(&IntentId::from(intent_id))?);
+        }
+        Command::Revise {
+            intent_id,
+            outcome,
+            constraints,
+            reason,
+            unaffected_scopes,
+        } => {
+            let unaffected: Vec<_> = unaffected_scopes
+                .iter()
+                .map(|scope| else_protocol::ids::ScopeId::from(scope.as_str()))
+                .collect();
+            let spec = runtime.revise_intent(
+                &IntentId::from(intent_id),
+                else_api::IntentRevision {
+                    outcome,
+                    add_constraints: constraints,
+                    reason,
+                },
+                &unaffected,
+            )?;
+            println!("revision: {}", spec.revision);
+            println!("outcome: {}", spec.outcome);
+        }
+        Command::Memory { command, project } => {
+            use else_protocol::memory::{MemoryScope, MemoryTier};
+            let parse_scope = |raw: &str| -> Result<MemoryScope, String> {
+                if raw == "global" {
+                    Ok(MemoryScope::Global)
+                } else if let Some(name) = raw.strip_prefix("project:") {
+                    Ok(MemoryScope::Project(name.to_string()))
+                } else if let Some(id) = raw.strip_prefix("intent:") {
+                    Ok(MemoryScope::Intent(IntentId::from(id)))
+                } else {
+                    Err(format!(
+                        "unknown scope {raw} (global / project:P / intent:ID)"
+                    ))
+                }
+            };
+            match command {
+                None | Some(MemoryCommand::List) => {
+                    let memory = runtime.memory_projection()?;
+                    let tiers = [
+                        MemoryTier::Working,
+                        MemoryTier::Episodic,
+                        MemoryTier::Semantic,
+                    ];
+                    let recalled =
+                        memory.recall(project.as_deref(), None, &tiers, chrono::Utc::now());
+                    println!("promoted (scope={:?}):", project.as_deref().unwrap_or("*"));
+                    for record in &recalled {
+                        println!(
+                            "  {} {:?} {:?} {} = {}",
+                            record.id, record.tier, record.scope, record.subject, record.value
+                        );
+                    }
+                    if project.is_none() {
+                        println!("candidates:");
+                        for record in memory.candidates.values() {
+                            println!(
+                                "  {} {:?} {:?} {} = {}",
+                                record.id, record.tier, record.scope, record.subject, record.value
+                            );
+                        }
+                    }
+                }
+                Some(MemoryCommand::Promote {
+                    candidate_id,
+                    scope,
+                }) => {
+                    let scope = scope
+                        .map(|raw| parse_scope(&raw))
+                        .transpose()
+                        .map_err(else_api::ApiError::NotFound)?;
+                    let record = runtime
+                        .promote_memory(&else_protocol::ids::MemoryId::from(candidate_id), scope)?;
+                    println!("promoted: {} -> {:?}", record.id, record.scope);
+                }
+                Some(MemoryCommand::Revoke { memory_id, reason }) => {
+                    runtime.revoke_memory(
+                        &else_protocol::ids::MemoryId::from(memory_id.clone()),
+                        &reason,
+                    )?;
+                    println!("revoked: {memory_id}");
+                }
+                Some(MemoryCommand::Correct {
+                    project,
+                    subject,
+                    predicate,
+                    value,
+                }) => {
+                    let record = runtime.correct_memory(
+                        MemoryScope::Project(project),
+                        &subject,
+                        &predicate,
+                        &value,
+                    )?;
+                    println!("corrected: {} (project scope only)", record.id);
+                }
+            }
         }
     }
     Ok(())

@@ -74,11 +74,15 @@ impl Runtime {
         let spec = scope_spec(&projection, scope_id)
             .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
         let subagent = scope.spec.is_some();
+        // 执行前编译 Planner 快照；本 Run 后续事件都标记该上下文版本。
+        let snapshot =
+            self.compile_snapshot(intent_id, else_protocol::memory::SnapshotAudience::Planner)?;
         let ctx = ExecContext {
             spec,
             scope_id: scope_id.clone(),
             run_id: RunId::new(),
             generation: scope.generation,
+            snapshot_id: Some(snapshot.id),
         };
         let lease = self.admit_run(&ctx)?;
         ctx.record(
@@ -87,6 +91,7 @@ impl Runtime {
             EventPayload::RunStarted {
                 run_id: ctx.run_id.clone(),
                 harness: else_harness::SCRIPTED.into(),
+                capabilities: None,
             },
         )?;
         let tools = ToolGateway::new(&self.ledger, self.workspace.clone());
@@ -122,6 +127,7 @@ impl Runtime {
         if let Some(error) = error {
             return Err(error.into());
         }
+        self.record_episode_if_terminal(intent_id)?;
         self.projection(intent_id)
     }
 

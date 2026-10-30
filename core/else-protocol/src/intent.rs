@@ -70,6 +70,10 @@ pub struct IntentSpec {
     pub attention_policy: AttentionPolicy,
     pub deadline: Option<DateTime<Utc>>,
     pub assumptions: Vec<Assumption>,
+    /// 项目作用域：Episodic/Semantic 记忆按项目召回。
+    /// 缺省 None 只召回 Global。
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// IntentState：由 Runtime 根据执行事件持续更新的投影状态。

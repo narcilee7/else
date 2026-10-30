@@ -15,7 +15,7 @@ fn admission_rejects_over_budget_run_before_lease_or_execution() {
         ..Default::default()
     };
     runtime.set_default_budget(budget);
-    let spec = runtime.create_intent("预算必须失败关闭").unwrap();
+    let spec = runtime.create_intent("预算必须失败关闭", None).unwrap();
 
     let error = runtime.run(&spec.id).unwrap_err();
     assert!(matches!(
@@ -44,7 +44,7 @@ fn admission_rejects_over_budget_run_before_lease_or_execution() {
 fn accounting_and_lease_closure_survive_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("资源账重放").unwrap();
+    let spec = runtime.create_intent("资源账重放", None).unwrap();
     runtime.run(&spec.id).unwrap();
 
     let report = runtime.resources(&spec.id).unwrap();
@@ -81,7 +81,7 @@ fn descendant_consumption_counts_against_root_admission() {
         max_tool_calls: 5,
         ..Default::default()
     });
-    let spec = runtime.create_intent("父子共享根预算").unwrap();
+    let spec = runtime.create_intent("父子共享根预算", None).unwrap();
     runtime.run(&spec.id).unwrap();
     let root = runtime
         .projection(&spec.id)
@@ -120,7 +120,7 @@ fn descendant_consumption_counts_against_root_admission() {
 fn abort_revokes_lease_left_by_crashed_run() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("崩溃租约回收").unwrap();
+    let spec = runtime.create_intent("崩溃租约回收", None).unwrap();
     runtime.crash_after_appends(3); // LeaseGranted → RunStarted → ModelCalled，随后 kill。
     assert!(runtime.run(&spec.id).is_err());
     drop(runtime);

@@ -29,6 +29,7 @@ fn spec(intent_id: &IntentId) -> IntentSpec {
         },
         deadline: None,
         assumptions: vec![],
+        project: None,
     }
 }
 
@@ -82,6 +83,7 @@ fn closed_loop_events(intent_id: &IntentId, scope_id: &ScopeId) -> Vec<EventEnve
             EventPayload::RunStarted {
                 run_id: run_id.clone(),
                 harness: "dummy-harness".into(),
+                capabilities: None,
             },
         ),
         EventEnvelope::new(

@@ -88,6 +88,12 @@ impl EventEnvelope {
             payload,
         }
     }
+
+    /// 标记本事件基于哪个 Context Snapshot。
+    pub fn with_snapshot(mut self, snapshot_id: SnapshotId) -> Self {
+        self.snapshot_id = Some(snapshot_id);
+        self
+    }
 }
 
 /// 事件负载。`type` 为 snake_case 事件名，`data` 为负载。
@@ -120,10 +126,18 @@ pub enum EventPayload {
     RunStarted {
         run_id: RunId,
         harness: String,
+        /// Harness 能力声明（MVP-2 起随启动落账）；缺省兼容旧事件。
+        #[serde(default)]
+        capabilities: Option<crate::harness::HarnessCapabilities>,
     },
     RunFinished {
         run_id: RunId,
         success: bool,
+    },
+
+    /// Harness 桥接的归一化输出（截断后的文本块）。
+    HarnessOutput {
+        text: String,
     },
 
     /// 模型调用也是资源消耗：Token、费用入账（Accounting）。
@@ -182,6 +196,9 @@ pub enum EventPayload {
     },
     ScopeAbortRequested {
         reason: String,
+        /// true = 只取消该 Scope 子树（如 Intent Revision 联动），
+        /// 不关闭整个 Intent；缺省（None）为 Intent 级取消。
+        scope_only: Option<bool>,
     },
     ScopeStateChanged {
         state: ScopeState,
@@ -202,6 +219,23 @@ pub enum EventPayload {
     },
     LeaseRevoked {
         lease_id: LeaseId,
+    },
+
+    /// 记忆候选：尚未进入权威投影，需规则校验或用户确认。
+    MemoryCandidateProposed {
+        record: crate::memory::MemoryRecord,
+    },
+    /// 记忆晋升：确认进入其作用域与分层。
+    MemoryPromoted {
+        memory: crate::memory::MemoryRecord,
+    },
+    MemoryRevoked {
+        memory_id: MemoryId,
+        reason: String,
+    },
+    /// Context Compiler 产出的最小只读快照，记录来源与事件水位。
+    ContextCompiled {
+        snapshot: crate::memory::ContextSnapshot,
     },
 }
 
@@ -228,6 +262,7 @@ mod tests {
             },
             deadline: None,
             assumptions: vec![],
+            project: None,
         }
     }
 

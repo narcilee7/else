@@ -8,7 +8,7 @@
 
 use else_ledger::Ledger;
 use else_protocol::event::{Actor, EventPayload};
-use else_protocol::resource::ModelUsage;
+use else_protocol::resource::{ModelUsage, UsageBasis};
 
 use crate::{ensure_not_fenced, ExecContext, GatewayError, Result};
 
@@ -34,6 +34,7 @@ pub trait ModelProvider: Send + Sync {
             input_tokens: request.prompt.len() as u64 / 2,
             output_tokens: 64,
             cost_usd_micros: 0,
+            basis: UsageBasis::Estimated,
         }
     }
 }
@@ -57,6 +58,7 @@ impl ModelProvider for MockProvider {
             input_tokens: request.prompt.len() as u64 / 2,
             output_tokens: 64,
             cost_usd_micros: 1_500,
+            basis: UsageBasis::Estimated,
         }
     }
 }
@@ -95,6 +97,7 @@ impl ModelProvider for GenAiProvider {
                 input_tokens: response.usage.prompt_tokens.unwrap_or(0) as u64,
                 output_tokens: response.usage.completion_tokens.unwrap_or(0) as u64,
                 cost_usd_micros: 0,
+                basis: UsageBasis::Reported,
             },
         })
     }

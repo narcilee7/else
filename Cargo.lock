@@ -514,6 +514,8 @@ name = "else-api"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "else-context",
+ "else-environment",
  "else-gateway",
  "else-harness",
  "else-ledger",
@@ -528,11 +530,23 @@ dependencies = [
 name = "else-cli"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "else-api",
+ "else-context",
+ "else-harness",
  "else-ledger",
  "else-protocol",
  "serde_json",
+]
+
+[[package]]
+name = "else-context"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "else-ledger",
+ "else-protocol",
 ]
 
 [[package]]
@@ -563,6 +577,7 @@ dependencies = [
 name = "else-harness"
 version = "0.1.0"
 dependencies = [
+ "else-environment",
  "else-gateway",
  "else-ledger",
  "else-protocol",

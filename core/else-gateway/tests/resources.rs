@@ -27,10 +27,12 @@ fn ctx() -> ExecContext {
             },
             deadline: None,
             assumptions: vec![],
+            project: None,
         },
         scope_id: ScopeId::new(),
         run_id: RunId::new(),
         generation: 1,
+        snapshot_id: None,
     }
 }
 
@@ -173,6 +175,7 @@ impl else_gateway::ModelProvider for ActualUsageProvider {
                 input_tokens: 10,
                 output_tokens: 10,
                 cost_usd_micros: 2_000,
+                basis: else_protocol::resource::UsageBasis::Reported,
             },
         })
     }

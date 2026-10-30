@@ -9,7 +9,9 @@ use else_protocol::intent::IntentState;
 fn checkpoint_fork_rerun_compare() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("把发布推进到可对外状态").unwrap();
+    let spec = runtime
+        .create_intent("把发布推进到可对外状态", None)
+        .unwrap();
     let projection = runtime.run(&spec.id).unwrap();
 
     // 检查点：shell 已调用未完成 → 在途副作用结论必须存在

@@ -8,7 +8,7 @@ use else_protocol::event::{EventPayload, ScopeState};
 use else_protocol::intent::IntentState;
 
 fn waiting_intent(runtime: &Runtime) -> else_protocol::intent::IntentSpec {
-    let spec = runtime.create_intent("验证取消语义").unwrap();
+    let spec = runtime.create_intent("验证取消语义", None).unwrap();
     let projection = runtime.run(&spec.id).unwrap();
     assert_eq!(projection.state, Some(IntentState::NeedsDecision));
     spec

@@ -80,6 +80,8 @@ impl Ledger {
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // 单写者多连接下（如 CLI 并行操作同一 Runtime 目录）等待而非立即失败。
+        conn.pragma_update(None, "busy_timeout", 5_000)?;
         conn.execute_batch(SCHEMA)?;
         Ok(Self {
             conn,
@@ -211,6 +213,7 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::PlanReplaced { .. } => "plan_replaced",
         P::RunStarted { .. } => "run_started",
         P::RunFinished { .. } => "run_finished",
+        P::HarnessOutput { .. } => "harness_output",
         P::ModelCalled { .. } => "model_called",
         P::ModelCompleted { .. } => "model_completed",
         P::OutcomeVerified { .. } => "outcome_verified",
@@ -230,5 +233,9 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::ResourceBudgetSet { .. } => "resource_budget_set",
         P::LeaseGranted { .. } => "lease_granted",
         P::LeaseRevoked { .. } => "lease_revoked",
+        P::MemoryCandidateProposed { .. } => "memory_candidate_proposed",
+        P::MemoryPromoted { .. } => "memory_promoted",
+        P::MemoryRevoked { .. } => "memory_revoked",
+        P::ContextCompiled { .. } => "context_compiled",
     }
 }

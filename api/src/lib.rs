@@ -4,8 +4,12 @@
 //! W2 以库接口形式提供（进程内调用）；daemon 与远程 IPC 复用同一接口。
 
 mod abort;
+mod context;
+mod dispatch;
 mod resources;
 mod scope;
+
+pub use context::IntentRevision;
 
 use std::path::{Path, PathBuf};
 
@@ -67,7 +71,8 @@ impl Runtime {
 
     /// 提交一个抽象 Intent（Intent Resolution 最小实现）：
     /// 系统补全默认验收标准与显式假设，补全内容可修正，不是隐蔽事实。
-    pub fn create_intent(&self, outcome: &str) -> Result<IntentSpec> {
+    /// `project` 决定 Episodic/Semantic 记忆的项目召回作用域。
+    pub fn create_intent(&self, outcome: &str, project: Option<String>) -> Result<IntentSpec> {
         let spec = IntentSpec {
             id: IntentId::new(),
             revision: 1,
@@ -89,6 +94,7 @@ impl Runtime {
                 text: "假设：在当前工作区推进该目标（系统补全，可修正）".into(),
                 confirmed: false,
             }],
+            project,
         };
         self.ledger.append(&EventEnvelope::new(
             spec.id.clone(),
@@ -114,24 +120,8 @@ impl Runtime {
     /// 启动一次执行（一个 Harness、一次 Run）。返回最新投影。
     /// 终态幂等：Completed/Failed/Cancelled 不重复执行。
     pub fn run(&self, intent_id: &IntentId) -> Result<IntentProjection> {
-        let projection = self.projection(intent_id)?;
-        if matches!(
-            projection.state,
-            Some(IntentState::Completed | IntentState::Failed | IntentState::Cancelled)
-        ) {
-            return Ok(projection);
-        }
-        let spec = projection
-            .spec
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
-        let scope_id = self
-            .latest_root_scope(intent_id)?
-            .unwrap_or_else(ScopeId::new);
-        let ctx = ExecContext {
-            spec,
-            scope_id,
-            run_id: RunId::new(),
-            generation: 1,
+        let Some((ctx, _snapshot)) = self.prepare_root_run(intent_id)? else {
+            return self.projection(intent_id);
         };
         let lease = self.admit_run(&ctx)?;
         ctx.record(
@@ -140,6 +130,7 @@ impl Runtime {
             EventPayload::RunStarted {
                 run_id: ctx.run_id.clone(),
                 harness: else_harness::SCRIPTED.into(),
+                capabilities: None,
             },
         )?;
 
@@ -153,11 +144,88 @@ impl Runtime {
             &self.model_name(),
             else_harness::RunOptions::default(),
         );
+        // 等待本人决策是正常终态，不是执行失败
+        let result = match result {
+            Err(GatewayError::NeedsApproval(_)) => Ok(()),
+            other => other,
+        };
+        self.finish_run(intent_id, &ctx, &lease, result)
+    }
 
+    /// 用真实 Harness 适配器执行（MVP-2）：能力随 RunStarted 落账，
+    /// Harness 输出桥接为 else 事件；Harness 会话不是权威状态。
+    pub fn run_adapter(
+        &self,
+        intent_id: &IntentId,
+        adapter: &dyn else_harness::adapter::HarnessAdapter,
+    ) -> Result<IntentProjection> {
+        let Some((ctx, snapshot)) = self.prepare_root_run(intent_id)? else {
+            return self.projection(intent_id);
+        };
+        let lease = self.admit_run(&ctx)?;
+        ctx.record(
+            &self.ledger,
+            Actor::System,
+            EventPayload::RunStarted {
+                run_id: ctx.run_id.clone(),
+                harness: adapter.name().into(),
+                capabilities: Some(adapter.capabilities()),
+            },
+        )?;
+        let request = else_harness::adapter::HarnessRequest {
+            ctx: &ctx,
+            ledger: &self.ledger,
+            workspace: &self.workspace,
+            snapshot: &snapshot,
+            subagent: false,
+        };
+        self.finish_run(intent_id, &ctx, &lease, adapter.execute(&request))
+    }
+
+    /// Run 前奏：终态幂等检查、编译 Planner 快照、构造执行上下文。
+    /// 返回 None 表示 Intent 已在终态，本次 Run 不产生任何事件。
+    fn prepare_root_run(
+        &self,
+        intent_id: &IntentId,
+    ) -> Result<Option<(ExecContext, else_protocol::memory::ContextSnapshot)>> {
+        let projection = self.projection(intent_id)?;
+        if matches!(
+            projection.state,
+            Some(IntentState::Completed | IntentState::Failed | IntentState::Cancelled)
+        ) {
+            return Ok(None);
+        }
+        let spec = projection
+            .spec
+            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+        let scope_id = self
+            .latest_root_scope(intent_id)?
+            .unwrap_or_else(ScopeId::new);
+        // 执行前编译 Planner 快照；本 Run 后续事件都标记该上下文版本。
+        let snapshot =
+            self.compile_snapshot(intent_id, else_protocol::memory::SnapshotAudience::Planner)?;
+        Ok(Some((
+            ExecContext {
+                spec,
+                scope_id,
+                run_id: RunId::new(),
+                generation: 1,
+                snapshot_id: Some(snapshot.id.clone()),
+            },
+            snapshot,
+        )))
+    }
+
+    /// Run 收尾：RunFinished、回收 Lease、终态写 Episodic 记忆。
+    fn finish_run(
+        &self,
+        intent_id: &IntentId,
+        ctx: &ExecContext,
+        lease: &else_protocol::resource::ResourceLease,
+        result: else_gateway::Result<()>,
+    ) -> Result<IntentProjection> {
         let (success, error) = match result {
             Ok(()) => (true, None),
-            // 等待本人决策是正常终态，不是执行失败
-            Err(GatewayError::NeedsApproval(_)) => (true, None),
             // 故障注入代表进程已死：不得再写 RunFinished，直接丢弃 Runtime 重开。
             Err(e @ GatewayError::Ledger(else_ledger::LedgerError::CrashInjected)) => {
                 return Err(e.into());
@@ -172,10 +240,11 @@ impl Runtime {
                 success,
             },
         )?;
-        self.revoke_lease(&ctx, &lease)?;
+        self.revoke_lease(ctx, lease)?;
         if let Some(e) = error {
             return Err(e.into());
         }
+        self.record_episode_if_terminal(intent_id)?;
         self.projection(intent_id)
     }
 
@@ -273,6 +342,7 @@ impl Runtime {
             scope_id: ScopeId::new(),
             run_id: RunId::new(),
             generation: 1,
+            snapshot_id: None,
         };
         ctx.record(
             &self.ledger,
@@ -389,6 +459,7 @@ impl Runtime {
             scope_id: scope_id.clone(),
             run_id: RunId::new(),
             generation,
+            snapshot_id: None,
         };
         ctx.record(
             &self.ledger,
@@ -404,6 +475,7 @@ impl Runtime {
             EventPayload::RunStarted {
                 run_id: ctx.run_id.clone(),
                 harness: else_harness::SCRIPTED.into(),
+                capabilities: None,
             },
         )?;
         let tools = ToolGateway::new(&self.ledger, branch_ws);

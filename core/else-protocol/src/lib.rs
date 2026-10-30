@@ -7,8 +7,10 @@ pub mod artifact;
 pub mod attention;
 pub mod effect;
 pub mod event;
+pub mod harness;
 pub mod ids;
 pub mod intent;
+pub mod memory;
 pub mod resource;
 
 /// 协议版本。事件写入时记录，重放时校验兼容性。
