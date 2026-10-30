@@ -6,10 +6,12 @@
 mod abort;
 mod context;
 mod dispatch;
+mod kernel;
 mod resources;
 mod scope;
 
 pub use context::IntentRevision;
+pub use kernel::KernelAction;
 
 use std::path::{Path, PathBuf};
 

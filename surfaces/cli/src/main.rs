@@ -26,6 +26,16 @@ enum Command {
         /// 项目作用域：历史结论与纠正按项目召回，不泛化到全局
         #[arg(long)]
         project: Option<String>,
+        /// 执行器：auto（默认）/ scripted / codex / claude-code
+        #[arg(long, default_value = "auto")]
+        harness: String,
+    },
+    /// 让 Kernel 从持久状态推导并执行下一步
+    Advance {
+        intent_id: String,
+        /// 执行器偏好；auto 仍由 Kernel 按规则选择
+        #[arg(long, default_value = "auto")]
+        harness: String,
     },
     /// 对已有 Intent 再启动一次执行
     Run {
@@ -147,11 +157,19 @@ fn main() {
 fn dispatch(cli: Cli) -> else_api::Result<()> {
     let runtime = Runtime::open(&cli.dir)?;
     match cli.command {
-        Command::Intent { outcome, project } => {
+        Command::Intent {
+            outcome,
+            project,
+            harness,
+        } => {
             let spec = runtime.create_intent(&outcome, project)?;
             let intent_id = spec.id.clone();
             println!("intent: {intent_id}");
-            let projection = runtime.run(&intent_id)?;
+            let projection = runtime.advance(&intent_id, Some(&harness))?;
+            print_projection(&projection);
+        }
+        Command::Advance { intent_id, harness } => {
+            let projection = runtime.advance(&IntentId::from(intent_id), Some(&harness))?;
             print_projection(&projection);
         }
         Command::Run { intent_id, harness } => {
