@@ -20,3 +20,17 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+
+  apple-client:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: surfaces/apple
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Swift version
+        run: swift --version
+      - name: Test client contracts and transport
+        run: swift test
+      - name: Build app bundle
+        run: ./scripts/build-app.sh release
