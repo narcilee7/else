@@ -2,6 +2,7 @@
 
 use else_gateway::GatewayError;
 use else_harness::adapter::HarnessAdapter;
+use else_harness::egress::EgressProxy;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::harness::{HarnessNetworkAccess, ToolEffectVisibility};
 use else_protocol::ids::IntentId;
@@ -87,5 +88,44 @@ impl Runtime {
 
     pub(crate) fn harness_allowed(&self, spec: &IntentSpec, adapter: &dyn HarnessAdapter) -> bool {
         self.ensure_harness_allowed(spec, adapter).is_ok()
+    }
+
+    pub(crate) fn start_egress_proxy(
+        &self,
+        adapter: &dyn HarnessAdapter,
+    ) -> Result<Option<EgressProxy>> {
+        if adapter.network_access() == HarnessNetworkAccess::Deny {
+            return Ok(None);
+        }
+        let allowlist = adapter
+            .egress_allowlist()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        EgressProxy::start(allowlist).map(Some).map_err(|error| {
+            GatewayError::OpaqueHarnessDenied(format!(
+                "failed to start egress proxy for {}: {error}",
+                adapter.name()
+            ))
+            .into()
+        })
+    }
+
+    pub(crate) fn record_egress_decisions(
+        &self,
+        ctx: &else_gateway::ExecContext,
+        proxy: Option<&EgressProxy>,
+    ) -> Result<()> {
+        let Some(proxy) = proxy else {
+            return Ok(());
+        };
+        for decision in proxy.decisions() {
+            ctx.record(
+                &self.ledger,
+                Actor::System,
+                EventPayload::EgressIntercepted { decision },
+            )?;
+        }
+        Ok(())
     }
 }

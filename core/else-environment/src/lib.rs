@@ -13,6 +13,10 @@ use std::process::{Command, Output};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkPolicy {
     Deny,
+    /// 只允许连接 Runtime 的 loopback CONNECT 代理端口。
+    Proxy {
+        port: u16,
+    },
     /// 放通全部出站（MVP-2：Harness 原生 Provider 流量）。
     /// 这是显式策略选择，不是默认；按域名收敛后置，使用方必须声明 Opaque。
     AllowOutbound,
@@ -105,6 +109,8 @@ pub enum SandboxError {
     UnsupportedPlatform(String),
     #[error("invalid sandbox profile: {0}")]
     InvalidProfile(String),
+    #[error("network proxy is not enforceable on backend: {backend}")]
+    ProxyUnsupported { backend: &'static str },
     #[error("sandbox io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -161,6 +167,12 @@ impl Sandbox {
             return Err(SandboxError::InvalidProfile(
                 "Seatbelt workspace path must be valid UTF-8".into(),
             ));
+        }
+        if backend == Backend::Bubblewrap && matches!(profile.network, NetworkPolicy::Proxy { .. })
+        {
+            return Err(SandboxError::ProxyUnsupported {
+                backend: backend.name(),
+            });
         }
         Ok(Self {
             backend,

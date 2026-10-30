@@ -39,6 +39,7 @@ fn failing_harness() -> ProcessHarness<NullParser> {
             interactive_input: false,
         },
         network: else_environment::NetworkPolicy::Deny,
+        egress_allowlist: &[],
         timeout: None,
         prepare: Box::new(|_, _, _| {
             Ok(HarnessPrep {
@@ -64,6 +65,7 @@ fn successful_child_harness() -> ProcessHarness<CompletedParser> {
             interactive_input: false,
         },
         network: else_environment::NetworkPolicy::Deny,
+        egress_allowlist: &[],
         timeout: None,
         prepare: Box::new(|_, _, _| {
             Ok(HarnessPrep {

@@ -44,6 +44,7 @@ fn opaque_harness(network: else_environment::NetworkPolicy) -> ProcessHarness<Js
             interactive_input: false,
         },
         network,
+        egress_allowlist: &["api.openai.com"],
         timeout: None,
         prepare: Box::new(|_, _, _| {
             Ok(HarnessPrep {
@@ -59,6 +60,25 @@ fn opaque_harness(network: else_environment::NetworkPolicy) -> ProcessHarness<Js
         }),
         parser: JsonParser,
     }
+}
+
+fn network_probe_harness() -> ProcessHarness<JsonParser> {
+    let mut harness = opaque_harness(else_environment::NetworkPolicy::AllowOutbound);
+    harness.name = "opaque-network-probe";
+    harness.prepare = Box::new(|_, _, _| {
+        Ok(HarnessPrep {
+            command: "touch plan.md; \
+                      hp=${HTTPS_PROXY#*//}; port=${hp##*:}; \
+                      printf 'CONNECT example.com:443 HTTP/1.1\\r\\nHost: example.com\\r\\n\\r\\n' | nc 127.0.0.1 $port > proxy.txt 2>&1 || true; \
+                      printf '%s\\n' '{\"type\":\"completed\",\"summary\":\"probe\"}'"
+                .into(),
+            env: vec![],
+            read_paths: vec![],
+            write_paths: vec![],
+            cleanup_paths: vec![],
+        })
+    });
+    harness
 }
 
 fn policy(network: bool, max_observed_effect: SideEffectKind) -> OpaqueHarnessPolicy {
@@ -166,4 +186,33 @@ fn native_provider_network_requires_a_separate_explicit_opt_in() {
             &opaque_harness(else_environment::NetworkPolicy::AllowOutbound),
         )
         .unwrap();
+}
+
+#[test]
+fn egress_proxy_denies_unlisted_host_and_records_decision() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime
+        .create_intent("Opaque 域名 Allowlist", None)
+        .unwrap();
+    runtime
+        .configure_opaque_harness(&spec.id, policy(true, SideEffectKind::Reversible))
+        .unwrap();
+
+    runtime
+        .run_adapter(&spec.id, &network_probe_harness())
+        .unwrap();
+    let proxy_response =
+        std::fs::read_to_string(dir.path().join("workspace/proxy.txt")).unwrap_or_default();
+    assert!(proxy_response.contains("403 Forbidden"));
+    let events = runtime.events(&spec.id).unwrap();
+    let decision = events
+        .iter()
+        .find_map(|event| match &event.envelope.payload {
+            EventPayload::EgressIntercepted { decision } => Some(decision.clone()),
+            _ => None,
+        })
+        .expect("egress decision");
+    assert_eq!(decision.host, "example.com");
+    assert!(!decision.allowed);
 }

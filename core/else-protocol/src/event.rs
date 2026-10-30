@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::artifact::{Artifact, Checkpoint};
 use crate::attention::{AttentionRequest, AttentionWindow, Decision, Ruling};
 use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
+use crate::egress::EgressDecision;
 use crate::failure::ScopeFailure;
 use crate::ids::*;
 use crate::intent::{IntentSpec, IntentState};
@@ -189,6 +190,9 @@ pub enum EventPayload {
         call: ToolCall,
         outcome: ToolOutcome,
         backend: String,
+    },
+    EgressIntercepted {
+        decision: EgressDecision,
     },
     /// 在途副作用有了最终结论（已应用/已补偿/未知）。
     SideEffectConcluded {

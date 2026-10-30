@@ -36,9 +36,14 @@ fn profile(
         .map(Path::to_path_buf)
         .collect();
     let network_rule = match network {
-        NetworkPolicy::Deny => "; 没有 network-inbound/network-outbound 规则：网络默认拒绝。",
+        NetworkPolicy::Deny => {
+            "; 没有 network-inbound/network-outbound 规则：网络默认拒绝。".to_string()
+        }
+        NetworkPolicy::Proxy { port } => {
+            format!("(allow network-outbound (remote ip \"localhost:{port}\"))")
+        }
         // 显式放通全部出站（Harness 原生 Provider 流量）；入站仍默认拒绝。
-        NetworkPolicy::AllowOutbound => "(allow network-outbound)",
+        NetworkPolicy::AllowOutbound => "(allow network-outbound)".to_string(),
     };
     // 额外只读路径（Harness 二进制与运行时依赖）：只读，不可写。
     // macOS 的 /etc、/tmp、/var 是 firmlink 而非普通符号链接，Seatbelt 按
@@ -159,6 +164,20 @@ mod tests {
         assert!(profile.contains("(allow network-outbound)"));
         assert!(!profile.contains("(allow network-inbound"));
         assert!(!profile.contains("(allow network)"));
+    }
+
+    #[test]
+    fn proxy_network_allows_only_loopback_proxy_port() {
+        let profile = profile(
+            Path::new("/tmp/ws"),
+            NetworkPolicy::Proxy { port: 43123 },
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert!(profile.contains(r#"(remote ip "localhost:43123")"#));
+        assert!(!profile.contains("(allow network-outbound)\n"));
+        assert!(!profile.contains("(allow network-inbound"));
     }
 
     #[test]

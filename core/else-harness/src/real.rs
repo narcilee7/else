@@ -25,6 +25,14 @@ use crate::adapter::{
 pub const CODEX: &str = "codex";
 pub const CLAUDE_CODE: &str = "claude-code";
 
+const CODEX_PROVIDER_HOSTS: &[&str] = &[
+    "chatgpt.com",
+    ".openai.com",
+    ".oaistatic.com",
+    ".oaiusercontent.com",
+];
+const CLAUDE_PROVIDER_HOSTS: &[&str] = &[".anthropic.com", ".claude.ai"];
+
 /// 真实 Harness 的墙钟超时：到点杀进程判失败，不等待其自觉。
 const REAL_HARNESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
@@ -41,6 +49,7 @@ pub fn codex() -> ProcessHarness<CodexParser> {
             interactive_input: false,
         },
         network: NetworkPolicy::AllowOutbound,
+        egress_allowlist: CODEX_PROVIDER_HOSTS,
         timeout: Some(REAL_HARNESS_TIMEOUT),
         prepare: Box::new(|_workspace, private_dir, prompt| {
             let binary = resolve_binary(
@@ -109,6 +118,7 @@ pub fn claude_code() -> ProcessHarness<ClaudeParser> {
             interactive_input: false,
         },
         network: NetworkPolicy::AllowOutbound,
+        egress_allowlist: CLAUDE_PROVIDER_HOSTS,
         timeout: Some(REAL_HARNESS_TIMEOUT),
         prepare: Box::new(|_workspace, private_dir, prompt| {
             let binary = resolve_binary("claude", &[])?;

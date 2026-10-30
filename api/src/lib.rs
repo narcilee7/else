@@ -197,6 +197,7 @@ impl Runtime {
             .as_ref()
             .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
         self.ensure_harness_allowed(spec, adapter)?;
+        let egress_proxy = self.start_egress_proxy(adapter)?;
         let Some((ctx, snapshot)) = self.prepare_root_run(intent_id, true)? else {
             return self.projection(intent_id);
         };
@@ -217,15 +218,12 @@ impl Runtime {
             workspace: &self.workspace,
             private_dir: &self.harness_private,
             snapshot: &snapshot,
+            egress_proxy: egress_proxy.as_ref().map(|proxy| proxy.endpoint()),
             subagent: false,
         };
-        self.finish_run(
-            intent_id,
-            &ctx,
-            &lease,
-            sandbox_started,
-            adapter.execute(&request),
-        )
+        let result = adapter.execute(&request);
+        self.record_egress_decisions(&ctx, egress_proxy.as_ref())?;
+        self.finish_run(intent_id, &ctx, &lease, sandbox_started, result)
     }
 
     /// Run 前奏：终态幂等检查、编译 Planner 快照、构造执行上下文。

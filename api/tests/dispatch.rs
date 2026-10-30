@@ -46,6 +46,7 @@ fn fake_adapter(name: &'static str, script: &'static str) -> ProcessHarness<Json
             interactive_input: false,
         },
         network: else_environment::NetworkPolicy::Deny,
+        egress_allowlist: &[],
         timeout: None,
         prepare: Box::new(move |_, _, _| {
             Ok(HarnessPrep {
@@ -74,6 +75,7 @@ fn dependent_harness() -> ProcessHarness<JsonParser> {
             interactive_input: false,
         },
         network: else_environment::NetworkPolicy::Deny,
+        egress_allowlist: &[],
         timeout: None,
         prepare: Box::new(|_, _, _| {
             Ok(HarnessPrep {

@@ -68,6 +68,7 @@ impl Runtime {
         let spec = scope_spec(&projection, scope_id)
             .ok_or_else(|| ApiError::NotFound(format!("scope {scope_id}")))?;
         self.ensure_harness_allowed(&spec, adapter)?;
+        let egress_proxy = self.start_egress_proxy(adapter)?;
         let generation = self.next_scope_generation(intent_id, scope_id)?;
 
         // 准入先于一切事件：槽位或预算不足时不产生任何新事件。
@@ -118,15 +119,12 @@ impl Runtime {
             workspace: &scope_workspace,
             private_dir: &self.harness_private,
             snapshot: &snapshot,
+            egress_proxy: egress_proxy.as_ref().map(|proxy| proxy.endpoint()),
             subagent,
         };
-        self.finish_run(
-            intent_id,
-            &ctx,
-            &lease,
-            sandbox_started,
-            adapter.execute(&request),
-        )
+        let result = adapter.execute(&request);
+        self.record_egress_decisions(&ctx, egress_proxy.as_ref())?;
+        self.finish_run(intent_id, &ctx, &lease, sandbox_started, result)
     }
 
     /// 把当前 Intent 的工件物化到隔离 Scope。CAS manifest 直接恢复；

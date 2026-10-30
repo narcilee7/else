@@ -6,6 +6,7 @@
 //! 真实 Harness 经 MVP-2 适配契约（adapter 模块）接入，控制面契约不变。
 
 pub mod adapter;
+pub mod egress;
 pub mod real;
 pub mod verify;
 

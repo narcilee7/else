@@ -32,7 +32,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 109 tests passing on macOS.
+**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 113 tests passing on macOS.
 
 - **Kernel (MVP-0)**: durable root Scope identity, explicit Scope dependencies, artifact lineage across child workspaces, fair multi-Scope reconciliation ordered by creation and last execution, replayable external waits and ExternalEvent/Timer wakes that feed the next Context Snapshot, continuous `drive` loops, and a resident single-thread Runtime supervisor; event-sourced ledger on SQLite, Checkpoint → Fork → Rerun → Compare, Abort + Generation Fencing, Subagent delegation tree, Admission + Lease + Accounting, deny-by-default OS sandboxes (macOS Seatbelt verified on real hardware; Linux bubblewrap policy unit-tested, awaiting Linux CI).
 - **Context & Memory (MVP-1)**: Intent Resolution with revisions, three-tier memory (Working / Episodic / Semantic) with scoped promotion rules, Context Compiler producing minimal read-only snapshots per Planner / Executor / Verifier. Memory is never a source of authority.
@@ -43,7 +43,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 - **Structured planning**: replayable Plan revisions with evidence, explicit fact watches, Scope impact analysis, and the same `PlanProposed / PlanReplaced` bridge contract across harnesses.
 - **Sandbox accounting**: conservative lease reservations separated from measured wall-clock cost, with Reported / Estimated / Unknown evidence and termination reasons.
 - **Dependency convergence**: bounded retries, classified terminal failures, one same-authority replacement, explicit downstream rewiring, and replayable Superseded convergence.
-- **Explicit Opaque Profile**: user-approved observed effects and native-provider networking, with effect ceilings, immediate fencing, and observed events kept separate from Gateway authorization.
+- **Explicit Opaque Profile**: user-approved observed effects, a loopback CONNECT proxy with provider-domain allowlists, effect ceilings, and observed events kept separate from Gateway authorization.
 
 ### Quickstart
 
@@ -74,7 +74,8 @@ else compare <intent-id> <scope-a> <scope-b>
 - **Harness tool side effects are observed, not gateway-routed.** Codex / Claude Code require an explicit Opaque Profile. Their tools are recorded as `OpaqueToolObserved`, confined to the sandbox, and never represented as Gateway-authorized calls.
 - **Harness credentials live outside persistent Workspaces.** Runtime-controlled `harness-private/` directories are the only extra writable paths, are deleted after every run, and are excluded from snapshots even if legacy files remain under `.else-harness`.
 - **Manual DoneWhen requires an explicit Decision.** File existence and file content are verified automatically; manual criteria create a Verification request. Approval re-checks machine criteria and completes without rerunning the Harness, while rejection leaves the Scope retryable.
-- **Harness model traffic uses their native providers with explicit outbound network.** Native-provider egress requires a separate user opt-in. It is still broad outbound access, not a domain Allowlist or Runtime egress proxy.
+- **Harness model traffic uses their native providers through a Runtime egress proxy.** Native-provider networking requires a separate user opt-in; the Sandbox only reaches the loopback proxy and the proxy enforces the adapter's provider-domain allowlist.
+- **Opaque network fails closed where domain egress cannot be enforced.** The loopback-only proxy path is verified on macOS Seatbelt; Linux bubblewrap currently rejects Opaque native-provider networking rather than sharing the host network.
 - **Observed-effect ceilings are enforced after observation.** Exceeding the profile kills the Harness immediately, but cannot undo a side effect that already occurred.
 - **Nested sandboxes are disabled inside harnesses** (e.g. `sandbox_mode="danger-full-access"` for codex) because Seatbelt cannot nest; else's own sandbox profile is the isolation boundary.
 - **Abort Succeeded means execution converged safely, not that the world was rolled back.** Irreversible effects stay irreversible and are recorded as such.

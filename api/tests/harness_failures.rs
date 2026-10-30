@@ -45,6 +45,7 @@ fn fake_harness(
             interactive_input: false,
         },
         network: else_environment::NetworkPolicy::Deny,
+        egress_allowlist: &[],
         timeout,
         prepare: Box::new(move |_, _, _| {
             Ok(HarnessPrep {

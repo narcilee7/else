@@ -23,6 +23,8 @@ use else_protocol::plan::{
 };
 use else_protocol::resource::ModelUsage;
 
+use crate::egress::EgressProxyEndpoint;
+
 /// 桥接事件：适配器把 Harness 的一行输出归一化为一枚桥接事件。
 #[derive(Debug, Clone, PartialEq)]
 pub enum BridgeEvent {
@@ -63,6 +65,8 @@ pub struct HarnessRequest<'a> {
     /// Runtime 控制的私有目录，位于持久 Workspace 之外；Harness 凭据只能放这里。
     pub private_dir: &'a Path,
     pub snapshot: &'a ContextSnapshot,
+    /// Runtime 提供的 loopback CONNECT 代理；Sandbox 只放通该端口。
+    pub egress_proxy: Option<&'a EgressProxyEndpoint>,
     /// 子 Scope 执行：验收只结束自身 Scope，不直接把根 Intent 标记完成。
     pub subagent: bool,
 }
@@ -73,6 +77,9 @@ pub trait HarnessAdapter {
     fn capabilities(&self) -> HarnessCapabilities;
     fn network_access(&self) -> HarnessNetworkAccess {
         HarnessNetworkAccess::Deny
+    }
+    fn egress_allowlist(&self) -> Vec<&'static str> {
+        vec![]
     }
     fn execute(&self, request: &HarnessRequest) -> Result<()>;
 }
@@ -244,6 +251,8 @@ pub struct ProcessHarness<P> {
     pub capabilities: HarnessCapabilities,
     /// 网络策略：默认拒绝；真实 Harness 的模型流量显式放通出站（Opaque 能力）。
     pub network: else_environment::NetworkPolicy,
+    /// Opaque Harness 的 Provider 域名 Allowlist；只对代理生效。
+    pub egress_allowlist: &'static [&'static str],
     /// 墙钟超时：到点杀进程并判失败，不等待 Harness 自觉。
     pub timeout: Option<std::time::Duration>,
     pub prepare: PrepareFn,
@@ -275,10 +284,15 @@ impl<P: LineParser> HarnessAdapter for ProcessHarness<P> {
     fn network_access(&self) -> HarnessNetworkAccess {
         match self.network {
             else_environment::NetworkPolicy::Deny => HarnessNetworkAccess::Deny,
-            else_environment::NetworkPolicy::AllowOutbound => {
+            else_environment::NetworkPolicy::AllowOutbound
+            | else_environment::NetworkPolicy::Proxy { .. } => {
                 HarnessNetworkAccess::NativeProviderOutbound
             }
         }
+    }
+
+    fn egress_allowlist(&self) -> Vec<&'static str> {
+        self.egress_allowlist.to_vec()
     }
 
     fn execute(&self, request: &HarnessRequest) -> Result<()> {
@@ -289,11 +303,25 @@ impl<P: LineParser> HarnessAdapter for ProcessHarness<P> {
             .workspace
             .canonicalize()
             .unwrap_or_else(|_| request.workspace.to_path_buf());
-        let prep = (self.prepare)(&workspace, request.private_dir, &prompt)?;
+        let mut prep = (self.prepare)(&workspace, request.private_dir, &prompt)?;
+        if let Some(proxy) = request.egress_proxy {
+            let proxy_url = format!("http://{}:{}", proxy.host, proxy.port);
+            for key in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] {
+                prep.env.push((key.into(), proxy_url.clone()));
+            }
+            for key in ["NO_PROXY", "no_proxy"] {
+                prep.env
+                    .push((key.into(), "127.0.0.1,localhost".into()));
+            }
+        }
         let _cleanup = CleanupPaths(prep.cleanup_paths.clone());
+        let network = request
+            .egress_proxy
+            .map(|proxy| else_environment::NetworkPolicy::Proxy { port: proxy.port })
+            .unwrap_or(self.network);
         let sandbox = Sandbox::new(
             SandboxProfile::new(&workspace)
-                .with_network(self.network)
+                .with_network(network)
                 .with_read_paths(prep.read_paths)
                 .with_write_paths(prep.write_paths),
         )
