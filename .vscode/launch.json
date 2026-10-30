@@ -1,0 +1,24 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:else}/surfaces/apple",
+      "name": "Debug ElseMac (surfaces/apple)",
+      "target": "ElseMac",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug ElseMac (surfaces/apple)"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:else}/surfaces/apple",
+      "name": "Release ElseMac (surfaces/apple)",
+      "target": "ElseMac",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release ElseMac (surfaces/apple)"
+    }
+  ]
+}
