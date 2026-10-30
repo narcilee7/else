@@ -23,6 +23,7 @@ pub enum Actor {
     System,
     Agent,
     Tool,
+    External,
 }
 
 /// Scope 生命周期。状态机不能因为用户点了停止就直接变成 Cancelled：
@@ -172,6 +173,18 @@ pub enum EventPayload {
     ExternalEventReceived {
         source: String,
         summary: String,
+    },
+    TimerScheduled {
+        timer_id: TimerId,
+        fire_at: DateTime<Utc>,
+        reason: String,
+    },
+    TimerFired {
+        timer_id: TimerId,
+    },
+    TimerCancelled {
+        timer_id: TimerId,
+        reason: String,
     },
 
     AttentionRequested {

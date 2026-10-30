@@ -1,10 +1,12 @@
-//! Intent Kernel：从持久事件推导下一步，而不是由调用方手工拼接控制流。
+//! Intent Kernel：从持久事件推导下一步，并连续推进到等待态。
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use else_ledger::IntentProjection;
 use else_protocol::event::ScopeState;
-use else_protocol::ids::{AttentionId, IntentId, RunId, ScopeId};
+use else_protocol::ids::{AttentionId, IntentId, RunId, ScopeId, TimerId};
 use else_protocol::intent::IntentState;
 
+use crate::scope::scope_spec;
 use crate::{ApiError, Result, Runtime};
 
 /// Kernel 对一次推进请求给出的确定性裁决。
@@ -21,6 +23,12 @@ pub enum KernelAction {
         scope_id: ScopeId,
         run_id: RunId,
     },
+    WaitForTimer {
+        due_at: DateTime<Utc>,
+    },
+    FireTimer {
+        timer_id: TimerId,
+    },
     Run {
         scope_id: ScopeId,
         generation: u64,
@@ -28,9 +36,27 @@ pub enum KernelAction {
     },
 }
 
+/// 连续推进停止的原因。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KernelDriveStop {
+    Idle,
+    WaitForUser,
+    WaitForAttentionWindow,
+    WaitForRun,
+    WaitForTimer,
+    StepLimit,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct KernelDrive {
+    pub projection: IntentProjection,
+    pub stopped: KernelDriveStop,
+    pub steps: u64,
+}
+
 impl Runtime {
     /// 从 Event Ledger 推导当前 Intent 的下一步。
-    /// 该函数不执行副作用，可用于预演、调试与未来 daemon 的调度循环。
+    /// 该函数不执行副作用，可用于预演、调试与调度循环。
     pub fn kernel_step(
         &self,
         intent_id: &IntentId,
@@ -43,9 +69,15 @@ impl Runtime {
         ) {
             return Ok(KernelAction::Idle);
         }
+        let now = Utc::now();
+        if let Some(timer) = projection.due_timers(now).into_iter().next() {
+            return Ok(KernelAction::FireTimer {
+                timer_id: timer.id.clone(),
+            });
+        }
 
-        let actionable = projection.actionable_requests(Utc::now());
-        if !actionable.is_empty() {
+        let actionable = projection.actionable_requests(now);
+        if actionable.iter().any(|request| request.blocking) {
             return Ok(KernelAction::WaitForUser {
                 requests: actionable
                     .into_iter()
@@ -54,44 +86,51 @@ impl Runtime {
             });
         }
 
-        let root_scope = projection
-            .root_scope_id
-            .clone()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
-        if let Some(run_id) = self.active_run_id(intent_id, &root_scope)? {
-            return Ok(KernelAction::WaitForRun {
-                scope_id: root_scope,
-                run_id,
+        let mut active_run = None;
+        let mut ready = Vec::new();
+        for (index, scope_id) in self
+            .scope_scheduling_order(&projection)
+            .into_iter()
+            .enumerate()
+        {
+            let Some(scope) = projection.scopes.get(&scope_id) else {
+                continue;
+            };
+            if matches!(
+                scope.state,
+                ScopeState::Completed | ScopeState::Failed | ScopeState::Cancelled
+            ) {
+                continue;
+            }
+            if let Some(run_id) = self.active_run_id(intent_id, &scope_id)? {
+                active_run.get_or_insert((scope_id.clone(), run_id));
+                continue;
+            }
+            ready.push((scope.last_run_started_seq.unwrap_or(0), index, scope_id));
+        }
+        ready.sort_by_key(|(last_started, order, _)| (*last_started, *order));
+        if let Some((_, _, scope_id)) = ready.into_iter().next() {
+            let spec = scope_spec(&projection, &scope_id)
+                .ok_or_else(|| ApiError::NotFound(format!("scope {scope_id}")))?;
+            return Ok(KernelAction::Run {
+                scope_id: scope_id.clone(),
+                generation: self.next_scope_generation(intent_id, &scope_id)?,
+                harness: else_harness::select_harness(&spec.outcome, harness_hint),
             });
         }
 
-        if projection.state == Some(IntentState::NeedsDecision) {
+        if let Some((scope_id, run_id)) = active_run {
+            return Ok(KernelAction::WaitForRun { scope_id, run_id });
+        }
+        if let Some(due_at) = projection.next_timer_at() {
+            return Ok(KernelAction::WaitForTimer { due_at });
+        }
+        if !projection.open_requests.is_empty() {
             return Ok(KernelAction::WaitForAttentionWindow {
                 requests: projection.open_requests.keys().cloned().collect(),
             });
         }
-
-        let scope = projection
-            .scopes
-            .get(&root_scope)
-            .ok_or_else(|| ApiError::NotFound(format!("scope {root_scope}")))?;
-        if matches!(
-            scope.state,
-            ScopeState::Completed | ScopeState::Failed | ScopeState::Cancelled
-        ) {
-            return Ok(KernelAction::Idle);
-        }
-
-        let spec = projection
-            .spec
-            .clone()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
-        let harness = else_harness::select_harness(&spec.outcome, harness_hint);
-        Ok(KernelAction::Run {
-            scope_id: root_scope.clone(),
-            generation: self.next_scope_generation(intent_id, &root_scope)?,
-            harness,
-        })
+        Ok(KernelAction::Idle)
     }
 
     /// 执行一次 Kernel 裁决。Waiting 状态不产生任何事件。
@@ -99,20 +138,104 @@ impl Runtime {
         &self,
         intent_id: &IntentId,
         harness_hint: Option<&str>,
-    ) -> Result<else_ledger::IntentProjection> {
+    ) -> Result<IntentProjection> {
         match self.kernel_step(intent_id, harness_hint)? {
             KernelAction::Idle
             | KernelAction::WaitForUser { .. }
             | KernelAction::WaitForAttentionWindow { .. }
-            | KernelAction::WaitForRun { .. } => self.projection(intent_id),
-            KernelAction::Run { harness, .. } if harness == else_harness::SCRIPTED => {
-                self.run(intent_id)
+            | KernelAction::WaitForRun { .. }
+            | KernelAction::WaitForTimer { .. } => self.projection(intent_id),
+            KernelAction::FireTimer { timer_id } => {
+                self.fire_timer(intent_id, &timer_id)?;
+                self.projection(intent_id)
             }
-            KernelAction::Run { harness, .. } => {
-                let adapter = else_harness::find_adapter(harness)
-                    .ok_or_else(|| ApiError::NotFound(format!("harness {harness}")))?;
-                self.run_adapter(intent_id, adapter.as_ref())
+            KernelAction::Run {
+                scope_id,
+                generation,
+                harness,
+                ..
+            } => self.execute_kernel_run(intent_id, &scope_id, generation, harness),
+        }
+    }
+
+    /// 连续推进，直到等待用户、等待 Run/Timer、空闲或达到步数上限。
+    pub fn drive(
+        &self,
+        intent_id: &IntentId,
+        harness_hint: Option<&str>,
+        max_steps: u64,
+    ) -> Result<KernelDrive> {
+        let mut steps = 0;
+        loop {
+            if steps >= max_steps {
+                return Ok(KernelDrive {
+                    projection: self.projection(intent_id)?,
+                    stopped: KernelDriveStop::StepLimit,
+                    steps,
+                });
+            }
+            let action = self.kernel_step(intent_id, harness_hint)?;
+            let stopped = match &action {
+                KernelAction::Idle => Some(KernelDriveStop::Idle),
+                KernelAction::WaitForUser { .. } => Some(KernelDriveStop::WaitForUser),
+                KernelAction::WaitForAttentionWindow { .. } => {
+                    Some(KernelDriveStop::WaitForAttentionWindow)
+                }
+                KernelAction::WaitForRun { .. } => Some(KernelDriveStop::WaitForRun),
+                KernelAction::WaitForTimer { .. } => Some(KernelDriveStop::WaitForTimer),
+                KernelAction::FireTimer { .. } | KernelAction::Run { .. } => None,
+            };
+            if let Some(stopped) = stopped {
+                return Ok(KernelDrive {
+                    projection: self.projection(intent_id)?,
+                    stopped,
+                    steps,
+                });
+            }
+            match action {
+                KernelAction::FireTimer { timer_id } => {
+                    self.fire_timer(intent_id, &timer_id)?;
+                }
+                KernelAction::Run {
+                    scope_id,
+                    generation,
+                    harness,
+                    ..
+                } => {
+                    self.execute_kernel_run(intent_id, &scope_id, generation, harness)?;
+                }
+                _ => unreachable!("waiting actions returned above"),
+            }
+            steps += 1;
+        }
+    }
+
+    fn execute_kernel_run(
+        &self,
+        intent_id: &IntentId,
+        scope_id: &ScopeId,
+        generation: u64,
+        harness: &str,
+    ) -> Result<IntentProjection> {
+        if harness == else_harness::SCRIPTED {
+            return if self.projection(intent_id)?.root_scope_id.as_ref() == Some(scope_id) {
+                self.run(intent_id)
+            } else {
+                self.run_scope_at_generation(intent_id, scope_id, generation)
+            };
+        }
+        let adapter = else_harness::find_adapter(harness)
+            .ok_or_else(|| ApiError::NotFound(format!("harness {harness}")))?;
+        self.dispatch_scope_adapter(intent_id, scope_id, adapter.as_ref())
+    }
+
+    fn scope_scheduling_order(&self, projection: &IntentProjection) -> Vec<ScopeId> {
+        let mut order = projection.scope_order.clone();
+        for scope_id in projection.scopes.keys() {
+            if !order.contains(scope_id) {
+                order.push(scope_id.clone());
             }
         }
+        order
     }
 }

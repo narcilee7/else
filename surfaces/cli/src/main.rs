@@ -37,6 +37,28 @@ enum Command {
         #[arg(long, default_value = "auto")]
         harness: String,
     },
+    /// 连续推进 Kernel，直到等待用户、Run、Timer 或空闲
+    Drive {
+        intent_id: String,
+        #[arg(long, default_value = "auto")]
+        harness: String,
+        #[arg(long, default_value_t = 8)]
+        max_steps: u64,
+    },
+    /// 记录一个外部事件并唤醒该 Intent
+    Event {
+        intent_id: String,
+        source: String,
+        summary: String,
+    },
+    /// 安排一个持久化 Kernel 唤醒 Timer
+    Wake {
+        intent_id: String,
+        /// 从现在起多少秒触发。
+        seconds: i64,
+        #[arg(long, default_value = "follow up")]
+        reason: String,
+    },
     /// 对已有 Intent 再启动一次执行
     Run {
         intent_id: String,
@@ -171,6 +193,37 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         Command::Advance { intent_id, harness } => {
             let projection = runtime.advance(&IntentId::from(intent_id), Some(&harness))?;
             print_projection(&projection);
+        }
+        Command::Drive {
+            intent_id,
+            harness,
+            max_steps,
+        } => {
+            let driven = runtime.drive(&IntentId::from(intent_id), Some(&harness), max_steps)?;
+            println!("stopped: {:?}", driven.stopped);
+            println!("steps: {}", driven.steps);
+            print_projection(&driven.projection);
+        }
+        Command::Event {
+            intent_id,
+            source,
+            summary,
+        } => {
+            let projection =
+                runtime.record_external_event(&IntentId::from(intent_id), &source, &summary)?;
+            print_projection(&projection);
+        }
+        Command::Wake {
+            intent_id,
+            seconds,
+            reason,
+        } => {
+            let timer_id = runtime.schedule_timer(
+                &IntentId::from(intent_id),
+                chrono::Utc::now() + chrono::Duration::seconds(seconds),
+                &reason,
+            )?;
+            println!("timer: {timer_id}");
         }
         Command::Run { intent_id, harness } => {
             let intent_id = IntentId::from(intent_id);

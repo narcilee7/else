@@ -10,9 +10,10 @@ mod kernel;
 mod outcome;
 mod resources;
 mod scope;
+mod wake;
 
 pub use context::IntentRevision;
-pub use kernel::KernelAction;
+pub use kernel::{KernelAction, KernelDrive, KernelDriveStop};
 
 use std::path::{Path, PathBuf};
 

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use else_protocol::artifact::{Artifact, Checkpoint};
 use else_protocol::attention::{AttentionRequest, Ruling};
 use else_protocol::event::{EventPayload, ScopeState};
-use else_protocol::ids::{AttentionId, ScopeId};
+use else_protocol::ids::{AttentionId, ScopeId, TimerId};
 use else_protocol::intent::{IntentSpec, IntentState};
 use else_protocol::resource::{ResourceBudget, ResourceUsage};
 
@@ -18,12 +18,21 @@ pub struct ScopeProjection {
     pub parent: Option<ScopeId>,
     pub state: ScopeState,
     pub generation: u64,
+    /// 最近一次 RunStarted 的事件水位，用于跨 Scope 公平调度。
+    pub last_run_started_seq: Option<u64>,
     /// Subagent 的收窄权限契约；根 Scope 使用 IntentSpec。
     pub spec: Option<IntentSpec>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimerProjection {
+    pub id: TimerId,
+    pub fire_at: chrono::DateTime<chrono::Utc>,
+    pub reason: String,
+}
+
 /// Intent 的基础投影：目标契约、状态、待本人决策、产物、检查点与 Scope 树。
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct IntentProjection {
     pub spec: Option<IntentSpec>,
     /// Intent 创建时确定的根 Scope。根身份不随 Run、重试或 Revision 改变。
@@ -36,6 +45,9 @@ pub struct IntentProjection {
     pub artifacts: Vec<Artifact>,
     pub checkpoints: Vec<Checkpoint>,
     pub scopes: BTreeMap<ScopeId, ScopeProjection>,
+    /// Scope 的创建顺序，用于打破首次调度时的 ID 随机性。
+    pub scope_order: Vec<ScopeId>,
+    pub timers: BTreeMap<TimerId, TimerProjection>,
     pub resource_budget: ResourceBudget,
     pub resource_usage: ResourceUsage,
     /// 已重放到的事件水位。
@@ -54,9 +66,11 @@ impl Projection for IntentProjection {
                         parent: None,
                         state: ScopeState::Running,
                         generation: event.envelope.generation,
+                        last_run_started_seq: None,
                         spec: None,
                     },
                 );
+                self.scope_order.push(event.envelope.scope_id.clone());
                 self.spec = Some(spec.clone());
             }
             EventPayload::IntentRevised { spec, .. } => {
@@ -76,6 +90,25 @@ impl Projection for IntentProjection {
             EventPayload::DecisionResolved { decision } => {
                 self.open_requests.remove(&decision.request_id);
             }
+            EventPayload::ExternalEventReceived { .. } => {}
+            EventPayload::TimerScheduled {
+                timer_id,
+                fire_at,
+                reason,
+            } => {
+                self.timers.insert(
+                    timer_id.clone(),
+                    TimerProjection {
+                        id: timer_id.clone(),
+                        fire_at: *fire_at,
+                        reason: reason.clone(),
+                    },
+                );
+            }
+            EventPayload::TimerFired { timer_id }
+            | EventPayload::TimerCancelled { timer_id, .. } => {
+                self.timers.remove(timer_id);
+            }
             EventPayload::RunStarted { .. } => {
                 let scope = self
                     .scopes
@@ -84,10 +117,12 @@ impl Projection for IntentProjection {
                         parent: None,
                         state: ScopeState::Running,
                         generation: event.envelope.generation,
+                        last_run_started_seq: None,
                         spec: None,
                     });
                 scope.state = ScopeState::Running;
                 scope.generation = event.envelope.generation;
+                scope.last_run_started_seq = Some(event.seq);
             }
             EventPayload::ScopeSpawned { child } => {
                 self.scopes.insert(
@@ -96,9 +131,11 @@ impl Projection for IntentProjection {
                         parent: Some(event.envelope.scope_id.clone()),
                         state: ScopeState::Running,
                         generation: event.envelope.generation,
+                        last_run_started_seq: None,
                         spec: None,
                     },
                 );
+                self.scope_order.push(child.clone());
             }
             EventPayload::SubagentSpawned { child, spec } => {
                 self.scopes.insert(
@@ -107,9 +144,11 @@ impl Projection for IntentProjection {
                         parent: Some(event.envelope.scope_id.clone()),
                         state: ScopeState::Running,
                         generation: event.envelope.generation,
+                        last_run_started_seq: None,
                         spec: Some(spec.clone()),
                     },
                 );
+                self.scope_order.push(child.clone());
             }
             EventPayload::ScopeStateChanged { state } => {
                 self.scopes
@@ -118,6 +157,7 @@ impl Projection for IntentProjection {
                         parent: None,
                         state: ScopeState::Running,
                         generation: event.envelope.generation,
+                        last_run_started_seq: None,
                         spec: None,
                     })
                     .state = *state;
@@ -172,5 +212,19 @@ impl IntentProjection {
                 Some(Ruling::Silent) | None => false,
             })
             .collect()
+    }
+
+    pub fn due_timers(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<&TimerProjection> {
+        let mut timers: Vec<_> = self
+            .timers
+            .values()
+            .filter(|timer| timer.fire_at <= now)
+            .collect();
+        timers.sort_by_key(|timer| (timer.fire_at, timer.id.clone()));
+        timers
+    }
+
+    pub fn next_timer_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.timers.values().map(|timer| timer.fire_at).min()
     }
 }

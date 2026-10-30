@@ -57,6 +57,24 @@ impl Runtime {
 
     /// 在指定 Scope 中启动或续跑。子 Scope 的完成不会误结束根 Intent。
     pub fn run_scope(&self, intent_id: &IntentId, scope_id: &ScopeId) -> Result<IntentProjection> {
+        self.run_scope_inner(intent_id, scope_id, None)
+    }
+
+    pub(crate) fn run_scope_at_generation(
+        &self,
+        intent_id: &IntentId,
+        scope_id: &ScopeId,
+        generation: u64,
+    ) -> Result<IntentProjection> {
+        self.run_scope_inner(intent_id, scope_id, Some(generation))
+    }
+
+    fn run_scope_inner(
+        &self,
+        intent_id: &IntentId,
+        scope_id: &ScopeId,
+        generation: Option<u64>,
+    ) -> Result<IntentProjection> {
         let projection = self.projection(intent_id)?;
         if matches!(
             projection.state,
@@ -76,6 +94,7 @@ impl Runtime {
         let spec = scope_spec(&projection, scope_id)
             .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
         let subagent = scope.spec.is_some();
+        let generation = generation.unwrap_or(scope.generation);
         // 执行前编译 Planner 快照；本 Run 后续事件都标记该上下文版本。
         let snapshot =
             self.compile_snapshot(intent_id, else_protocol::memory::SnapshotAudience::Planner)?;
@@ -83,7 +102,7 @@ impl Runtime {
             spec,
             scope_id: scope_id.clone(),
             run_id: RunId::new(),
-            generation: scope.generation,
+            generation,
             snapshot_id: Some(snapshot.id),
         };
         let lease = self.admit_run(&ctx)?;

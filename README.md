@@ -31,9 +31,9 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 83 tests passing on macOS.
+**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 87 tests passing on macOS.
 
-- **Kernel (MVP-0)**: durable root Scope identity, event-derived single-step reconciliation (`Run / WaitForUser / WaitForAttentionWindow / WaitForRun / Idle`), event-sourced ledger on SQLite, Checkpoint → Fork → Rerun → Compare, Abort + Generation Fencing, Subagent delegation tree, Admission + Lease + Accounting, deny-by-default OS sandboxes (macOS Seatbelt verified on real hardware; Linux bubblewrap policy unit-tested, awaiting Linux CI).
+- **Kernel (MVP-0)**: durable root Scope identity, fair multi-Scope reconciliation ordered by creation and last execution, durable ExternalEvent/Timer wakes, continuous `drive` loops, event-sourced ledger on SQLite, Checkpoint → Fork → Rerun → Compare, Abort + Generation Fencing, Subagent delegation tree, Admission + Lease + Accounting, deny-by-default OS sandboxes (macOS Seatbelt verified on real hardware; Linux bubblewrap policy unit-tested, awaiting Linux CI).
 - **Context & Memory (MVP-1)**: Intent Resolution with revisions, three-tier memory (Working / Episodic / Semantic) with scoped promotion rules, Context Compiler producing minimal read-only snapshots per Planner / Executor / Verifier. Memory is never a source of authority.
 - **Real harnesses (MVP-2)**: Codex (`codex exec --json`) and Claude Code (`claude -p stream-json`) adapters behind one bridge contract; capabilities recorded per run; usage graded Reported / Estimated / Unknown (never silent zero-cost); wall-clock timeouts; late output fenced after abort. Harness completion is only a candidate result: Runtime independently evaluates structured DoneWhen checks before marking an outcome verified. **Codex verified end-to-end live**; Claude Code adapter ready but unverified here (local login broken, 401).
 - **Local dispatch (MVP-3)**: rule-based harness selection (explicit hint > task-type > availability > scripted fallback), fixed local slots (default 2, `ELSE_MAX_RUN_SLOTS`), isolated per-scope workspaces, and physical artifact materialization into the receiving Scope.
@@ -46,6 +46,9 @@ cargo install --path surfaces/cli        # one-command install, zero external se
 
 else intent "把项目推进到可发布状态" --project myproj
 else advance <intent-id> --harness auto     # one event-derived kernel step
+else drive <intent-id> --harness auto        # reconcile until the next wait state
+else event <intent-id> mail "合作方已回复"    # durable external wake
+else wake <intent-id> 3600                   # durable Timer wake
 else decisions <intent-id>               # what truly needs you
 else decide <intent-id> <request-id> approve
 else run-scope <intent-id> <scope-id> --harness auto   # rule-dispatch to codex / claude-code / scripted
