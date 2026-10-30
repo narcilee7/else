@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use else_protocol::artifact::{Artifact, Checkpoint};
 use else_protocol::attention::{AttentionRequest, Ruling};
 use else_protocol::event::{EventPayload, ScopeState};
-use else_protocol::ids::{AttentionId, ScopeId, TimerId};
+use else_protocol::ids::{ArtifactId, AttentionId, ScopeId, TimerId};
 use else_protocol::intent::{IntentSpec, IntentState};
 use else_protocol::resource::{ResourceBudget, ResourceUsage};
 
@@ -20,6 +20,7 @@ pub struct ScopeProjection {
     pub generation: u64,
     /// 最近一次 RunStarted 的事件水位，用于跨 Scope 公平调度。
     pub last_run_started_seq: Option<u64>,
+    pub depends_on: Vec<ScopeId>,
     /// Subagent 的收窄权限契约；根 Scope 使用 IntentSpec。
     pub spec: Option<IntentSpec>,
 }
@@ -52,6 +53,7 @@ pub struct IntentProjection {
     /// Attention Kernel 的持久裁决；没有裁决的请求不能被表面直接打断用户。
     pub attention_rulings: BTreeMap<AttentionId, Ruling>,
     pub artifacts: Vec<Artifact>,
+    pub artifact_scopes: BTreeMap<ArtifactId, ScopeId>,
     pub checkpoints: Vec<Checkpoint>,
     pub scopes: BTreeMap<ScopeId, ScopeProjection>,
     /// Scope 的创建顺序，用于打破首次调度时的 ID 随机性。
@@ -78,6 +80,7 @@ impl Projection for IntentProjection {
                         state: ScopeState::Running,
                         generation: event.envelope.generation,
                         last_run_started_seq: None,
+                        depends_on: vec![],
                         spec: None,
                     },
                 );
@@ -144,6 +147,7 @@ impl Projection for IntentProjection {
                         state: ScopeState::Running,
                         generation: event.envelope.generation,
                         last_run_started_seq: None,
+                        depends_on: vec![],
                         spec: None,
                     });
                 scope.state = ScopeState::Running;
@@ -158,12 +162,17 @@ impl Projection for IntentProjection {
                         state: ScopeState::Running,
                         generation: event.envelope.generation,
                         last_run_started_seq: None,
+                        depends_on: vec![],
                         spec: None,
                     },
                 );
                 self.scope_order.push(child.clone());
             }
-            EventPayload::SubagentSpawned { child, spec } => {
+            EventPayload::SubagentSpawned {
+                child,
+                spec,
+                depends_on,
+            } => {
                 self.scopes.insert(
                     child.clone(),
                     ScopeProjection {
@@ -171,6 +180,7 @@ impl Projection for IntentProjection {
                         state: ScopeState::Running,
                         generation: event.envelope.generation,
                         last_run_started_seq: None,
+                        depends_on: depends_on.clone(),
                         spec: Some(spec.clone()),
                     },
                 );
@@ -184,6 +194,7 @@ impl Projection for IntentProjection {
                         state: ScopeState::Running,
                         generation: event.envelope.generation,
                         last_run_started_seq: None,
+                        depends_on: vec![],
                         spec: None,
                     })
                     .state = *state;
@@ -214,6 +225,8 @@ impl Projection for IntentProjection {
             }
             EventPayload::ArtifactProduced { artifact } => {
                 self.artifacts.push(artifact.clone());
+                self.artifact_scopes
+                    .insert(artifact.id.clone(), event.envelope.scope_id.clone());
             }
             EventPayload::CheckpointCreated { checkpoint } => {
                 self.checkpoints.push(checkpoint.clone());

@@ -50,9 +50,37 @@ fn fake_adapter(name: &'static str, script: &'static str) -> ProcessHarness<Json
         prepare: Box::new(move |_, _, _| {
             Ok(HarnessPrep {
                 command: format!(
-                    "touch plan.md; printf '%s' {}",
+                    "touch plan.md; printf 'dependency artifact' > result.md; printf '%s' {}",
                     else_harness::adapter::shell_quote(script)
                 ),
+                env: vec![],
+                read_paths: vec![],
+                write_paths: vec![],
+                cleanup_paths: vec![],
+            })
+        }),
+        parser: JsonParser,
+    }
+}
+
+fn dependent_harness() -> ProcessHarness<JsonParser> {
+    ProcessHarness {
+        name: "dependent",
+        capabilities: HarnessCapabilities {
+            cancel: CancelSupport::KillOnly,
+            checkpoint_resume: false,
+            usage: UsageSupport::None,
+            tool_effects: ToolEffectVisibility::Observable,
+            interactive_input: false,
+        },
+        network: else_environment::NetworkPolicy::Deny,
+        timeout: None,
+        prepare: Box::new(|_, _, _| {
+            Ok(HarnessPrep {
+                command: "test \"$(cat result.md)\" = 'dependency artifact' || exit 9; \
+                          touch plan.md; \
+                          printf '%s\\n' '{\"type\":\"completed\",\"summary\":\"dependent done\"}'"
+                    .into(),
                 env: vec![],
                 read_paths: vec![],
                 write_paths: vec![],
@@ -169,6 +197,34 @@ fn dispatch_terminal_scope_is_idempotent() {
         .unwrap();
     assert_eq!(again.scopes[&child].state, ScopeState::Completed);
     assert_eq!(runtime.events(&spec.id).unwrap().len(), before);
+}
+
+#[test]
+fn dependent_scope_receives_artifacts_from_its_dependency() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("依赖工件交接", None).unwrap();
+    runtime.run(&spec.id).unwrap();
+    let root = root_scope(&runtime, &spec.id);
+    let producer = runtime
+        .spawn_subagent(&spec.id, &root, "生产依赖工件", SideEffectKind::ReadOnly)
+        .unwrap();
+    runtime
+        .dispatch_scope_adapter(&spec.id, &producer, &fake_adapter("producer", DONE_SCRIPT))
+        .unwrap();
+    let consumer = runtime
+        .spawn_subagent_with_dependencies(
+            &spec.id,
+            &root,
+            "消费依赖工件",
+            SideEffectKind::ReadOnly,
+            vec![producer],
+        )
+        .unwrap();
+    let projection = runtime
+        .dispatch_scope_adapter(&spec.id, &consumer, &dependent_harness())
+        .unwrap();
+    assert_eq!(projection.scopes[&consumer].state, ScopeState::Completed);
 }
 
 #[test]

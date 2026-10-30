@@ -20,6 +20,23 @@ impl Runtime {
         task: &str,
         max_autonomous_effect: SideEffectKind,
     ) -> Result<ScopeId> {
+        self.spawn_subagent_with_dependencies(
+            intent_id,
+            parent_scope,
+            task,
+            max_autonomous_effect,
+            vec![],
+        )
+    }
+
+    pub fn spawn_subagent_with_dependencies(
+        &self,
+        intent_id: &IntentId,
+        parent_scope: &ScopeId,
+        task: &str,
+        max_autonomous_effect: SideEffectKind,
+        depends_on: Vec<ScopeId>,
+    ) -> Result<ScopeId> {
         let projection = self.projection(intent_id)?;
         let parent = projection
             .scopes
@@ -39,6 +56,11 @@ impl Runtime {
                 parent_spec.authority.max_autonomous_effect, max_autonomous_effect
             )));
         }
+        for dependency in &depends_on {
+            if !projection.scopes.contains_key(dependency) {
+                return Err(ApiError::NotFound(format!("dependency scope {dependency}")));
+            }
+        }
 
         let child = ScopeId::new();
         self.ledger.append(&EventEnvelope::new(
@@ -50,6 +72,7 @@ impl Runtime {
             EventPayload::SubagentSpawned {
                 child: child.clone(),
                 spec: child_spec,
+                depends_on,
             },
         ))?;
         Ok(child)

@@ -29,6 +29,10 @@ pub enum KernelAction {
     WaitForExternal {
         reason: Option<String>,
     },
+    BlockedByDependency {
+        scope_id: ScopeId,
+        dependencies: Vec<ScopeId>,
+    },
     FireTimer {
         timer_id: TimerId,
     },
@@ -48,6 +52,7 @@ pub enum KernelDriveStop {
     WaitForRun,
     WaitForTimer,
     WaitForExternal,
+    BlockedByDependency,
     StepLimit,
 }
 
@@ -101,6 +106,7 @@ impl Runtime {
 
         let mut active_run = None;
         let mut ready = Vec::new();
+        let mut blocked_by_dependency = Vec::new();
         for (index, scope_id) in self
             .scope_scheduling_order(&projection)
             .into_iter()
@@ -113,6 +119,36 @@ impl Runtime {
                 scope.state,
                 ScopeState::Completed | ScopeState::Failed | ScopeState::Cancelled
             ) {
+                continue;
+            }
+            let unresolved: Vec<_> = scope
+                .depends_on
+                .iter()
+                .filter(|dependency| {
+                    projection
+                        .scopes
+                        .get(*dependency)
+                        .is_none_or(|dependency_scope| {
+                            dependency_scope.state != ScopeState::Completed
+                        })
+                })
+                .cloned()
+                .collect();
+            if !unresolved.is_empty() {
+                let terminally_blocked = unresolved.iter().any(|dependency| {
+                    projection
+                        .scopes
+                        .get(dependency)
+                        .is_some_and(|dependency_scope| {
+                            matches!(
+                                dependency_scope.state,
+                                ScopeState::Failed | ScopeState::Cancelled
+                            )
+                        })
+                });
+                if terminally_blocked {
+                    blocked_by_dependency.push((scope_id.clone(), unresolved));
+                }
                 continue;
             }
             if let Some(run_id) = self.active_run_id(intent_id, &scope_id)? {
@@ -134,6 +170,12 @@ impl Runtime {
 
         if let Some((scope_id, run_id)) = active_run {
             return Ok(KernelAction::WaitForRun { scope_id, run_id });
+        }
+        if let Some((scope_id, dependencies)) = blocked_by_dependency.into_iter().next() {
+            return Ok(KernelAction::BlockedByDependency {
+                scope_id,
+                dependencies,
+            });
         }
         if let Some(due_at) = projection.next_timer_at() {
             return Ok(KernelAction::WaitForTimer { due_at });
@@ -158,7 +200,8 @@ impl Runtime {
             | KernelAction::WaitForAttentionWindow { .. }
             | KernelAction::WaitForRun { .. }
             | KernelAction::WaitForTimer { .. }
-            | KernelAction::WaitForExternal { .. } => self.projection(intent_id),
+            | KernelAction::WaitForExternal { .. }
+            | KernelAction::BlockedByDependency { .. } => self.projection(intent_id),
             KernelAction::FireTimer { timer_id } => {
                 self.fire_timer(intent_id, &timer_id)?;
                 self.projection(intent_id)
@@ -198,6 +241,9 @@ impl Runtime {
                 KernelAction::WaitForRun { .. } => Some(KernelDriveStop::WaitForRun),
                 KernelAction::WaitForTimer { .. } => Some(KernelDriveStop::WaitForTimer),
                 KernelAction::WaitForExternal { .. } => Some(KernelDriveStop::WaitForExternal),
+                KernelAction::BlockedByDependency { .. } => {
+                    Some(KernelDriveStop::BlockedByDependency)
+                }
                 KernelAction::FireTimer { .. } | KernelAction::Run { .. } => None,
             };
             if let Some(stopped) = stopped {

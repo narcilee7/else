@@ -209,6 +209,9 @@ pub enum EventPayload {
     SubagentSpawned {
         child: ScopeId,
         spec: IntentSpec,
+        /// 显式执行依赖；父 Scope 只定义权限与生命周期，不自动等于依赖。
+        #[serde(default)]
+        depends_on: Vec<ScopeId>,
     },
     ScopeAbortRequested {
         reason: String,

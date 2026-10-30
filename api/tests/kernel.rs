@@ -149,7 +149,7 @@ fn failed_run_is_retried_with_a_new_generation() {
 }
 
 #[test]
-fn kernel_fairly_schedules_child_scopes_before_retrying_an_old_root() {
+fn kernel_respects_scope_dependencies_and_fair_root_order() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime.create_intent("整理会议纪要", None).unwrap();
@@ -159,6 +159,15 @@ fn kernel_fairly_schedules_child_scopes_before_retrying_an_old_root() {
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let child = runtime
         .spawn_subagent(&spec.id, &root, "整理附录", SideEffectKind::ReadOnly)
+        .unwrap();
+    let dependent = runtime
+        .spawn_subagent_with_dependencies(
+            &spec.id,
+            &root,
+            "汇总附录",
+            SideEffectKind::ReadOnly,
+            vec![child.clone()],
+        )
         .unwrap();
 
     assert!(matches!(
@@ -172,10 +181,17 @@ fn kernel_fairly_schedules_child_scopes_before_retrying_an_old_root() {
     assert!(
         matches!(
             &next,
-            KernelAction::Run { scope_id, generation: 2, .. } if scope_id == &root
+            KernelAction::Run { scope_id, generation: 1, .. } if scope_id == &dependent
         ),
         "实际下一步：{next:?}"
     );
+    runtime
+        .dispatch_scope_adapter(&spec.id, &dependent, &successful_child_harness())
+        .unwrap();
+    assert!(matches!(
+        runtime.kernel_step(&spec.id, Some("scripted")).unwrap(),
+        KernelAction::Run { scope_id, generation: 2, .. } if scope_id == root
+    ));
 }
 
 #[test]

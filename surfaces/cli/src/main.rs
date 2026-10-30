@@ -88,6 +88,9 @@ enum Command {
         intent_id: String,
         parent_scope: String,
         task: String,
+        /// 显式执行依赖；所有依赖 Scope Completed 后才会调度
+        #[arg(long = "depends-on")]
+        depends_on: Vec<String>,
         #[arg(long, default_value = "read_only", value_parser = ["read_only", "reversible", "compensatable", "irreversible", "unknown"])]
         max_effect: String,
     },
@@ -298,6 +301,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             intent_id,
             parent_scope,
             task,
+            depends_on,
             max_effect,
         } => {
             use else_protocol::effect::SideEffectKind;
@@ -308,11 +312,16 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 "irreversible" => SideEffectKind::Irreversible,
                 _ => SideEffectKind::Unknown,
             };
-            let child = runtime.spawn_subagent(
+            let depends_on: Vec<_> = depends_on
+                .iter()
+                .map(|scope| else_protocol::ids::ScopeId::from(scope.as_str()))
+                .collect();
+            let child = runtime.spawn_subagent_with_dependencies(
                 &IntentId::from(intent_id),
                 &else_protocol::ids::ScopeId::from(parent_scope),
                 &task,
                 max_effect,
+                depends_on,
             )?;
             println!("child scope: {child}");
         }

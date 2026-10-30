@@ -120,20 +120,25 @@ impl Runtime {
         projection: &IntentProjection,
         target: &std::path::Path,
     ) -> Result<()> {
-        let root = self.workspace.canonicalize()?;
         for artifact in &projection.artifacts {
             if let Some(manifest) = &artifact.manifest {
                 self.store.restore(manifest, target)?;
                 continue;
             }
+            let artifact_workspace = projection
+                .artifact_scopes
+                .get(&artifact.id)
+                .map(|scope_id| self.artifact_workspace(scope_id))
+                .unwrap_or_else(|| self.workspace.clone());
+            let artifact_root = artifact_workspace.canonicalize()?;
             let (source, relative) = if let Some(relative) = safe_artifact_path(&artifact.locator) {
-                (self.workspace.join(&relative), relative)
+                (artifact_workspace.join(&relative), relative)
             } else {
                 let absolute = std::path::Path::new(&artifact.locator);
                 let Ok(canonical) = absolute.canonicalize() else {
                     continue;
                 };
-                let Ok(relative) = canonical.strip_prefix(&root) else {
+                let Ok(relative) = canonical.strip_prefix(&artifact_root) else {
                     continue;
                 };
                 let relative = relative.to_path_buf();
@@ -144,18 +149,30 @@ impl Runtime {
             }
             if source.is_file() {
                 let canonical = source.canonicalize()?;
-                if !canonical.starts_with(&root) {
+                if !canonical.starts_with(&artifact_root) {
                     continue;
                 }
                 copy_file(&canonical, &target.join(&relative))?;
             } else if source.is_dir() {
                 let canonical = source.canonicalize()?;
-                if canonical.starts_with(&root) {
+                if canonical.starts_with(&artifact_root) {
                     copy_directory(&canonical, &target.join(&relative))?;
                 }
             }
         }
         Ok(())
+    }
+
+    fn artifact_workspace(&self, scope_id: &ScopeId) -> std::path::PathBuf {
+        let branch = self.branches.join(scope_id.to_string());
+        if branch.exists() {
+            return branch;
+        }
+        let scoped = self.workspace.join("scopes").join(scope_id.to_string());
+        if scoped.exists() {
+            return scoped;
+        }
+        self.workspace.clone()
     }
 
     /// 固定槽位准入：活跃 Run（RunStarted 无对应 RunFinished）到顶则拒绝启动。
