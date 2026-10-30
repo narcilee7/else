@@ -107,6 +107,8 @@ pub enum GatewayError {
     InvalidPath(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[error("timed out: {0}")]
+    Timeout(String),
     #[error("model provider: {0}")]
     Model(String),
 }

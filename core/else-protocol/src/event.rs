@@ -13,7 +13,7 @@ use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
 use crate::ids::*;
 use crate::intent::{IntentSpec, IntentState};
 use crate::plan::{Plan, PlanImpact};
-use crate::resource::{ResourceBudget, ResourceLease};
+use crate::resource::{ResourceBudget, ResourceLease, SandboxUsage};
 use crate::PROTOCOL_VERSION;
 
 /// 事件的来源。
@@ -267,6 +267,14 @@ pub enum EventPayload {
     },
     LeaseRevoked {
         lease_id: LeaseId,
+    },
+    SandboxStarted {
+        lease_id: LeaseId,
+        backend: String,
+        started_at: DateTime<Utc>,
+    },
+    SandboxFinished {
+        usage: SandboxUsage,
     },
 
     /// 记忆候选：尚未进入权威投影，需规则校验或用户确认。

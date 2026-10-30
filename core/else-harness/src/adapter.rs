@@ -455,7 +455,7 @@ impl<P: LineParser> HarnessAdapter for ProcessHarness<P> {
         ensure_not_fenced(request.ledger, request.ctx)?;
 
         if timed_out.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(GatewayError::Model(format!(
+            return Err(GatewayError::Timeout(format!(
                 "{} timed out after {:?}; process killed",
                 self.name,
                 self.timeout.unwrap_or_default()

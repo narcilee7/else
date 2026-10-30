@@ -8,10 +8,10 @@ use else_protocol::attention::{
     AttentionRequest, AttentionWindow, AttentionWindowKind, Decision, Ruling,
 };
 use else_protocol::event::{Actor, EventPayload, ScopeState};
-use else_protocol::ids::{ArtifactId, AttentionId, AttentionWindowId, ScopeId, TimerId};
+use else_protocol::ids::{ArtifactId, AttentionId, AttentionWindowId, LeaseId, ScopeId, TimerId};
 use else_protocol::intent::{IntentSpec, IntentState};
 use else_protocol::plan::{Plan, PlanImpact, PlanStepStatus};
-use else_protocol::resource::{ResourceBudget, ResourceUsage};
+use else_protocol::resource::{ResourceBudget, ResourceUsage, SandboxUsage, SandboxUsageBasis};
 
 use crate::{Projection, StoredEvent};
 
@@ -104,6 +104,9 @@ pub struct IntentProjection {
     pub external_wait_reason: Option<String>,
     pub resource_budget: ResourceBudget,
     pub resource_usage: ResourceUsage,
+    /// Sandbox 实际生命周期；Key 为 Lease，便于 Compare 对账预留与实际。
+    pub sandbox_usages: BTreeMap<LeaseId, SandboxUsage>,
+    active_sandbox_leases: BTreeMap<LeaseId, u64>,
     /// 已重放到的事件水位。
     pub cursor: u64,
 }
@@ -370,10 +373,58 @@ impl Projection for IntentProjection {
             EventPayload::LeaseGranted { lease }
                 if lease.class == else_protocol::resource::ResourceClass::Sandbox =>
             {
-                self.resource_usage.sandbox_seconds = self
+                self.active_sandbox_leases
+                    .insert(lease.id.clone(), lease.quantity);
+                self.resource_usage.sandbox_reserved_seconds = self
                     .resource_usage
-                    .sandbox_seconds
+                    .sandbox_reserved_seconds
                     .saturating_add(lease.quantity);
+            }
+            EventPayload::LeaseRevoked { lease_id } => {
+                if let Some(quantity) = self.active_sandbox_leases.remove(lease_id) {
+                    self.resource_usage.sandbox_reserved_seconds = self
+                        .resource_usage
+                        .sandbox_reserved_seconds
+                        .saturating_sub(quantity);
+                }
+            }
+            EventPayload::SandboxFinished { usage } => {
+                if self.sandbox_usages.contains_key(&usage.lease_id) {
+                    return;
+                }
+                let seconds = usage
+                    .elapsed_millis
+                    .saturating_add(999)
+                    .saturating_div(1000)
+                    .max(1);
+                self.resource_usage.sandbox_seconds =
+                    self.resource_usage.sandbox_seconds.saturating_add(seconds);
+                self.resource_usage.sandbox_actual_millis = self
+                    .resource_usage
+                    .sandbox_actual_millis
+                    .saturating_add(usage.elapsed_millis);
+                match usage.basis {
+                    SandboxUsageBasis::Reported => {
+                        self.resource_usage.sandbox_reported_seconds = self
+                            .resource_usage
+                            .sandbox_reported_seconds
+                            .saturating_add(seconds);
+                    }
+                    SandboxUsageBasis::Estimated => {
+                        self.resource_usage.sandbox_estimated_seconds = self
+                            .resource_usage
+                            .sandbox_estimated_seconds
+                            .saturating_add(seconds);
+                    }
+                    SandboxUsageBasis::Unknown => {
+                        self.resource_usage.sandbox_unknown_seconds = self
+                            .resource_usage
+                            .sandbox_unknown_seconds
+                            .saturating_add(seconds);
+                    }
+                }
+                self.sandbox_usages
+                    .insert(usage.lease_id.clone(), usage.clone());
             }
             EventPayload::ArtifactProduced { artifact } => {
                 self.artifacts.push(artifact.clone());

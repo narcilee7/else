@@ -394,9 +394,31 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 report.usage.tool_calls, report.budget.max_tool_calls
             );
             println!(
-                "sandbox: seconds={}/{}",
-                report.usage.sandbox_seconds, report.budget.max_sandbox_seconds
+                "sandbox: actual_seconds={} reserved_seconds={} committed={}/{}",
+                report.usage.sandbox_seconds,
+                report.usage.sandbox_reserved_seconds,
+                report.usage.sandbox_committed_seconds(),
+                report.budget.max_sandbox_seconds
             );
+            println!(
+                "sandbox evidence: reported={}s estimated={}s unknown={}s actual_millis={}",
+                report.usage.sandbox_reported_seconds,
+                report.usage.sandbox_estimated_seconds,
+                report.usage.sandbox_unknown_seconds,
+                report.usage.sandbox_actual_millis
+            );
+            for sandbox in report.sandboxes {
+                println!(
+                    "sandbox {} backend={} started={} finished={} elapsed_ms={} basis={:?} termination={:?}",
+                    sandbox.lease_id,
+                    sandbox.backend,
+                    sandbox.started_at.to_rfc3339(),
+                    sandbox.finished_at.to_rfc3339(),
+                    sandbox.elapsed_millis,
+                    sandbox.basis,
+                    sandbox.termination
+                );
+            }
         }
         Command::Checkpoint { intent_id } => {
             let checkpoint = runtime.checkpoint(&IntentId::from(intent_id))?;

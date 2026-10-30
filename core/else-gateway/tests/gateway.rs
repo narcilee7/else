@@ -49,6 +49,7 @@ fn grant_lease(ledger: &Ledger, ctx: &ExecContext) {
                 quantity: 1,
                 unit: "seconds".into(),
                 generation: ctx.generation,
+                granted_at: Some(chrono::Utc::now()),
                 expires_at: chrono::Utc::now() + chrono::Duration::seconds(60),
             },
         },

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use else_gateway::{ExecContext, GatewayError, ModelGateway, ToolGateway};
+use else_gateway::{ExecContext, ModelGateway, ToolGateway};
 use else_ledger::IntentProjection;
 use else_protocol::effect::SideEffectKind;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload, ScopeState};
@@ -138,6 +138,7 @@ impl Runtime {
                 capabilities: None,
             },
         )?;
+        let sandbox_started = self.start_sandbox(&ctx, &lease)?;
         let tools = ToolGateway::new(&self.ledger, self.workspace.clone());
         let model = ModelGateway::new(&self.ledger, self.provider()?);
         let result = else_harness::run(
@@ -151,28 +152,7 @@ impl Runtime {
                 ..Default::default()
             },
         );
-        let (success, error) = match result {
-            Ok(()) => (true, None),
-            Err(GatewayError::NeedsApproval(_)) => (true, None),
-            Err(e @ GatewayError::Ledger(else_ledger::LedgerError::CrashInjected)) => {
-                return Err(e.into());
-            }
-            Err(e) => (false, Some(e)),
-        };
-        ctx.record(
-            &self.ledger,
-            Actor::System,
-            EventPayload::RunFinished {
-                run_id: ctx.run_id.clone(),
-                success,
-            },
-        )?;
-        self.revoke_lease(&ctx, &lease)?;
-        if let Some(error) = error {
-            return Err(error.into());
-        }
-        self.record_episode_if_terminal(intent_id)?;
-        self.projection(intent_id)
+        self.finish_run(intent_id, &ctx, &lease, sandbox_started, result)
     }
 
     /// 最近一次根执行使用的 Scope；Decision 续跑不能换 Scope，否则授权会丢失。

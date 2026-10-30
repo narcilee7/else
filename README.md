@@ -32,7 +32,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 100 tests passing on macOS.
+**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 102 tests passing on macOS.
 
 - **Kernel (MVP-0)**: durable root Scope identity, explicit Scope dependencies, artifact lineage across child workspaces, fair multi-Scope reconciliation ordered by creation and last execution, replayable external waits and ExternalEvent/Timer wakes that feed the next Context Snapshot, continuous `drive` loops, and a resident single-thread Runtime supervisor; event-sourced ledger on SQLite, Checkpoint → Fork → Rerun → Compare, Abort + Generation Fencing, Subagent delegation tree, Admission + Lease + Accounting, deny-by-default OS sandboxes (macOS Seatbelt verified on real hardware; Linux bubblewrap policy unit-tested, awaiting Linux CI).
 - **Context & Memory (MVP-1)**: Intent Resolution with revisions, three-tier memory (Working / Episodic / Semantic) with scoped promotion rules, Context Compiler producing minimal read-only snapshots per Planner / Executor / Verifier. Memory is never a source of authority.
@@ -41,6 +41,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 - **Publishable closure (MVP-4)**: single-command install, security regression (deny-by-default network/filesystem, no host-env credential leakage), dogfooded real tasks with attention/cost accounting.
 - **Attention closure**: durable Batch / Defer windows, idempotent deadline timers, aggregated decision presentation, and replay-derived intervention metrics.
 - **Structured planning**: replayable Plan revisions with evidence, explicit fact watches, Scope impact analysis, and the same `PlanProposed / PlanReplaced` bridge contract across harnesses.
+- **Sandbox accounting**: conservative lease reservations separated from measured wall-clock cost, with Reported / Estimated / Unknown evidence and termination reasons.
 
 ### Quickstart
 
@@ -74,6 +75,7 @@ else compare <intent-id> <scope-a> <scope-b>
 - **Abort Succeeded means execution converged safely, not that the world was rolled back.** Irreversible effects stay irreversible and are recorded as such.
 - **Misinterrupt rate is a lower bound.** It only counts Interrupt requests a user explicitly dismisses; system cancellations and rejected options are not assumed to be false alarms.
 - **Plan impact is dependency-driven, not mind-reading.** External facts only invalidate steps that explicitly declare matching sources or terms; Plan Impact never grants authority or directly kills a Scope.
+- **Sandbox wall-clock cost is not CPU billing.** It measures the Runtime-held sandbox lease lifetime for budget, reporting, and Compare; missing evidence is graded rather than treated as zero.
 - **Platform**: macOS Seatbelt is verified on real hardware; Linux bubblewrap passes policy unit tests but awaits Linux CI runtime verification. No Windows backend.
 - **No scale**: single user, single machine, ≤2 local run slots. Cloud, multi-user, and remote workers are a separate post-MVP phase (see [MVP](./MVP.md) §11).
 

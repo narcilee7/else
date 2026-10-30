@@ -129,6 +129,19 @@ fn timeout_kills_process_and_fails() {
     assert!(events
         .iter()
         .any(|p| p.contains("run_finished") && p.contains("\"success\":false")));
+    let report = runtime.resources(&spec.id).unwrap();
+    assert_eq!(
+        report.sandboxes[0].elapsed_millis,
+        report.usage.sandbox_actual_millis
+    );
+    assert_eq!(
+        report.sandboxes[0].termination,
+        else_protocol::resource::SandboxTerminationReason::TimedOut
+    );
+    assert_eq!(
+        report.sandboxes[0].basis,
+        else_protocol::resource::SandboxUsageBasis::Reported
+    );
 }
 
 /// Abort 后晚到输出不得写回：执行中从另一个连接取消，

@@ -165,6 +165,7 @@ impl Runtime {
                 capabilities: None,
             },
         )?;
+        let sandbox_started = self.start_sandbox(&ctx, &lease)?;
 
         let tools = ToolGateway::new(&self.ledger, self.workspace.clone());
         let model = ModelGateway::new(&self.ledger, self.provider()?);
@@ -176,12 +177,7 @@ impl Runtime {
             &self.model_name(),
             else_harness::RunOptions::default(),
         );
-        // 等待本人决策是正常终态，不是执行失败
-        let result = match result {
-            Err(GatewayError::NeedsApproval(_)) => Ok(()),
-            other => other,
-        };
-        self.finish_run(intent_id, &ctx, &lease, result)
+        self.finish_run(intent_id, &ctx, &lease, sandbox_started, result)
     }
 
     /// 用真实 Harness 适配器执行（MVP-2）：能力随 RunStarted 落账，
@@ -204,6 +200,7 @@ impl Runtime {
                 capabilities: Some(adapter.capabilities()),
             },
         )?;
+        let sandbox_started = self.start_sandbox(&ctx, &lease)?;
         let request = else_harness::adapter::HarnessRequest {
             ctx: &ctx,
             ledger: &self.ledger,
@@ -212,7 +209,13 @@ impl Runtime {
             snapshot: &snapshot,
             subagent: false,
         };
-        self.finish_run(intent_id, &ctx, &lease, adapter.execute(&request))
+        self.finish_run(
+            intent_id,
+            &ctx,
+            &lease,
+            sandbox_started,
+            adapter.execute(&request),
+        )
     }
 
     /// Run 前奏：终态幂等检查、编译 Planner 快照、构造执行上下文。
@@ -264,18 +267,41 @@ impl Runtime {
         intent_id: &IntentId,
         ctx: &ExecContext,
         lease: &else_protocol::resource::ResourceLease,
+        sandbox_started: chrono::DateTime<chrono::Utc>,
         result: else_gateway::Result<()>,
     ) -> Result<IntentProjection> {
-        let (success, error) = match result {
-            Ok(()) => (true, None),
+        let (success, error, termination, basis) = match result {
+            Ok(()) => (
+                true,
+                None,
+                else_protocol::resource::SandboxTerminationReason::Completed,
+                else_protocol::resource::SandboxUsageBasis::Reported,
+            ),
             // 等待本人确认或授权是正常等待态，不是执行失败。
-            Err(GatewayError::NeedsApproval(_)) => (true, None),
+            Err(GatewayError::NeedsApproval(_)) => (
+                true,
+                None,
+                else_protocol::resource::SandboxTerminationReason::PausedForDecision,
+                else_protocol::resource::SandboxUsageBasis::Reported,
+            ),
             // 故障注入代表进程已死：不得再写 RunFinished，直接丢弃 Runtime 重开。
             Err(e @ GatewayError::Ledger(else_ledger::LedgerError::CrashInjected)) => {
                 return Err(e.into());
             }
-            Err(e) => (false, Some(e)),
+            Err(e @ GatewayError::Timeout(_)) => (
+                false,
+                Some(e),
+                else_protocol::resource::SandboxTerminationReason::TimedOut,
+                else_protocol::resource::SandboxUsageBasis::Reported,
+            ),
+            Err(e) => (
+                false,
+                Some(e),
+                else_protocol::resource::SandboxTerminationReason::Failed,
+                else_protocol::resource::SandboxUsageBasis::Reported,
+            ),
         };
+        self.finish_sandbox(ctx, lease, sandbox_started, termination, basis)?;
         ctx.record(
             &self.ledger,
             Actor::System,
@@ -539,6 +565,7 @@ impl Runtime {
                 capabilities: None,
             },
         )?;
+        let sandbox_started = self.start_sandbox(&ctx, &lease)?;
         let tools = ToolGateway::new(&self.ledger, branch_ws);
         let model = ModelGateway::new(&self.ledger, self.provider()?);
         let result = else_harness::run(
@@ -554,14 +581,38 @@ impl Runtime {
                 subagent: false,
             },
         );
-        let (success, error) = match result {
-            Ok(()) => (true, None),
-            Err(GatewayError::NeedsApproval(_)) => (true, None),
+        let (success, error, termination) = match result {
+            Ok(()) => (
+                true,
+                None,
+                else_protocol::resource::SandboxTerminationReason::Completed,
+            ),
+            Err(GatewayError::NeedsApproval(_)) => (
+                true,
+                None,
+                else_protocol::resource::SandboxTerminationReason::PausedForDecision,
+            ),
             Err(e @ GatewayError::Ledger(else_ledger::LedgerError::CrashInjected)) => {
                 return Err(e.into());
             }
-            Err(e) => (false, Some(e)),
+            Err(e @ GatewayError::Timeout(_)) => (
+                false,
+                Some(e),
+                else_protocol::resource::SandboxTerminationReason::TimedOut,
+            ),
+            Err(e) => (
+                false,
+                Some(e),
+                else_protocol::resource::SandboxTerminationReason::Failed,
+            ),
         };
+        self.finish_sandbox(
+            &ctx,
+            &lease,
+            sandbox_started,
+            termination,
+            else_protocol::resource::SandboxUsageBasis::Reported,
+        )?;
         ctx.record(
             &self.ledger,
             Actor::System,
@@ -602,6 +653,11 @@ impl Runtime {
             let mut cost = 0;
             let mut verified = false;
             let mut tools = Vec::new();
+            let mut sandbox_reserved_seconds = 0_u64;
+            let mut sandbox_reported_seconds = 0_u64;
+            let mut sandbox_estimated_seconds = 0_u64;
+            let mut sandbox_unknown_seconds = 0_u64;
+            let mut sandbox_actual_millis = 0_u64;
             let mut plan_path: Option<(ScopeId, String)> = None;
             for event in events {
                 match &event.envelope.payload {
@@ -618,6 +674,35 @@ impl Runtime {
                             .unwrap_or_else(|| "?".into());
                         tools.push(format!("{name}({:?})", outcome.effect));
                     }
+                    EventPayload::LeaseGranted { lease }
+                        if lease.class == else_protocol::resource::ResourceClass::Sandbox =>
+                    {
+                        sandbox_reserved_seconds =
+                            sandbox_reserved_seconds.saturating_add(lease.quantity);
+                    }
+                    EventPayload::SandboxFinished { usage } => {
+                        let seconds = usage
+                            .elapsed_millis
+                            .saturating_add(999)
+                            .saturating_div(1000)
+                            .max(1);
+                        sandbox_actual_millis =
+                            sandbox_actual_millis.saturating_add(usage.elapsed_millis);
+                        match usage.basis {
+                            else_protocol::resource::SandboxUsageBasis::Reported => {
+                                sandbox_reported_seconds =
+                                    sandbox_reported_seconds.saturating_add(seconds);
+                            }
+                            else_protocol::resource::SandboxUsageBasis::Estimated => {
+                                sandbox_estimated_seconds =
+                                    sandbox_estimated_seconds.saturating_add(seconds);
+                            }
+                            else_protocol::resource::SandboxUsageBasis::Unknown => {
+                                sandbox_unknown_seconds =
+                                    sandbox_unknown_seconds.saturating_add(seconds);
+                            }
+                        }
+                    }
                     EventPayload::ArtifactProduced { artifact }
                         if artifact.locator.ends_with("plan.md") =>
                     {
@@ -628,7 +713,7 @@ impl Runtime {
                 }
             }
             out.push_str(&format!(
-                "generation {generation}:\n  outcome_verified: {verified}\n  model: input={input} output={output} cost_usd_micros={cost}\n  tools: {}\n",
+                "generation {generation}:\n  outcome_verified: {verified}\n  model: input={input} output={output} cost_usd_micros={cost}\n  sandbox: reserved_seconds={sandbox_reserved_seconds} actual_millis={sandbox_actual_millis} reported={sandbox_reported_seconds}s estimated={sandbox_estimated_seconds}s unknown={sandbox_unknown_seconds}s\n  tools: {}\n",
                 tools.join(", ")
             ));
             if let Some((scope_id, path)) = plan_path {

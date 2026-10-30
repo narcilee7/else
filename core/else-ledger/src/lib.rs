@@ -245,6 +245,8 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::ResourceBudgetSet { .. } => "resource_budget_set",
         P::LeaseGranted { .. } => "lease_granted",
         P::LeaseRevoked { .. } => "lease_revoked",
+        P::SandboxStarted { .. } => "sandbox_started",
+        P::SandboxFinished { .. } => "sandbox_finished",
         P::MemoryCandidateProposed { .. } => "memory_candidate_proposed",
         P::MemoryPromoted { .. } => "memory_promoted",
         P::MemoryRevoked { .. } => "memory_revoked",

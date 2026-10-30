@@ -103,6 +103,7 @@ impl Runtime {
                 capabilities: Some(adapter.capabilities()),
             },
         )?;
+        let sandbox_started = self.start_sandbox(&ctx, &lease)?;
         let request = HarnessRequest {
             ctx: &ctx,
             ledger: &self.ledger,
@@ -111,7 +112,13 @@ impl Runtime {
             snapshot: &snapshot,
             subagent,
         };
-        self.finish_run(intent_id, &ctx, &lease, adapter.execute(&request))
+        self.finish_run(
+            intent_id,
+            &ctx,
+            &lease,
+            sandbox_started,
+            adapter.execute(&request),
+        )
     }
 
     /// 把当前 Intent 的工件物化到隔离 Scope。CAS manifest 直接恢复；

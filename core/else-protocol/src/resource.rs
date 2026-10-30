@@ -54,7 +54,27 @@ pub struct ResourceUsage {
     pub model_tokens: u64,
     pub model_spend_usd_micros: u64,
     pub tool_calls: u64,
+    /// 已消费的 Sandbox 墙钟秒数（Reported + Estimated + Unknown）。
     pub sandbox_seconds: u64,
+    /// 当前仍活跃 Lease 的保守预留秒数，不是实际成本。
+    #[serde(default)]
+    pub sandbox_reserved_seconds: u64,
+    #[serde(default)]
+    pub sandbox_reported_seconds: u64,
+    #[serde(default)]
+    pub sandbox_estimated_seconds: u64,
+    #[serde(default)]
+    pub sandbox_unknown_seconds: u64,
+    #[serde(default)]
+    pub sandbox_actual_millis: u64,
+}
+
+impl ResourceUsage {
+    /// Admission 使用：已消费实际 + 当前预留，避免活跃 Run 被重复超卖。
+    pub fn sandbox_committed_seconds(&self) -> u64 {
+        self.sandbox_seconds
+            .saturating_add(self.sandbox_reserved_seconds)
+    }
 }
 
 /// 资源租约：资源不足就不允许启动（Admission），
@@ -70,7 +90,42 @@ pub struct ResourceLease {
     pub unit: String,
     /// 与执行世代绑定：Generation 失效后租约随之失效。
     pub generation: u64,
+    /// Lease 签发时间；旧事件缺省，由 `LeaseGranted.occurred_at` 恢复。
+    #[serde(default)]
+    pub granted_at: Option<DateTime<Utc>>,
     pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxUsageBasis {
+    Reported,
+    Estimated,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxTerminationReason {
+    Completed,
+    Failed,
+    TimedOut,
+    PausedForDecision,
+    Aborted,
+    Crashed,
+    Unknown,
+}
+
+/// 一次 Sandbox 生命周期的实际墙钟与证据。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxUsage {
+    pub lease_id: LeaseId,
+    pub backend: String,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: DateTime<Utc>,
+    pub elapsed_millis: u64,
+    pub basis: SandboxUsageBasis,
+    pub termination: SandboxTerminationReason,
 }
 
 /// 用量证据等级：真实数据记 Reported，估算记 Estimated，

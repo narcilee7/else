@@ -54,6 +54,9 @@ fn checkpoint_fork_rerun_compare() {
     assert!(report.contains("generation 1:"), "{report}");
     assert!(report.contains("generation 2:"), "{report}");
     assert_eq!(report.matches("outcome_verified: true").count(), 2);
+    assert_eq!(report.matches("sandbox: reserved_seconds=").count(), 2);
+    assert!(report.contains("actual_millis="), "{report}");
+    assert!(report.contains("reported="), "{report}");
     assert!(report.contains("内容不同"), "{report}");
 
     // 重开后 Compare 可完整重建（恢复测试）

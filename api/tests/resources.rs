@@ -4,7 +4,9 @@ use else_api::{ApiError, Runtime};
 use else_gateway::GatewayError;
 use else_protocol::effect::SideEffectKind;
 use else_protocol::event::EventPayload;
-use else_protocol::resource::{ResourceBudget, ResourceUsage};
+use else_protocol::resource::{
+    ResourceBudget, ResourceUsage, SandboxTerminationReason, SandboxUsageBasis,
+};
 
 #[test]
 fn admission_rejects_over_budget_run_before_lease_or_execution() {
@@ -52,6 +54,19 @@ fn accounting_and_lease_closure_survive_reopen() {
     assert_eq!(report.usage.model_spend_usd_micros, 1_500);
     assert_eq!(report.usage.tool_calls, 2);
     assert_eq!(report.usage.sandbox_seconds, 1);
+    assert_eq!(report.usage.sandbox_reserved_seconds, 0);
+    assert_eq!(report.usage.sandbox_reported_seconds, 1);
+    assert_eq!(report.usage.sandbox_estimated_seconds, 0);
+    assert_eq!(report.usage.sandbox_unknown_seconds, 0);
+    assert_eq!(report.sandboxes.len(), 1);
+    let sandbox = &report.sandboxes[0];
+    assert!(sandbox.finished_at >= sandbox.started_at);
+    assert_eq!(sandbox.basis, SandboxUsageBasis::Reported);
+    assert_eq!(
+        sandbox.termination,
+        SandboxTerminationReason::PausedForDecision
+    );
+    assert!(sandbox.backend == "seatbelt" || sandbox.backend == "bubblewrap");
     let events = runtime.events(&spec.id).unwrap();
     assert_eq!(
         events
@@ -121,11 +136,14 @@ fn abort_revokes_lease_left_by_crashed_run() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime.create_intent("崩溃租约回收", None).unwrap();
-    runtime.crash_after_appends(3); // LeaseGranted → RunStarted → ModelCalled，随后 kill。
+    runtime.crash_after_appends(4); // ContextCompiled → LeaseGranted → RunStarted → SandboxStarted。
     assert!(runtime.run(&spec.id).is_err());
     drop(runtime);
 
     let runtime = Runtime::open(dir.path()).unwrap();
+    let reserved = runtime.resources(&spec.id).unwrap();
+    assert_eq!(reserved.usage.sandbox_reserved_seconds, 900);
+    assert_eq!(reserved.usage.sandbox_seconds, 0);
     runtime.abort(&spec.id, "回收崩溃执行").unwrap();
     let events = runtime.events(&spec.id).unwrap();
     let granted: std::collections::BTreeSet<_> = events
@@ -144,4 +162,55 @@ fn abort_revokes_lease_left_by_crashed_run() {
         .collect();
     assert_eq!(granted.len(), 1);
     assert_eq!(granted, revoked);
+    let report = runtime.resources(&spec.id).unwrap();
+    assert_eq!(report.usage.sandbox_reserved_seconds, 0);
+    assert_eq!(report.usage.sandbox_unknown_seconds, 1);
+    assert_eq!(report.sandboxes[0].basis, SandboxUsageBasis::Unknown);
+    assert_eq!(
+        report.sandboxes[0].termination,
+        SandboxTerminationReason::Aborted
+    );
+}
+
+#[test]
+fn crash_before_sandbox_start_uses_estimated_elapsed_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("启动前崩溃估算", None).unwrap();
+    runtime.crash_after_appends(2); // ContextCompiled → LeaseGranted，随后 kill。
+    assert!(runtime.run(&spec.id).is_err());
+    drop(runtime);
+
+    let runtime = Runtime::open(dir.path()).unwrap();
+    runtime.abort(&spec.id, "回收未启动沙箱").unwrap();
+    let report = runtime.resources(&spec.id).unwrap();
+    assert_eq!(report.usage.sandbox_reserved_seconds, 0);
+    assert_eq!(report.usage.sandbox_estimated_seconds, 1);
+    assert_eq!(report.usage.sandbox_unknown_seconds, 0);
+    assert_eq!(report.sandboxes[0].basis, SandboxUsageBasis::Estimated);
+}
+
+#[test]
+fn consumed_actual_seconds_are_checked_conservatively_on_the_next_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut runtime = Runtime::open(dir.path()).unwrap();
+    runtime.set_default_budget(ResourceBudget {
+        max_sandbox_seconds: 900,
+        ..Default::default()
+    });
+    let spec = runtime.create_intent("沙箱预算熔断", None).unwrap();
+    runtime.run(&spec.id).unwrap();
+
+    let error = runtime.run(&spec.id).unwrap_err();
+    assert!(matches!(
+        error,
+        ApiError::Gateway(GatewayError::ResourceExhausted {
+            ref resource,
+            ..
+        }) if resource == "sandbox_seconds"
+    ));
+    assert_eq!(
+        runtime.resources(&spec.id).unwrap().usage.sandbox_seconds,
+        1
+    );
 }

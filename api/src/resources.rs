@@ -1,23 +1,29 @@
 //! M1-W3：Admission + Lease + Accounting。
 
+use chrono::{DateTime, Utc};
 use else_gateway::{resource::ensure_capacity, ExecContext};
 use else_ledger::StoredEvent;
 use else_protocol::event::{Actor, EventPayload};
 use else_protocol::ids::IntentId;
-use else_protocol::resource::{ResourceBudget, ResourceClass, ResourceLease, ResourceUsage};
+use else_protocol::resource::{
+    ResourceBudget, ResourceClass, ResourceLease, ResourceUsage, SandboxTerminationReason,
+    SandboxUsage, SandboxUsageBasis,
+};
 
 use crate::{Result, Runtime};
 
 const RUN_MODEL_TOKENS: u64 = 128;
 const RUN_MODEL_SPEND_MICROS: u64 = 1_500;
 const RUN_TOOL_CALLS: u64 = 2;
-const RUN_SANDBOX_SECONDS: u64 = 1;
-const LEASE_TTL_SECONDS: i64 = 300;
+/// 与真实 Harness 的 15 分钟墙钟超时一致；Admission 按完整最坏时长预留。
+const RUN_SANDBOX_SECONDS: u64 = 900;
+const LEASE_TTL_SECONDS: i64 = 900;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceReport {
     pub budget: ResourceBudget,
     pub usage: ResourceUsage,
+    pub sandboxes: Vec<SandboxUsage>,
 }
 
 impl Runtime {
@@ -31,6 +37,7 @@ impl Runtime {
         Ok(ResourceReport {
             budget: projection.resource_budget,
             usage: projection.resource_usage,
+            sandboxes: projection.sandbox_usages.into_values().collect(),
         })
     }
 
@@ -64,9 +71,10 @@ impl Runtime {
             "sandbox_seconds",
             RUN_SANDBOX_SECONDS,
             budget.max_sandbox_seconds,
-            usage.sandbox_seconds,
+            usage.sandbox_committed_seconds(),
             "seconds",
         )?;
+        let now = Utc::now();
         let lease = ResourceLease {
             id: else_protocol::ids::LeaseId::new(),
             scope_id: ctx.scope_id.clone(),
@@ -75,7 +83,8 @@ impl Runtime {
             quantity: RUN_SANDBOX_SECONDS,
             unit: "seconds".into(),
             generation: ctx.generation,
-            expires_at: chrono::Utc::now() + chrono::Duration::seconds(LEASE_TTL_SECONDS),
+            granted_at: Some(now),
+            expires_at: now + chrono::Duration::seconds(LEASE_TTL_SECONDS),
         };
         ctx.record(
             &self.ledger,
@@ -85,6 +94,64 @@ impl Runtime {
             },
         )?;
         Ok(lease)
+    }
+
+    /// Sandbox 真正开始接管执行时落账；开始后崩溃会留下可恢复证据。
+    pub(crate) fn start_sandbox(
+        &self,
+        ctx: &ExecContext,
+        lease: &ResourceLease,
+    ) -> Result<DateTime<Utc>> {
+        let started_at = Utc::now();
+        ctx.record(
+            &self.ledger,
+            Actor::System,
+            EventPayload::SandboxStarted {
+                lease_id: lease.id.clone(),
+                backend: sandbox_backend_name().into(),
+                started_at,
+            },
+        )?;
+        Ok(started_at)
+    }
+
+    /// Normal Run 结束由 Runtime 实测墙钟，证据等级为 Reported。
+    pub(crate) fn finish_sandbox(
+        &self,
+        ctx: &ExecContext,
+        lease: &ResourceLease,
+        started_at: DateTime<Utc>,
+        termination: SandboxTerminationReason,
+        basis: SandboxUsageBasis,
+    ) -> Result<()> {
+        if self
+            .projection(&ctx.spec.id)?
+            .sandbox_usages
+            .contains_key(&lease.id)
+        {
+            return Ok(());
+        }
+        let finished_at = Utc::now();
+        let elapsed_millis = finished_at
+            .signed_duration_since(started_at)
+            .num_milliseconds()
+            .max(0) as u64;
+        ctx.record(
+            &self.ledger,
+            Actor::System,
+            EventPayload::SandboxFinished {
+                usage: SandboxUsage {
+                    lease_id: lease.id.clone(),
+                    backend: sandbox_backend_name().into(),
+                    started_at,
+                    finished_at,
+                    elapsed_millis,
+                    basis,
+                    termination,
+                },
+            },
+        )?;
+        Ok(())
     }
 
     pub(crate) fn revoke_lease(&self, ctx: &ExecContext, lease: &ResourceLease) -> Result<()> {
@@ -119,11 +186,44 @@ impl Runtime {
                 && lease.generation == ctx.generation
                 && !revoked.contains(&lease.id)
             {
+                let started_at = events
+                    .iter()
+                    .find_map(|event| match &event.envelope.payload {
+                        EventPayload::SandboxStarted {
+                            lease_id,
+                            started_at,
+                            ..
+                        } if lease_id == &lease.id => Some(*started_at),
+                        _ => None,
+                    });
+                let (started_at, basis) = started_at.map_or(
+                    (
+                        lease.granted_at.unwrap_or(event.envelope.occurred_at),
+                        SandboxUsageBasis::Estimated,
+                    ),
+                    |started_at| (started_at, SandboxUsageBasis::Unknown),
+                );
+                self.finish_sandbox(
+                    ctx,
+                    lease,
+                    started_at,
+                    SandboxTerminationReason::Aborted,
+                    basis,
+                )?;
                 self.revoke_lease(ctx, lease)?;
             }
         }
         Ok(())
     }
+}
+
+fn sandbox_backend_name() -> &'static str {
+    #[cfg(target_os = "macos")]
+    return "seatbelt";
+    #[cfg(target_os = "linux")]
+    return "bubblewrap";
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    return "unsupported";
 }
 
 pub(crate) fn budget_from_env() -> ResourceBudget {
