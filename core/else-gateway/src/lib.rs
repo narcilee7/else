@@ -109,6 +109,10 @@ pub enum GatewayError {
     Io(#[from] std::io::Error),
     #[error("timed out: {0}")]
     Timeout(String),
+    #[error("opaque harness denied: {0}")]
+    OpaqueHarnessDenied(String),
+    #[error("opaque effect exceeds user-approved profile: {0}")]
+    OpaqueEffectDenied(String),
     #[error("model provider: {0}")]
     Model(String),
 }

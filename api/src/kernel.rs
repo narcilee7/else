@@ -232,10 +232,18 @@ impl Runtime {
         if let Some((_, _, scope_id)) = ready.into_iter().next() {
             let spec = scope_spec(&projection, &scope_id)
                 .ok_or_else(|| ApiError::NotFound(format!("scope {scope_id}")))?;
+            let selected = else_harness::select_harness(&spec.outcome, harness_hint);
+            let harness = if selected == else_harness::SCRIPTED {
+                selected
+            } else {
+                else_harness::find_adapter(selected)
+                    .filter(|adapter| self.harness_allowed(&spec, adapter.as_ref()))
+                    .map_or(else_harness::SCRIPTED, |_| selected)
+            };
             return Ok(KernelAction::Run {
                 scope_id: scope_id.clone(),
                 generation: self.next_scope_generation(intent_id, &scope_id)?,
-                harness: else_harness::select_harness(&spec.outcome, harness_hint),
+                harness,
             });
         }
         if let Some(due_at) = projection.next_timer_at() {

@@ -86,6 +86,25 @@ pub struct AttentionPolicy {
     pub batch_interval_minutes: u32,
 }
 
+/// 无法经过 Tool Gateway 的 Harness 需要用户显式开启 Opaque Profile。
+/// 默认全关；Policy 不扩大 Intent Authority，只声明可观察风险的上限。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpaqueHarnessPolicy {
+    pub enabled: bool,
+    pub allow_native_provider_network: bool,
+    pub max_observed_effect: SideEffectKind,
+}
+
+impl Default for OpaqueHarnessPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allow_native_provider_network: false,
+            max_observed_effect: SideEffectKind::ReadOnly,
+        }
+    }
+}
+
 /// Intent 的用户目标契约（IntentSpec）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IntentSpec {
@@ -100,6 +119,9 @@ pub struct IntentSpec {
     pub constraints: Vec<String>,
     pub authority: Authority,
     pub attention_policy: AttentionPolicy,
+    /// Opaque Harness 的显式用户风险配置；缺省拒绝。
+    #[serde(default)]
+    pub opaque_harness_policy: OpaqueHarnessPolicy,
     pub deadline: Option<DateTime<Utc>>,
     pub assumptions: Vec<Assumption>,
     /// 项目作用域：Episodic/Semantic 记忆按项目召回。

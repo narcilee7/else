@@ -119,8 +119,8 @@ fn process_harness_bridges_events_and_verifies() {
         .map(|e| serde_json::to_string(&e.envelope.payload).unwrap())
         .collect();
     assert!(payloads.iter().any(|p| p.contains("harness_output")));
-    assert!(payloads.iter().any(|p| p.contains("tool_called")));
-    assert!(payloads.iter().any(|p| p.contains("tool_completed")));
+    assert!(payloads.iter().any(|p| p.contains("opaque_tool_observed")));
+    assert!(!payloads.iter().any(|p| p.contains("\"tool_called\"")));
     assert!(payloads.iter().any(|p| p.contains("artifact_produced")));
     assert!(payloads.iter().any(|p| p.contains("outcome_verified")));
 

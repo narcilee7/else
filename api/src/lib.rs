@@ -10,6 +10,7 @@ mod dependency;
 mod dispatch;
 mod failure;
 mod kernel;
+mod opaque;
 mod outcome;
 mod plan;
 mod resources;
@@ -123,6 +124,7 @@ impl Runtime {
                 allow_interrupt: true,
                 batch_interval_minutes: 30,
             },
+            opaque_harness_policy: else_protocol::intent::OpaqueHarnessPolicy::default(),
             deadline: None,
             assumptions: vec![else_protocol::intent::Assumption {
                 text: "假设：在当前工作区推进该目标（系统补全，可修正）".into(),
@@ -189,6 +191,12 @@ impl Runtime {
         intent_id: &IntentId,
         adapter: &dyn else_harness::adapter::HarnessAdapter,
     ) -> Result<IntentProjection> {
+        let projection = self.projection(intent_id)?;
+        let spec = projection
+            .spec
+            .as_ref()
+            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+        self.ensure_harness_allowed(spec, adapter)?;
         let Some((ctx, snapshot)) = self.prepare_root_run(intent_id, true)? else {
             return self.projection(intent_id);
         };
@@ -638,8 +646,12 @@ impl Runtime {
         let events = self.ledger.read_intent(intent_id)?;
         let mut tool_names = std::collections::HashMap::new();
         for event in &events {
-            if let EventPayload::ToolCalled { call } = &event.envelope.payload {
-                tool_names.insert(call.id.clone(), call.tool.clone());
+            match &event.envelope.payload {
+                EventPayload::ToolCalled { call }
+                | EventPayload::OpaqueToolObserved { call, .. } => {
+                    tool_names.insert(call.id.clone(), call.tool.clone());
+                }
+                _ => {}
             }
         }
         let mut by_generation: std::collections::BTreeMap<u64, Vec<&StoredEvent>> =
@@ -678,6 +690,9 @@ impl Runtime {
                             .cloned()
                             .unwrap_or_else(|| "?".into());
                         tools.push(format!("{name}({:?})", outcome.effect));
+                    }
+                    EventPayload::OpaqueToolObserved { call, outcome, .. } => {
+                        tools.push(format!("observed:{} ({:?})", call.tool, outcome.effect));
                     }
                     EventPayload::LeaseGranted { lease }
                         if lease.class == else_protocol::resource::ResourceClass::Sandbox =>

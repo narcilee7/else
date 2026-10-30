@@ -54,6 +54,9 @@ pub struct ResourceUsage {
     pub model_tokens: u64,
     pub model_spend_usd_micros: u64,
     pub tool_calls: u64,
+    /// Harness 自行执行且只能事后观察的工具调用数。
+    #[serde(default)]
+    pub opaque_tool_calls: u64,
     /// 已消费的 Sandbox 墙钟秒数（Reported + Estimated + Unknown）。
     pub sandbox_seconds: u64,
     /// 当前仍活跃 Lease 的保守预留秒数，不是实际成本。

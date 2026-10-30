@@ -30,6 +30,15 @@ enum Command {
         /// 执行器：auto（默认）/ scripted / codex / claude-code
         #[arg(long, default_value = "auto")]
         harness: String,
+        /// 显式允许不可接管 Harness 执行观察式副作用。
+        #[arg(long)]
+        allow_opaque: bool,
+        /// 显式允许 Opaque Harness 使用原生 Provider 出站网络。
+        #[arg(long)]
+        opaque_network: bool,
+        /// Opaque Profile 允许的最高观察副作用等级。
+        #[arg(long, default_value = "read_only", value_parser = ["read_only", "reversible", "compensatable", "irreversible", "unknown"])]
+        opaque_max_effect: String,
     },
     /// 让 Kernel 从持久状态推导并执行下一步
     Advance {
@@ -75,6 +84,14 @@ enum Command {
     },
     /// 列出可用的 Harness 适配器及其能力声明
     Harnesses,
+    /// 为已有 Intent 显式启用 Opaque Harness Profile
+    AllowOpaque {
+        intent_id: String,
+        #[arg(long)]
+        network: bool,
+        #[arg(long, default_value = "read_only", value_parser = ["read_only", "reversible", "compensatable", "irreversible", "unknown"])]
+        max_effect: String,
+    },
     /// 取消执行并收敛在途副作用（可安全重复调用）
     Abort {
         intent_id: String,
@@ -197,10 +214,23 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             outcome,
             project,
             harness,
+            allow_opaque,
+            opaque_network,
+            opaque_max_effect,
         } => {
             let spec = runtime.create_intent(&outcome, project)?;
             let intent_id = spec.id.clone();
             println!("intent: {intent_id}");
+            if allow_opaque {
+                runtime.configure_opaque_harness(
+                    &intent_id,
+                    else_protocol::intent::OpaqueHarnessPolicy {
+                        enabled: true,
+                        allow_native_provider_network: opaque_network,
+                        max_observed_effect: parse_effect(&opaque_max_effect),
+                    },
+                )?;
+            }
             let projection = runtime.advance(&intent_id, Some(&harness))?;
             print_projection(&projection);
         }
@@ -273,13 +303,34 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             for adapter in else_harness::builtin_adapters() {
                 let caps = adapter.capabilities();
                 println!(
-                    "{}（cancel={:?} usage={:?} tool_effects={:?}）",
+                    "{}（cancel={:?} usage={:?} tool_effects={:?} network={:?}）",
                     adapter.name(),
                     caps.cancel,
                     caps.usage,
-                    caps.tool_effects
+                    caps.tool_effects,
+                    adapter.network_access()
                 );
             }
+        }
+        Command::AllowOpaque {
+            intent_id,
+            network,
+            max_effect,
+        } => {
+            let spec = runtime.configure_opaque_harness(
+                &IntentId::from(intent_id),
+                else_protocol::intent::OpaqueHarnessPolicy {
+                    enabled: true,
+                    allow_native_provider_network: network,
+                    max_observed_effect: parse_effect(&max_effect),
+                },
+            )?;
+            println!(
+                "opaque: enabled network={} max_effect={:?} revision={}",
+                spec.opaque_harness_policy.allow_native_provider_network,
+                spec.opaque_harness_policy.max_observed_effect,
+                spec.revision
+            );
         }
         Command::Abort { intent_id, reason } => {
             let projection = runtime.abort(
@@ -400,8 +451,14 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 report.budget.max_model_spend_usd_micros
             );
             println!(
-                "tools: calls={}/{}",
-                report.usage.tool_calls, report.budget.max_tool_calls
+                "tools: calls={}/{} gateway={} observed_opaque={}",
+                report.usage.tool_calls,
+                report.budget.max_tool_calls,
+                report
+                    .usage
+                    .tool_calls
+                    .saturating_sub(report.usage.opaque_tool_calls),
+                report.usage.opaque_tool_calls
             );
             println!(
                 "sandbox: actual_seconds={} reserved_seconds={} committed={}/{}",
@@ -651,6 +708,17 @@ fn format_rate(rate: Option<f64>) -> String {
     match rate {
         Some(rate) => format!("{:.1}%", rate * 100.0),
         None => "n/a".into(),
+    }
+}
+
+fn parse_effect(raw: &str) -> else_protocol::effect::SideEffectKind {
+    use else_protocol::effect::SideEffectKind;
+    match raw {
+        "read_only" => SideEffectKind::ReadOnly,
+        "reversible" => SideEffectKind::Reversible,
+        "compensatable" => SideEffectKind::Compensatable,
+        "irreversible" => SideEffectKind::Irreversible,
+        _ => SideEffectKind::Unknown,
     }
 }
 

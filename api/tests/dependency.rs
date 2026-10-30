@@ -34,7 +34,7 @@ fn failing_harness() -> ProcessHarness<EmptyParser> {
             cancel: CancelSupport::KillOnly,
             checkpoint_resume: false,
             usage: UsageSupport::None,
-            tool_effects: ToolEffectVisibility::Opaque,
+            tool_effects: ToolEffectVisibility::Observable,
             interactive_input: false,
         },
         network: else_environment::NetworkPolicy::Deny,

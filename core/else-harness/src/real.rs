@@ -37,7 +37,7 @@ pub fn codex() -> ProcessHarness<CodexParser> {
             cancel: CancelSupport::KillOnly,
             checkpoint_resume: true, // codex exec resume，else 不依赖它做权威恢复
             usage: UsageSupport::Estimated,
-            tool_effects: ToolEffectVisibility::Observable,
+            tool_effects: ToolEffectVisibility::Opaque,
             interactive_input: false,
         },
         network: NetworkPolicy::AllowOutbound,
@@ -105,7 +105,7 @@ pub fn claude_code() -> ProcessHarness<ClaudeParser> {
             cancel: CancelSupport::KillOnly,
             checkpoint_resume: true, // claude --resume，else 不依赖它做权威恢复
             usage: UsageSupport::Reported,
-            tool_effects: ToolEffectVisibility::Observable,
+            tool_effects: ToolEffectVisibility::Opaque,
             interactive_input: false,
         },
         network: NetworkPolicy::AllowOutbound,

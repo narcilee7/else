@@ -25,6 +25,7 @@ fn ctx() -> ExecContext {
                 allow_interrupt: true,
                 batch_interval_minutes: 30,
             },
+            opaque_harness_policy: else_protocol::intent::OpaqueHarnessPolicy::default(),
             deadline: None,
             assumptions: vec![],
             project: None,

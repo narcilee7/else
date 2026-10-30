@@ -183,6 +183,13 @@ pub enum EventPayload {
         call_id: ToolCallId,
         outcome: ToolOutcome,
     },
+    /// 不可接管 Harness 自行执行的工具。该事件表示“已观察”，
+    /// 不经过 Gateway，也不得被表面解释为“已授权”。
+    OpaqueToolObserved {
+        call: ToolCall,
+        outcome: ToolOutcome,
+        backend: String,
+    },
     /// 在途副作用有了最终结论（已应用/已补偿/未知）。
     SideEffectConcluded {
         call_id: ToolCallId,
@@ -335,6 +342,7 @@ mod tests {
                 allow_interrupt: true,
                 batch_interval_minutes: 30,
             },
+            opaque_harness_policy: crate::intent::OpaqueHarnessPolicy::default(),
             deadline: None,
             assumptions: vec![],
             project: None,

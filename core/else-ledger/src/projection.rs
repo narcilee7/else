@@ -436,6 +436,11 @@ impl Projection for IntentProjection {
             EventPayload::ToolCalled { .. } => {
                 self.resource_usage.tool_calls = self.resource_usage.tool_calls.saturating_add(1);
             }
+            EventPayload::OpaqueToolObserved { .. } => {
+                self.resource_usage.tool_calls = self.resource_usage.tool_calls.saturating_add(1);
+                self.resource_usage.opaque_tool_calls =
+                    self.resource_usage.opaque_tool_calls.saturating_add(1);
+            }
             EventPayload::LeaseGranted { lease }
                 if lease.class == else_protocol::resource::ResourceClass::Sandbox =>
             {

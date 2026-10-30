@@ -1,0 +1,169 @@
+//! Opaque Harness Profile：默认拒绝、显式授权、观察事件与授权事件分离。
+
+use else_api::{ApiError, Runtime};
+use else_gateway::GatewayError;
+use else_harness::adapter::{BridgeEvent, HarnessPrep, LineParser, ProcessHarness};
+use else_protocol::effect::SideEffectKind;
+use else_protocol::event::EventPayload;
+use else_protocol::harness::{
+    CancelSupport, HarnessCapabilities, ToolEffectVisibility, UsageSupport,
+};
+use else_protocol::intent::OpaqueHarnessPolicy;
+
+struct JsonParser;
+
+impl LineParser for JsonParser {
+    fn parse(&self, line: &str) -> Vec<BridgeEvent> {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            return vec![];
+        };
+        match value["type"].as_str() {
+            Some("tool") => vec![BridgeEvent::ToolObserved {
+                tool: value["tool"].as_str().unwrap_or("unknown").into(),
+                effect: serde_json::from_value(value["effect"].clone())
+                    .unwrap_or(SideEffectKind::Unknown),
+                summary: value["summary"].as_str().unwrap_or_default().into(),
+                success: true,
+            }],
+            Some("completed") => vec![BridgeEvent::Completed {
+                summary: value["summary"].as_str().unwrap_or_default().into(),
+            }],
+            _ => vec![],
+        }
+    }
+}
+
+fn opaque_harness(network: else_environment::NetworkPolicy) -> ProcessHarness<JsonParser> {
+    ProcessHarness {
+        name: "opaque-probe",
+        capabilities: HarnessCapabilities {
+            cancel: CancelSupport::KillOnly,
+            checkpoint_resume: false,
+            usage: UsageSupport::None,
+            tool_effects: ToolEffectVisibility::Opaque,
+            interactive_input: false,
+        },
+        network,
+        timeout: None,
+        prepare: Box::new(|_, _, _| {
+            Ok(HarnessPrep {
+                command: "touch plan.md; \
+                          printf '%s\\n' '{\"type\":\"tool\",\"tool\":\"Write\",\"effect\":\"reversible\",\"summary\":\"write\"}'; \
+                          printf '%s\\n' '{\"type\":\"completed\",\"summary\":\"done\"}'"
+                    .into(),
+                env: vec![],
+                read_paths: vec![],
+                write_paths: vec![],
+                cleanup_paths: vec![],
+            })
+        }),
+        parser: JsonParser,
+    }
+}
+
+fn policy(network: bool, max_observed_effect: SideEffectKind) -> OpaqueHarnessPolicy {
+    OpaqueHarnessPolicy {
+        enabled: true,
+        allow_native_provider_network: network,
+        max_observed_effect,
+    }
+}
+
+#[test]
+fn opaque_harness_is_denied_before_any_run_event_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("Opaque 默认拒绝", None).unwrap();
+    let before = runtime.events(&spec.id).unwrap().len();
+
+    let error = runtime
+        .run_adapter(
+            &spec.id,
+            &opaque_harness(else_environment::NetworkPolicy::Deny),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ApiError::Gateway(GatewayError::OpaqueHarnessDenied(_))
+    ));
+    assert_eq!(runtime.events(&spec.id).unwrap().len(), before);
+}
+
+#[test]
+fn opaque_observation_is_not_recorded_as_authorized_gateway_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("Opaque 观察记账", None).unwrap();
+    runtime
+        .configure_opaque_harness(&spec.id, policy(false, SideEffectKind::Reversible))
+        .unwrap();
+
+    runtime
+        .run_adapter(
+            &spec.id,
+            &opaque_harness(else_environment::NetworkPolicy::Deny),
+        )
+        .unwrap();
+    let events = runtime.events(&spec.id).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event.envelope.payload,
+        EventPayload::OpaqueToolObserved { .. }
+    )));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event.envelope.payload, EventPayload::ToolCalled { .. })));
+    let report = runtime.resources(&spec.id).unwrap();
+    assert_eq!(report.usage.tool_calls, 1);
+    assert_eq!(report.usage.opaque_tool_calls, 1);
+}
+
+#[test]
+fn observed_effect_above_profile_aborts_the_harness() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("Opaque 副作用上限", None).unwrap();
+    runtime
+        .configure_opaque_harness(&spec.id, policy(false, SideEffectKind::ReadOnly))
+        .unwrap();
+
+    let error = runtime
+        .run_adapter(
+            &spec.id,
+            &opaque_harness(else_environment::NetworkPolicy::Deny),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ApiError::Gateway(GatewayError::OpaqueEffectDenied(_))
+    ));
+}
+
+#[test]
+fn native_provider_network_requires_a_separate_explicit_opt_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("Opaque 网络授权", None).unwrap();
+    runtime
+        .configure_opaque_harness(&spec.id, policy(false, SideEffectKind::Reversible))
+        .unwrap();
+    let error = runtime
+        .run_adapter(
+            &spec.id,
+            &opaque_harness(else_environment::NetworkPolicy::AllowOutbound),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ApiError::Gateway(GatewayError::OpaqueHarnessDenied(_))
+    ));
+
+    runtime
+        .configure_opaque_harness(&spec.id, policy(true, SideEffectKind::Reversible))
+        .unwrap();
+    runtime
+        .run_adapter(
+            &spec.id,
+            &opaque_harness(else_environment::NetworkPolicy::AllowOutbound),
+        )
+        .unwrap();
+}

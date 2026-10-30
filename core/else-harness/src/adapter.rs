@@ -14,7 +14,7 @@ use else_ledger::Ledger;
 use else_protocol::artifact::{Artifact, ArtifactKind};
 use else_protocol::effect::{EffectConclusion, SideEffectKind, ToolCall, ToolOutcome, ToolStatus};
 use else_protocol::event::{Actor, EventPayload};
-use else_protocol::harness::HarnessCapabilities;
+use else_protocol::harness::{HarnessCapabilities, HarnessNetworkAccess};
 use else_protocol::ids::{ArtifactId, ToolCallId};
 use else_protocol::intent::CriterionVerification;
 use else_protocol::memory::ContextSnapshot;
@@ -71,6 +71,9 @@ pub struct HarnessRequest<'a> {
 pub trait HarnessAdapter {
     fn name(&self) -> &'static str;
     fn capabilities(&self) -> HarnessCapabilities;
+    fn network_access(&self) -> HarnessNetworkAccess {
+        HarnessNetworkAccess::Deny
+    }
     fn execute(&self, request: &HarnessRequest) -> Result<()>;
 }
 
@@ -269,6 +272,15 @@ impl<P: LineParser> HarnessAdapter for ProcessHarness<P> {
         self.capabilities
     }
 
+    fn network_access(&self) -> HarnessNetworkAccess {
+        match self.network {
+            else_environment::NetworkPolicy::Deny => HarnessNetworkAccess::Deny,
+            else_environment::NetworkPolicy::AllowOutbound => {
+                HarnessNetworkAccess::NativeProviderOutbound
+            }
+        }
+    }
+
     fn execute(&self, request: &HarnessRequest) -> Result<()> {
         ensure_not_fenced(request.ledger, request.ctx)?;
         let prompt = task_prompt(request.snapshot);
@@ -368,42 +380,52 @@ impl<P: LineParser> HarnessAdapter for ProcessHarness<P> {
                         } => {
                             observed_calls += 1;
                             let call_id = ToolCallId::new();
+                            let call = ToolCall {
+                                id: call_id,
+                                tool: tool.clone(),
+                                effect,
+                                input: serde_json::json!({ "observed": summary }),
+                                idempotency_key: format!(
+                                    "observed-{}-{observed_calls}",
+                                    request.ctx.run_id
+                                ),
+                            };
+                            let outcome = ToolOutcome {
+                                status: if success {
+                                    ToolStatus::Succeeded
+                                } else {
+                                    ToolStatus::Failed
+                                },
+                                output: serde_json::json!({ "observed": true }),
+                                effect: if success {
+                                    EffectConclusion::Applied
+                                } else {
+                                    EffectConclusion::Unknown
+                                },
+                            };
                             self.record(
                                 request,
-                                EventPayload::ToolCalled {
-                                    call: ToolCall {
-                                        id: call_id.clone(),
-                                        tool,
-                                        effect,
-                                        input: serde_json::json!({ "observed": summary }),
-                                        // 观察记账不构成幂等承诺；键仅用于重放去重。
-                                        idempotency_key: format!(
-                                            "observed-{}-{observed_calls}",
-                                            request.ctx.run_id
-                                        ),
-                                    },
+                                EventPayload::OpaqueToolObserved {
+                                    call,
+                                    outcome,
+                                    backend: self.name.into(),
                                 },
                             )?;
-                            self.record(
-                                request,
-                                EventPayload::ToolCompleted {
-                                    call_id,
-                                    outcome: ToolOutcome {
-                                        status: if success {
-                                            ToolStatus::Succeeded
-                                        } else {
-                                            ToolStatus::Failed
-                                        },
-                                        output: serde_json::json!({ "observed": true }),
-                                        effect: if success {
-                                            EffectConclusion::Applied
-                                        } else {
-                                            // 失败的在途副作用结论为未知，不盲目假设无效果。
-                                            EffectConclusion::Unknown
-                                        },
-                                    },
-                                },
-                            )?;
+                            if request.ctx.spec.opaque_harness_policy.enabled
+                                && effect
+                                    > request.ctx.spec.opaque_harness_policy.max_observed_effect
+                            {
+                                if let Ok(mut child) = child.lock() {
+                                    let _ = child.kill();
+                                    let _ = child.wait();
+                                }
+                                return Err(GatewayError::OpaqueEffectDenied(format!(
+                                    "{} observed as {:?}, profile allows at most {:?}",
+                                    tool,
+                                    effect,
+                                    request.ctx.spec.opaque_harness_policy.max_observed_effect
+                                )));
+                            }
                         }
                         BridgeEvent::Usage { model, usage } => {
                             self.record(request, EventPayload::ModelCompleted { model, usage })?;

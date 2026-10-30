@@ -30,6 +30,7 @@ fn spec(intent_id: &IntentId) -> IntentSpec {
             allow_interrupt: true,
             batch_interval_minutes: 30,
         },
+        opaque_harness_policy: else_protocol::intent::OpaqueHarnessPolicy::default(),
         deadline: None,
         assumptions: vec![],
         project: None,

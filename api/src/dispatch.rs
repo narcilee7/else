@@ -35,6 +35,10 @@ impl Runtime {
         }
         let adapter = else_harness::find_adapter(name)
             .ok_or_else(|| ApiError::NotFound(format!("harness {name}")))?;
+        let automatic = harness_hint.is_none_or(|hint| hint == "auto");
+        if automatic && !self.harness_allowed(&spec, adapter.as_ref()) {
+            return self.run_scope(intent_id, scope_id);
+        }
         self.dispatch_scope_adapter(intent_id, scope_id, adapter.as_ref())
     }
 
@@ -63,6 +67,7 @@ impl Runtime {
         }
         let spec = scope_spec(&projection, scope_id)
             .ok_or_else(|| ApiError::NotFound(format!("scope {scope_id}")))?;
+        self.ensure_harness_allowed(&spec, adapter)?;
         let generation = self.next_scope_generation(intent_id, scope_id)?;
 
         // 准入先于一切事件：槽位或预算不足时不产生任何新事件。

@@ -34,6 +34,14 @@ pub enum ToolEffectVisibility {
     Opaque,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessNetworkAccess {
+    Deny,
+    /// Harness 原生 Provider 直连；必须由 Opaque Profile 显式放通。
+    NativeProviderOutbound,
+}
+
 /// Harness 适配器能力契约（MVP-2）。随 RunStarted 落账，可重放、可比较。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HarnessCapabilities {

@@ -100,7 +100,9 @@ fn classify_failure(error: &GatewayError) -> FailureClass {
         | GatewayError::LeaseRequired(_)
         | GatewayError::ResourceExhausted { .. }
         | GatewayError::UnknownTool(_)
-        | GatewayError::InvalidPath(_) => FailureClass::Terminal,
+        | GatewayError::InvalidPath(_)
+        | GatewayError::OpaqueHarnessDenied(_)
+        | GatewayError::OpaqueEffectDenied(_) => FailureClass::Terminal,
     }
 }
 
@@ -113,6 +115,8 @@ fn failure_code(error: &GatewayError) -> &'static str {
         GatewayError::ResourceExhausted { .. } => "resource_exhausted",
         GatewayError::UnknownTool(_) => "unknown_tool",
         GatewayError::InvalidPath(_) => "invalid_path",
+        GatewayError::OpaqueHarnessDenied(_) => "opaque_harness_denied",
+        GatewayError::OpaqueEffectDenied(_) => "opaque_effect_denied",
         GatewayError::Io(_) => "io",
         GatewayError::Timeout(_) => "timeout",
         GatewayError::Model(_) => "harness",
