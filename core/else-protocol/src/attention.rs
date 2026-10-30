@@ -21,6 +21,8 @@ pub enum AttentionKind {
     MissingInfo,
     /// 需要本人接管。
     Takeover,
+    /// 需要本人确认无法机器验证的 Outcome Evidence。
+    Verification,
 }
 
 /// 不处理（等待或自主行动）的预期损失，与打断成本比较。

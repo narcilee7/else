@@ -31,7 +31,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 80 tests passing on macOS.
+**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 83 tests passing on macOS.
 
 - **Kernel (MVP-0)**: durable root Scope identity, event-derived single-step reconciliation (`Run / WaitForUser / WaitForAttentionWindow / WaitForRun / Idle`), event-sourced ledger on SQLite, Checkpoint → Fork → Rerun → Compare, Abort + Generation Fencing, Subagent delegation tree, Admission + Lease + Accounting, deny-by-default OS sandboxes (macOS Seatbelt verified on real hardware; Linux bubblewrap policy unit-tested, awaiting Linux CI).
 - **Context & Memory (MVP-1)**: Intent Resolution with revisions, three-tier memory (Working / Episodic / Semantic) with scoped promotion rules, Context Compiler producing minimal read-only snapshots per Planner / Executor / Verifier. Memory is never a source of authority.
@@ -59,7 +59,7 @@ else compare <intent-id> <scope-a> <scope-b>
 
 - **Harness tool side effects are observed, not gateway-routed.** Codex / Claude Code execute their own tools; else records them as observed events with conservative effect levels and confines them to the sandbox. They are *accounted*, not *authorized*.
 - **Harness credentials live outside persistent Workspaces.** Runtime-controlled `harness-private/` directories are the only extra writable paths, are deleted after every run, and are excluded from snapshots even if legacy files remain under `.else-harness`.
-- **DoneWhen must be machine-checkable for automatic completion.** Supported checks are file existence and file content. Manual criteria fail closed until a human-confirmation flow is added.
+- **Manual DoneWhen requires an explicit Decision.** File existence and file content are verified automatically; manual criteria create a Verification request. Approval re-checks machine criteria and completes without rerunning the Harness, while rejection leaves the Scope retryable.
 - **Harness model traffic uses their native providers with explicit outbound network.** The sandbox allows outbound traffic for these runs, a documented Opaque boundary. Egress proxying is post-MVP.
 - **Nested sandboxes are disabled inside harnesses** (e.g. `sandbox_mode="danger-full-access"` for codex) because Seatbelt cannot nest; else's own sandbox profile is the isolation boundary.
 - **Abort Succeeded means execution converged safely, not that the world was rolled back.** Irreversible effects stay irreversible and are recorded as such.

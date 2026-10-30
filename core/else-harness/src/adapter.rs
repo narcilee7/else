@@ -385,15 +385,27 @@ impl<P: LineParser> HarnessAdapter for ProcessHarness<P> {
                     let truncated: String = summary.chars().take(MAX_OUTPUT_CHARS).collect();
                     self.record(request, EventPayload::HarnessOutput { text: truncated })?;
                 }
-                let evidence =
-                    crate::verify::verify_outcome(request.workspace, &request.ctx.spec.done_when)
+                let verified =
+                    crate::verify::evaluate_outcome(request.workspace, &request.ctx.spec.done_when)
                         .map_err(|error| {
-                        GatewayError::Model(format!(
-                            "{} reported completion but outcome verification failed: {error}",
-                            self.name
-                        ))
-                    })?;
-                crate::verify_with_evidence(request.ctx, request.ledger, evidence, request.subagent)
+                            GatewayError::Model(format!(
+                                "{} reported completion but outcome verification failed: {error}",
+                                self.name
+                            ))
+                        })?;
+                match verified {
+                    crate::verify::OutcomeVerification::Verified(evidence) => {
+                        crate::verify_with_evidence(
+                            request.ctx,
+                            request.ledger,
+                            evidence,
+                            request.subagent,
+                        )
+                    }
+                    crate::verify::OutcomeVerification::NeedsConfirmation { criteria, .. } => {
+                        crate::request_manual_verification(request.ctx, request.ledger, &criteria)
+                    }
+                }
             }
             _ => Err(GatewayError::Model(format!(
                 "{} exited {status} without completion{}",

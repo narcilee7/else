@@ -39,6 +39,13 @@ impl Criterion {
             verification: CriterionVerification::FileExists { path: path.into() },
         }
     }
+
+    pub fn manual(description: impl Into<String>) -> Self {
+        Self {
+            description: description.into(),
+            verification: CriterionVerification::Manual,
+        }
+    }
 }
 
 /// 系统补全的假设。抽象表达由系统补全，但补全必须显式成为

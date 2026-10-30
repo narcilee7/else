@@ -33,6 +33,15 @@ struct RuntimeContractTests {
     }
 
     @Test
+    func decodesVerificationAttentionKind() throws {
+        let value = try RuntimeJSON.decoder().decode(
+            AttentionKind.self,
+            from: Data(#""verification""#.utf8)
+        )
+        #expect(value == .verification)
+    }
+
+    @Test
     func decodesDatesWithAndWithoutFractionalSeconds() throws {
         let decoder = RuntimeJSON.decoder()
         let withFraction = try decoder.decode(

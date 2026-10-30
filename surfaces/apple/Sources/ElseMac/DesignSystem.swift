@@ -56,6 +56,7 @@ extension AttentionKind {
         case .authorization: "授权"
         case .missingInfo: "补充信息"
         case .takeover: "需要接管"
+        case .verification: "验收确认"
         }
     }
 }

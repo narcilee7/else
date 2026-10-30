@@ -7,9 +7,59 @@ use else_protocol::intent::{Criterion, CriterionVerification};
 
 pub type Result<T> = std::result::Result<T, String>;
 
+/// 一次验收评估的结果。Manual 标准不能伪造通过，只能转为用户确认。
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutcomeVerification {
+    Verified(Vec<OutcomeEvidence>),
+    NeedsConfirmation {
+        evidence: Vec<OutcomeEvidence>,
+        criteria: Vec<Criterion>,
+    },
+}
+
 /// 逐项执行机器可检查的 DoneWhen。任何一项失败或无法自动检查，
-/// 整次验证失败；不会为未检查的标准生成通过证据。
+/// 会返回待人工确认，不会为未检查的标准生成通过证据。
+pub fn evaluate_outcome(workspace: &Path, criteria: &[Criterion]) -> Result<OutcomeVerification> {
+    if criteria.is_empty() {
+        return Err("intent has no DoneWhen criteria".into());
+    }
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|error| format!("workspace {}: {error}", workspace.display()))?;
+    let mut evidence = Vec::new();
+    let mut manual = Vec::new();
+    for criterion in criteria {
+        if criterion.verification == CriterionVerification::Manual {
+            manual.push(criterion.clone());
+        } else {
+            evidence.push(verify_criterion(&workspace, criterion)?);
+        }
+    }
+    if manual.is_empty() {
+        Ok(OutcomeVerification::Verified(evidence))
+    } else {
+        Ok(OutcomeVerification::NeedsConfirmation {
+            evidence,
+            criteria: manual,
+        })
+    }
+}
+
+/// 严格模式：存在 Manual 标准时失败关闭。
 pub fn verify_outcome(workspace: &Path, criteria: &[Criterion]) -> Result<Vec<OutcomeEvidence>> {
+    match evaluate_outcome(workspace, criteria)? {
+        OutcomeVerification::Verified(evidence) => Ok(evidence),
+        OutcomeVerification::NeedsConfirmation { .. } => {
+            Err("criterion requires manual verification".into())
+        }
+    }
+}
+
+/// 用户批准后重新检查所有机器标准，并将 Manual 标准记录为用户确认。
+pub fn confirm_manual_outcome(
+    workspace: &Path,
+    criteria: &[Criterion],
+) -> Result<Vec<OutcomeEvidence>> {
     if criteria.is_empty() {
         return Err("intent has no DoneWhen criteria".into());
     }
@@ -18,17 +68,21 @@ pub fn verify_outcome(workspace: &Path, criteria: &[Criterion]) -> Result<Vec<Ou
         .map_err(|error| format!("workspace {}: {error}", workspace.display()))?;
     criteria
         .iter()
-        .map(|criterion| verify_criterion(&workspace, criterion))
+        .map(|criterion| match &criterion.verification {
+            CriterionVerification::Manual => Ok(OutcomeEvidence {
+                criterion: criterion.description.clone(),
+                artifact_id: None,
+                note: "verified by explicit user confirmation".into(),
+            }),
+            _ => verify_criterion(&workspace, criterion),
+        })
         .collect()
 }
 
 fn verify_criterion(workspace: &Path, criterion: &Criterion) -> Result<OutcomeEvidence> {
     let note = match &criterion.verification {
         CriterionVerification::Manual => {
-            return Err(format!(
-                "criterion requires manual verification: {}",
-                criterion.description
-            ));
+            return Err("manual criterion reached strict verifier".into())
         }
         CriterionVerification::FileExists { path } => {
             let resolved = resolve_existing(workspace, path)?;
@@ -122,5 +176,23 @@ mod tests {
             &[Criterion::file_exists("逃逸", "../outside.txt")],
         );
         assert!(escaping.unwrap_err().contains("escapes workspace"));
+    }
+
+    #[test]
+    fn manual_criteria_require_confirmation_without_faking_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let criteria = [
+            Criterion::file_exists("产物存在", "result.txt"),
+            Criterion::manual("结论符合业务预期"),
+        ];
+        std::fs::write(dir.path().join("result.txt"), "ok").unwrap();
+        let pending = evaluate_outcome(dir.path(), &criteria).unwrap();
+        assert!(matches!(
+            pending,
+            OutcomeVerification::NeedsConfirmation { criteria, .. } if criteria.len() == 1
+        ));
+        let confirmed = confirm_manual_outcome(dir.path(), &criteria).unwrap();
+        assert_eq!(confirmed.len(), 2);
+        assert!(confirmed[1].note.contains("user confirmation"));
     }
 }

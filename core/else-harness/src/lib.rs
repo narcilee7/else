@@ -14,10 +14,13 @@ use else_gateway::{
 };
 use else_ledger::{Ledger, StoredEvent};
 use else_protocol::artifact::{Artifact, ArtifactKind, OutcomeEvidence};
-use else_protocol::attention::DecisionChoice;
+use else_protocol::attention::{
+    AttentionKind, AttentionRequest, DecisionChoice, DecisionOption, ExpectedLoss,
+};
 use else_protocol::effect::{SideEffectKind, ToolCall};
 use else_protocol::event::{Actor, EventPayload};
-use else_protocol::ids::{ArtifactId, ToolCallId};
+use else_protocol::ids::{ArtifactId, AttentionId, ToolCallId};
+use else_protocol::intent::{Criterion, IntentState};
 
 pub const SCRIPTED: &str = "scripted";
 
@@ -263,9 +266,79 @@ pub fn run(
     };
 
     // 3. 验收：按原始 DoneWhen 独立检查产物，不信任校验工具或 Plan 自报结果。
-    let evidence = crate::verify::verify_outcome(tools.workspace(), &ctx.spec.done_when)
+    let verified = crate::verify::evaluate_outcome(tools.workspace(), &ctx.spec.done_when)
         .map_err(|error| GatewayError::Model(format!("outcome verification failed: {error}")))?;
-    verify_with_evidence(ctx, ledger, evidence, options.subagent)
+    match verified {
+        crate::verify::OutcomeVerification::Verified(evidence) => {
+            verify_with_evidence(ctx, ledger, evidence, options.subagent)
+        }
+        crate::verify::OutcomeVerification::NeedsConfirmation { criteria, .. } => {
+            request_manual_verification(ctx, ledger, &criteria)
+        }
+    }
+}
+
+pub(crate) fn request_manual_verification(
+    ctx: &ExecContext,
+    ledger: &Ledger,
+    criteria: &[Criterion],
+) -> Result<()> {
+    let summary = criteria
+        .iter()
+        .map(|criterion| criterion.description.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    let attention = AttentionRequest {
+        id: AttentionId::new(),
+        kind: AttentionKind::Verification,
+        summary: format!("请确认验收结果：{summary}"),
+        blocked_reason: "以下 DoneWhen 无法由 Runtime 机器验证，需要本人确认".into(),
+        expected_loss: ExpectedLoss::High,
+        blocking: true,
+        reversible: false,
+        decide_by: None,
+        options: vec![
+            DecisionOption {
+                id: "approve".into(),
+                label: "确认结果成立".into(),
+                recommended: true,
+            },
+            DecisionOption {
+                id: "reject".into(),
+                label: "结果不成立，重新执行".into(),
+                recommended: false,
+            },
+        ],
+        default_option: Some("reject".into()),
+        related_call_key: Some("manual-outcome-verification".into()),
+    };
+    let request_id = attention.id.clone();
+    let ruling = else_attention::AttentionKernel.rule(
+        &attention,
+        &ctx.spec.attention_policy,
+        chrono::Utc::now(),
+    );
+    ctx.record(
+        ledger,
+        Actor::System,
+        EventPayload::AttentionRequested { request: attention },
+    )?;
+    ctx.record(
+        ledger,
+        Actor::System,
+        EventPayload::AttentionRuled {
+            request_id: request_id.clone(),
+            ruling,
+        },
+    )?;
+    ctx.record(
+        ledger,
+        Actor::System,
+        EventPayload::IntentStateChanged {
+            state: IntentState::NeedsDecision,
+        },
+    )?;
+    Err(GatewayError::NeedsApproval(request_id))
 }
 
 /// 记录独立 Verifier 已产出的逐项证据。

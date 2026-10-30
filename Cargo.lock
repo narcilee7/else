@@ -586,6 +586,8 @@ dependencies = [
 name = "else-harness"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "else-attention",
  "else-environment",
  "else-gateway",
  "else-ledger",

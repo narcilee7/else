@@ -7,6 +7,7 @@ mod abort;
 mod context;
 mod dispatch;
 mod kernel;
+mod outcome;
 mod resources;
 mod scope;
 
@@ -19,7 +20,7 @@ use else_gateway::{
     ExecContext, GatewayError, GenAiProvider, MockProvider, ModelGateway, ToolGateway,
 };
 use else_ledger::{IntentProjection, Ledger, Projection, StoredEvent};
-use else_protocol::attention::{Decision, DecisionChoice};
+use else_protocol::attention::{AttentionKind, Decision, DecisionChoice};
 use else_protocol::effect::SideEffectKind;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::ids::{AttentionId, IntentId, RunId, ScopeId};
@@ -81,15 +82,29 @@ impl Runtime {
     /// 系统补全默认验收标准与显式假设，补全内容可修正，不是隐蔽事实。
     /// `project` 决定 Episodic/Semantic 记忆的项目召回作用域。
     pub fn create_intent(&self, outcome: &str, project: Option<String>) -> Result<IntentSpec> {
+        self.create_intent_with_done_when(
+            outcome,
+            project,
+            vec![else_protocol::intent::Criterion::file_exists(
+                "计划产物写入工作区且校验通过",
+                "plan.md",
+            )],
+        )
+    }
+
+    /// 使用显式 DoneWhen 创建 Intent。机器检查与人工确认标准可混合。
+    pub fn create_intent_with_done_when(
+        &self,
+        outcome: &str,
+        project: Option<String>,
+        done_when: Vec<else_protocol::intent::Criterion>,
+    ) -> Result<IntentSpec> {
         let root_scope_id = ScopeId::new();
         let spec = IntentSpec {
             id: IntentId::new(),
             revision: 1,
             outcome: outcome.to_string(),
-            done_when: vec![else_protocol::intent::Criterion::file_exists(
-                "计划产物写入工作区且校验通过",
-                "plan.md",
-            )],
+            done_when,
             constraints: vec![],
             authority: Authority {
                 max_autonomous_effect: SideEffectKind::Reversible,
@@ -242,6 +257,8 @@ impl Runtime {
     ) -> Result<IntentProjection> {
         let (success, error) = match result {
             Ok(()) => (true, None),
+            // 等待本人确认或授权是正常等待态，不是执行失败。
+            Err(GatewayError::NeedsApproval(_)) => (true, None),
             // 故障注入代表进程已死：不得再写 RunFinished，直接丢弃 Runtime 重开。
             Err(e @ GatewayError::Ledger(else_ledger::LedgerError::CrashInjected)) => {
                 return Err(e.into());
@@ -314,6 +331,15 @@ impl Runtime {
             .ok_or_else(|| ApiError::NotFound(format!("attention {request_id}")))?;
         let scope_id = request_event.envelope.scope_id;
         let generation = request_event.envelope.generation;
+        let run_id = request_event.envelope.run_id.clone().unwrap_or_default();
+        let request_kind = match &request_event.envelope.payload {
+            EventPayload::AttentionRequested { request } => request.kind,
+            _ => unreachable!("request event selected above"),
+        };
+        let approved = matches!(
+            &choice,
+            DecisionChoice::Option(id) if id == "approve"
+        );
         let revision = projection.spec.map(|s| s.revision).unwrap_or(1);
         let envelope = EventEnvelope::new(
             intent_id.clone(),
@@ -341,6 +367,13 @@ impl Runtime {
                 state: IntentState::Active,
             },
         ))?;
+        if request_kind == AttentionKind::Verification {
+            return if approved {
+                self.confirm_manual_verification(intent_id, &scope_id, generation, run_id)
+            } else {
+                self.projection(intent_id)
+            };
+        }
         // 在发起请求的同一 Scope 续跑：一次性授权不会跨委托泄漏。
         self.run_scope(intent_id, &scope_id)
     }

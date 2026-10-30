@@ -9,6 +9,8 @@ else-protocol = { path = "../else-protocol" }
 else-ledger = { path = "../else-ledger" }
 else-gateway = { path = "../else-gateway" }
 else-environment = { path = "../else-environment" }
+else-attention = { path = "../else-attention" }
+chrono.workspace = true
 uuid.workspace = true
 serde_json.workspace = true
 

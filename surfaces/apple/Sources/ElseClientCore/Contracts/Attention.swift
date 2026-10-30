@@ -5,6 +5,7 @@ public enum AttentionKind: String, Codable, Sendable {
     case authorization
     case missingInfo = "missing_info"
     case takeover
+    case verification
 }
 
 public enum ExpectedLoss: String, Codable, Comparable, Sendable {
