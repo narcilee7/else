@@ -10,10 +10,12 @@ mod kernel;
 mod outcome;
 mod resources;
 mod scope;
+mod service;
 mod wake;
 
 pub use context::IntentRevision;
 pub use kernel::{KernelAction, KernelDrive, KernelDriveStop};
+pub use service::{RuntimeHandle, RuntimeService};
 
 use std::path::{Path, PathBuf};
 
@@ -41,6 +43,8 @@ pub enum ApiError {
     NotFound(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    #[error("runtime worker stopped")]
+    WorkerStopped,
     #[error("subagent authority exceeds parent: {0}")]
     PermissionEscalation(String),
     #[error("io: {0}")]
