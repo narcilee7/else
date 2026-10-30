@@ -107,6 +107,8 @@ enum Command {
     Decisions { intent_id: String },
     /// 查看 Attention Window、批量率与误打断指标
     Attention { intent_id: String },
+    /// 查看结构化 Plan 版本、步骤与外部事实影响
+    Plan { intent_id: String },
     /// 回答一个 Decision（选项 id 或自由文本）
     Decide {
         intent_id: String,
@@ -347,6 +349,10 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         Command::Attention { intent_id } => {
             let projection = runtime.projection(&IntentId::from(intent_id))?;
             print_attention(&projection);
+        }
+        Command::Plan { intent_id } => {
+            let projection = runtime.projection(&IntentId::from(intent_id))?;
+            print_plan(&projection);
         }
         Command::Decide {
             intent_id,
@@ -613,5 +619,50 @@ fn format_rate(rate: Option<f64>) -> String {
     match rate {
         Some(rate) => format!("{:.1}%", rate * 100.0),
         None => "n/a".into(),
+    }
+}
+
+fn print_plan(projection: &else_ledger::IntentProjection) {
+    let Some(plan) = projection.current_plan() else {
+        println!("plan: none");
+        return;
+    };
+    println!(
+        "plan {} revision={} intent_revision={} supersedes={:?}",
+        plan.id, plan.revision, plan.intent_revision, plan.supersedes
+    );
+    println!("summary: {}", plan.summary);
+    for step in &plan.steps {
+        println!(
+            "step {} status={:?} scope={:?}: {}",
+            step.id, step.status, step.scope_id, step.title
+        );
+        if !step.watch_sources.is_empty() || !step.watch_terms.is_empty() {
+            println!(
+                "  watches: sources={:?} terms={:?}",
+                step.watch_sources, step.watch_terms
+            );
+        }
+    }
+    for evidence in &plan.evidence {
+        println!(
+            "evidence {:?} {}: {}",
+            evidence.kind,
+            evidence.event_id.as_deref().unwrap_or("-"),
+            evidence.summary
+        );
+    }
+    if !projection.plan_impacts.is_empty() {
+        println!("impacts:");
+        for impact in &projection.plan_impacts {
+            println!(
+                "  {} -> affected={} scopes={} unaffected={}",
+                impact.source,
+                impact.affected_step_ids.len(),
+                impact.invalidated_scope_ids.len(),
+                impact.unaffected_step_ids.len()
+            );
+            println!("  {}", impact.explanation);
+        }
     }
 }

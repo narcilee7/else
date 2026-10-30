@@ -19,8 +19,9 @@ use else_protocol::attention::{
 };
 use else_protocol::effect::{SideEffectKind, ToolCall};
 use else_protocol::event::{Actor, EventPayload};
-use else_protocol::ids::{ArtifactId, AttentionId, ToolCallId};
+use else_protocol::ids::{ArtifactId, AttentionId, PlanId, PlanStepId, ToolCallId};
 use else_protocol::intent::{Criterion, IntentState};
+use else_protocol::plan::{Plan, PlanEvidence, PlanEvidenceKind, PlanStep, PlanStepStatus};
 
 pub const SCRIPTED: &str = "scripted";
 
@@ -85,6 +86,7 @@ pub fn select_harness(task: &str, hint: Option<&str>) -> &'static str {
 struct Progress {
     last_plan_seq: Option<u64>,
     last_reject_seq: Option<u64>,
+    last_impact_seq: Option<u64>,
 }
 
 impl Progress {
@@ -92,11 +94,20 @@ impl Progress {
         let mut progress = Self {
             last_plan_seq: None,
             last_reject_seq: None,
+            last_impact_seq: None,
         };
         for event in events {
             match &event.envelope.payload {
-                EventPayload::PlanProposed { .. } | EventPayload::PlanReplaced { .. } => {
+                EventPayload::PlanProposed { .. }
+                | EventPayload::PlanReplaced { .. }
+                | EventPayload::StructuredPlanProposed { .. }
+                | EventPayload::StructuredPlanReplaced { .. } => {
                     progress.last_plan_seq = Some(event.seq);
+                }
+                EventPayload::PlanImpactAnalyzed { impact }
+                    if !impact.affected_step_ids.is_empty() =>
+                {
+                    progress.last_impact_seq = Some(event.seq);
                 }
                 EventPayload::DecisionResolved { decision }
                     if matches!(
@@ -118,19 +129,26 @@ impl Progress {
 
     /// 最后一次否决发生在最新计划之后 → 路径失效，需要重规划。
     fn needs_replan(&self) -> bool {
-        match (self.last_plan_seq, self.last_reject_seq) {
-            (Some(plan), Some(reject)) => reject > plan,
-            (None, Some(_)) => true,
-            _ => false,
-        }
+        let invalidation = self
+            .last_reject_seq
+            .into_iter()
+            .chain(self.last_impact_seq)
+            .max();
+        self.last_plan_seq.map_or(invalidation.is_some(), |plan| {
+            invalidation.is_some_and(|trigger| trigger > plan)
+        })
     }
 
     /// 已按本人否决完成重规划 → 走不依赖 shell 的替代校验路径。
     fn on_alternative_path(&self) -> bool {
-        match (self.last_plan_seq, self.last_reject_seq) {
-            (Some(plan), Some(reject)) => plan > reject,
-            _ => false,
-        }
+        let invalidation = self
+            .last_reject_seq
+            .into_iter()
+            .chain(self.last_impact_seq)
+            .max();
+        self.last_plan_seq
+            .zip(invalidation)
+            .is_some_and(|(plan, trigger)| plan > trigger)
     }
 }
 
@@ -173,38 +191,128 @@ pub fn run(
             })
             .collect())
     };
-    let progress = Progress::from_events(&visible_events(ledger)?);
+    let events = visible_events(ledger)?;
+    let progress = Progress::from_events(&events);
 
     // 1. 规划 / 重规划：模型调用经 Model Gateway 入账
     if options.force_replan || progress.needs_plan() {
         let replan = !options.force_replan && progress.needs_replan();
+        let impact_drives_replan = progress.last_impact_seq.is_some_and(|impact| {
+            progress
+                .last_reject_seq
+                .is_none_or(|reject| impact > reject)
+        });
         let prompt = if options.alternative || replan {
-            format!(
-                "此前执行路径被本人否决。给出不依赖 shell 的替代方案：以只读方式校验工作区产物。目标：{}",
-                ctx.spec.outcome
-            )
+            if impact_drives_replan {
+                format!(
+                    "外部事实使当前计划失效。给出不依赖 shell 的替代方案：以只读方式校验工作区产物。目标：{}",
+                    ctx.spec.outcome
+                )
+            } else {
+                format!(
+                    "此前执行路径被本人否决。给出不依赖 shell 的替代方案：以只读方式校验工作区产物。目标：{}",
+                    ctx.spec.outcome
+                )
+            }
         } else {
             ctx.spec.outcome.clone()
         };
-        let plan = model.complete(ctx, "planning", model_name, &prompt)?;
-        let plan_id = uuid::Uuid::new_v4().to_string();
+        let model_plan = model.complete(ctx, "planning", model_name, &prompt)?;
+        let previous = events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.envelope.payload {
+                EventPayload::StructuredPlanProposed { plan }
+                | EventPayload::StructuredPlanReplaced { plan, .. } => Some(plan.clone()),
+                _ => None,
+            });
+        let reason = if replan {
+            if impact_drives_replan {
+                "外部事实使计划步骤失效，自动重规划"
+            } else {
+                "本人否决原路径，自动重规划（计划失败不等于 Intent 失败）"
+            }
+        } else {
+            "首次生成结构化执行计划"
+        };
+        let plan_id = PlanId::new();
+        let mut evidence = vec![PlanEvidence {
+            kind: PlanEvidenceKind::UserIntent,
+            event_id: events.iter().rev().find_map(|event| {
+                matches!(event.envelope.payload, EventPayload::IntentCreated { .. })
+                    .then(|| event.envelope.event_id.clone())
+            }),
+            summary: ctx.spec.outcome.clone(),
+        }];
+        let trigger_event = if replan {
+            events
+                .iter()
+                .rev()
+                .find(|event| {
+                    matches!(
+                        event.envelope.payload,
+                        EventPayload::PlanImpactAnalyzed { .. }
+                            | EventPayload::DecisionResolved { .. }
+                    )
+                })
+                .map(|event| event.envelope.event_id.clone())
+        } else {
+            None
+        };
+        if let Some(event_id) = trigger_event {
+            evidence.push(PlanEvidence {
+                kind: if impact_drives_replan {
+                    PlanEvidenceKind::ExternalFact
+                } else {
+                    PlanEvidenceKind::ExecutionObserved
+                },
+                event_id: Some(event_id),
+                summary: reason.into(),
+            });
+        }
+        let structured = Plan {
+            id: plan_id.clone(),
+            revision: previous.as_ref().map_or(1, |plan| plan.revision + 1),
+            supersedes: previous.as_ref().map(|plan| plan.id.clone()),
+            intent_revision: ctx.spec.revision,
+            summary: model_plan.text.clone(),
+            steps: vec![PlanStep {
+                id: PlanStepId::new(),
+                title: if replan {
+                    "以只读路径验证当前产物"
+                } else {
+                    "完成目标并生成验收证据"
+                }
+                .into(),
+                description: if replan {
+                    "避开被否决或失效的路径，使用只读检查验证现有产物"
+                } else {
+                    "按原始 DoneWhen 生成结果与独立可检查证据"
+                }
+                .into(),
+                scope_id: Some(ctx.scope_id.clone()),
+                depends_on: vec![],
+                status: PlanStepStatus::Ready,
+                watch_sources: vec![],
+                watch_terms: vec![],
+            }],
+            evidence,
+            created_at: chrono::Utc::now(),
+        };
         if replan {
             ctx.record(
                 ledger,
                 Actor::Agent,
-                EventPayload::PlanReplaced {
-                    plan_id: plan_id.clone(),
-                    reason: "本人否决原路径，自动重规划（计划失败不等于 Intent 失败）".into(),
+                EventPayload::StructuredPlanReplaced {
+                    plan: structured,
+                    reason: reason.into(),
                 },
             )?;
         } else {
             ctx.record(
                 ledger,
                 Actor::Agent,
-                EventPayload::PlanProposed {
-                    plan_id: plan_id.clone(),
-                    summary: plan.text.clone(),
-                },
+                EventPayload::StructuredPlanProposed { plan: structured },
             )?;
         }
 
@@ -215,7 +323,7 @@ pub fn run(
                 id: ToolCallId::new(),
                 tool: "fs.write".into(),
                 effect: SideEffectKind::Reversible,
-                input: serde_json::json!({"path": "plan.md", "content": plan.text}),
+                input: serde_json::json!({"path": "plan.md", "content": model_plan.text}),
                 idempotency_key: format!("plan-write-{plan_id}"),
             },
         )?;

@@ -18,7 +18,9 @@ use else_protocol::harness::{
 };
 use else_protocol::resource::{ModelUsage, UsageBasis};
 
-use crate::adapter::{shell_quote, BridgeEvent, HarnessPrep, LineParser, ProcessHarness};
+use crate::adapter::{
+    parse_plan_draft, shell_quote, BridgeEvent, HarnessPrep, LineParser, ProcessHarness,
+};
 
 pub const CODEX: &str = "codex";
 pub const CLAUDE_CODE: &str = "claude-code";
@@ -204,9 +206,13 @@ impl LineParser for CodexParser {
             Some("item.completed") => {
                 let item = &value["item"];
                 match item["type"].as_str() {
-                    Some("agent_message") => Some(BridgeEvent::Output {
-                        text: item["text"].as_str().unwrap_or_default().to_string(),
-                    }),
+                    Some("agent_message") => {
+                        let text = item["text"].as_str().unwrap_or_default();
+                        Some(match parse_plan_draft(text) {
+                            Some(draft) => BridgeEvent::PlanProposed { draft },
+                            None => BridgeEvent::Output { text: text.into() },
+                        })
+                    }
                     // 配置告警等非致命错误也走 error item：只记录为输出，不判失败。
                     Some("error") => Some(BridgeEvent::Output {
                         text: format!("codex: {}", item["message"].as_str().unwrap_or("error")),
@@ -293,9 +299,13 @@ impl LineParser for ClaudeParser {
                     content
                         .iter()
                         .filter_map(|block| match block["type"].as_str() {
-                            Some("text") => Some(BridgeEvent::Output {
-                                text: block["text"].as_str().unwrap_or_default().to_string(),
-                            }),
+                            Some("text") => {
+                                let text = block["text"].as_str().unwrap_or_default();
+                                Some(match parse_plan_draft(text) {
+                                    Some(draft) => BridgeEvent::PlanProposed { draft },
+                                    None => BridgeEvent::Output { text: text.into() },
+                                })
+                            }
                             Some("tool_use") => {
                                 let tool = block["name"].as_str().unwrap_or("unknown");
                                 Some(BridgeEvent::ToolObserved {

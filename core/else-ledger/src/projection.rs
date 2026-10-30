@@ -10,6 +10,7 @@ use else_protocol::attention::{
 use else_protocol::event::{Actor, EventPayload, ScopeState};
 use else_protocol::ids::{ArtifactId, AttentionId, AttentionWindowId, ScopeId, TimerId};
 use else_protocol::intent::{IntentSpec, IntentState};
+use else_protocol::plan::{Plan, PlanImpact, PlanStepStatus};
 use else_protocol::resource::{ResourceBudget, ResourceUsage};
 
 use crate::{Projection, StoredEvent};
@@ -87,6 +88,11 @@ pub struct IntentProjection {
     pub attention_records: BTreeMap<AttentionId, AttentionRecordProjection>,
     /// Batch / Defer 的持久调度窗口。
     pub attention_windows: BTreeMap<AttentionWindowId, AttentionWindow>,
+    /// 结构化计划版本，按版本 ID 保存；平面顺序用于审计。
+    pub plans: BTreeMap<else_protocol::ids::PlanId, Plan>,
+    pub plan_order: Vec<else_protocol::ids::PlanId>,
+    pub current_plan_id: Option<else_protocol::ids::PlanId>,
+    pub plan_impacts: Vec<PlanImpact>,
     pub artifacts: Vec<Artifact>,
     pub artifact_scopes: BTreeMap<ArtifactId, ScopeId>,
     pub checkpoints: Vec<Checkpoint>,
@@ -127,6 +133,42 @@ impl Projection for IntentProjection {
             }
             EventPayload::IntentStateChanged { state } => {
                 self.state = Some(*state);
+            }
+            EventPayload::StructuredPlanProposed { plan } => {
+                self.plans.insert(plan.id.clone(), plan.clone());
+                self.plan_order.push(plan.id.clone());
+                self.current_plan_id = Some(plan.id.clone());
+            }
+            EventPayload::StructuredPlanReplaced { plan, .. } => {
+                if let Some(previous) = self.current_plan_id.as_ref() {
+                    if let Some(previous) = self.plans.get_mut(previous) {
+                        for step in &mut previous.steps {
+                            if !matches!(step.status, PlanStepStatus::Completed) {
+                                step.status = PlanStepStatus::Superseded;
+                            }
+                        }
+                    }
+                }
+                self.plans.insert(plan.id.clone(), plan.clone());
+                self.plan_order.push(plan.id.clone());
+                self.current_plan_id = Some(plan.id.clone());
+            }
+            EventPayload::PlanImpactAnalyzed { impact } => {
+                self.plan_impacts.push(impact.clone());
+                if let Some(plan) = self.plans.get_mut(&impact.plan_id) {
+                    for step in &mut plan.steps {
+                        if impact.affected_step_ids.contains(&step.id)
+                            && !matches!(
+                                step.status,
+                                PlanStepStatus::Completed
+                                    | PlanStepStatus::Superseded
+                                    | PlanStepStatus::Cancelled
+                            )
+                        {
+                            step.status = PlanStepStatus::NeedsReplan;
+                        }
+                    }
+                }
             }
             EventPayload::AttentionRequested { request } => {
                 self.open_requests
@@ -228,6 +270,22 @@ impl Projection for IntentProjection {
                 scope.state = ScopeState::Running;
                 scope.generation = event.envelope.generation;
                 scope.last_run_started_seq = Some(event.seq);
+                if let Some(plan) = self
+                    .current_plan_id
+                    .as_ref()
+                    .and_then(|id| self.plans.get_mut(id))
+                {
+                    for step in &mut plan.steps {
+                        if step.scope_id.as_ref() == Some(&event.envelope.scope_id)
+                            && matches!(
+                                step.status,
+                                PlanStepStatus::Planned | PlanStepStatus::Ready
+                            )
+                        {
+                            step.status = PlanStepStatus::Running;
+                        }
+                    }
+                }
             }
             EventPayload::ScopeSpawned { child } => {
                 self.scopes.insert(
@@ -273,6 +331,25 @@ impl Projection for IntentProjection {
                         spec: None,
                     })
                     .state = *state;
+                if let Some(plan) = self
+                    .current_plan_id
+                    .as_ref()
+                    .and_then(|id| self.plans.get_mut(id))
+                {
+                    let status = match state {
+                        ScopeState::Completed => Some(PlanStepStatus::Completed),
+                        ScopeState::Cancelled => Some(PlanStepStatus::Cancelled),
+                        ScopeState::Failed => Some(PlanStepStatus::Blocked),
+                        _ => None,
+                    };
+                    if let Some(status) = status {
+                        for step in &mut plan.steps {
+                            if step.scope_id.as_ref() == Some(&event.envelope.scope_id) {
+                                step.status = status;
+                            }
+                        }
+                    }
+                }
             }
             EventPayload::ResourceBudgetSet { budget } => {
                 self.resource_budget = *budget;
@@ -312,6 +389,12 @@ impl Projection for IntentProjection {
 }
 
 impl IntentProjection {
+    pub fn current_plan(&self) -> Option<&Plan> {
+        self.current_plan_id
+            .as_ref()
+            .and_then(|id| self.plans.get(id))
+    }
+
     /// 请求最近进入的 Attention Window。正常情况下一个请求只属于一个窗口。
     pub fn attention_window_for_request(
         &self,

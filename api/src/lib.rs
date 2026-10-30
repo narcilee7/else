@@ -9,6 +9,7 @@ mod context;
 mod dispatch;
 mod kernel;
 mod outcome;
+mod plan;
 mod resources;
 mod scope;
 mod service;
@@ -151,7 +152,7 @@ impl Runtime {
     /// 启动一次执行（一个 Harness、一次 Run）。返回最新投影。
     /// 终态幂等：Completed/Failed/Cancelled 不重复执行。
     pub fn run(&self, intent_id: &IntentId) -> Result<IntentProjection> {
-        let Some((ctx, _snapshot)) = self.prepare_root_run(intent_id)? else {
+        let Some((ctx, _snapshot)) = self.prepare_root_run(intent_id, false)? else {
             return self.projection(intent_id);
         };
         let lease = self.admit_run(&ctx)?;
@@ -190,7 +191,7 @@ impl Runtime {
         intent_id: &IntentId,
         adapter: &dyn else_harness::adapter::HarnessAdapter,
     ) -> Result<IntentProjection> {
-        let Some((ctx, snapshot)) = self.prepare_root_run(intent_id)? else {
+        let Some((ctx, snapshot)) = self.prepare_root_run(intent_id, true)? else {
             return self.projection(intent_id);
         };
         let lease = self.admit_run(&ctx)?;
@@ -219,6 +220,7 @@ impl Runtime {
     fn prepare_root_run(
         &self,
         intent_id: &IntentId,
+        ensure_plan: bool,
     ) -> Result<Option<(ExecContext, else_protocol::memory::ContextSnapshot)>> {
         let projection = self.projection(intent_id)?;
         if matches!(
@@ -238,6 +240,9 @@ impl Runtime {
         self.ensure_slot_available()?;
         self.ensure_scope_not_active(intent_id, &scope_id)?;
         let generation = self.next_scope_generation(intent_id, &scope_id)?;
+        if ensure_plan {
+            self.ensure_plan_for_scope(intent_id, &spec, &scope_id)?;
+        }
         // 执行前编译 Planner 快照；本 Run 后续事件都标记该上下文版本。
         let snapshot =
             self.compile_snapshot(intent_id, else_protocol::memory::SnapshotAudience::Planner)?;

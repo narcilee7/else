@@ -78,6 +78,7 @@ impl Runtime {
             self.materialize_artifacts(&projection, &scope_workspace)?;
         }
 
+        self.ensure_plan_for_scope(intent_id, &spec, scope_id)?;
         let snapshot = self.compile_snapshot_for(
             intent_id,
             &spec,

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{ArtifactId, IntentId, MemoryId, SnapshotId};
 use crate::intent::{Assumption, Criterion};
+use crate::plan::Plan;
 
 /// 记忆分层。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -95,6 +96,9 @@ pub struct ContextSnapshot {
     /// 自本 Scope 上次 RunStarted 以来到达的外部事实。
     #[serde(default)]
     pub external_events: Vec<ExternalEventContext>,
+    /// 当前结构化 Plan 的只读版本；Verifier 不接收 Plan。
+    #[serde(default)]
+    pub plan: Option<Plan>,
     pub created_at: DateTime<Utc>,
 }
 

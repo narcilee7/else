@@ -62,3 +62,8 @@ define_id!(
     "Context Snapshot：一次执行使用的一致上下文版本。"
 );
 define_id!(MemoryId, "一条记忆记录（候选或已晋升）。");
+define_id!(
+    PlanId,
+    "一个结构化计划版本；重规划生成新版本并可引用前序版本。"
+);
+define_id!(PlanStepId, "结构化计划中的可持久引用步骤。");

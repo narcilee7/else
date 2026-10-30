@@ -18,6 +18,9 @@ use else_protocol::harness::HarnessCapabilities;
 use else_protocol::ids::{ArtifactId, ToolCallId};
 use else_protocol::intent::CriterionVerification;
 use else_protocol::memory::ContextSnapshot;
+use else_protocol::plan::{
+    Plan, PlanDraft, PlanEvidence, PlanEvidenceKind, PlanStep, PlanStepStatus,
+};
 use else_protocol::resource::ModelUsage;
 
 /// 桥接事件：适配器把 Harness 的一行输出归一化为一枚桥接事件。
@@ -37,6 +40,8 @@ pub enum BridgeEvent {
     Usage { model: String, usage: ModelUsage },
     /// Harness 报告产出的工件（Workspace 内）。
     Artifact { locator: String, note: String },
+    /// Harness 主动提交结构化计划；解析器必须给出显式步骤，而不是猜测自由文本。
+    PlanProposed { draft: PlanDraft },
     /// Harness 报告任务完成（附最终结论）。
     Completed { summary: String },
     /// Harness 报告失败。
@@ -128,7 +133,75 @@ pub fn task_prompt(snapshot: &ContextSnapshot) -> String {
             prompt.push_str(&format!("- {path}\n"));
         }
     }
+    if let Some(plan) = &snapshot.plan {
+        prompt.push_str(&format!(
+            "\n# 当前计划（revision {}，仅为建议）\n{}\n",
+            plan.revision, plan.summary
+        ));
+        for step in &plan.steps {
+            let status = match step.status {
+                else_protocol::plan::PlanStepStatus::Planned => "planned",
+                else_protocol::plan::PlanStepStatus::Ready => "ready",
+                else_protocol::plan::PlanStepStatus::Running => "running",
+                else_protocol::plan::PlanStepStatus::Completed => "completed",
+                else_protocol::plan::PlanStepStatus::NeedsReplan => "needs_replan",
+                else_protocol::plan::PlanStepStatus::Blocked => "blocked",
+                else_protocol::plan::PlanStepStatus::Superseded => "superseded",
+                else_protocol::plan::PlanStepStatus::Cancelled => "cancelled",
+            };
+            prompt.push_str(&format!(
+                "- [{status}] {}: {}\n",
+                step.title, step.description
+            ));
+        }
+    }
+    prompt.push_str(
+        "\n# 结构化计划输出（可选）\n\
+         如果首次提出计划或计划需要变化，单独输出一行：\n\
+         ELSE_PLAN {\"summary\":\"计划摘要\",\"steps\":[{\"title\":\"步骤\",\"description\":\"可执行描述\",\"watch_sources\":[\"mail\"],\"watch_terms\":[\"合作方回复\"]}]}\n\
+         不要使用代码围栏，不要在同一条 ELSE_PLAN 后追加解释。\n",
+    );
     prompt
+}
+
+pub fn parse_plan_draft(text: &str) -> Option<PlanDraft> {
+    text.lines().find_map(|line| {
+        serde_json::from_str::<PlanDraft>(line.trim().strip_prefix("ELSE_PLAN ")?).ok()
+    })
+}
+
+fn plan_from_draft(
+    request: &HarnessRequest<'_>,
+    draft: PlanDraft,
+    previous: Option<&Plan>,
+) -> Plan {
+    Plan {
+        id: else_protocol::ids::PlanId::new(),
+        revision: previous.map_or(1, |plan| plan.revision + 1),
+        supersedes: previous.map(|plan| plan.id.clone()),
+        intent_revision: request.ctx.spec.revision,
+        summary: draft.summary,
+        steps: draft
+            .steps
+            .into_iter()
+            .map(|step| PlanStep {
+                id: else_protocol::ids::PlanStepId::new(),
+                title: step.title,
+                description: step.description,
+                scope_id: Some(request.ctx.scope_id.clone()),
+                depends_on: vec![],
+                status: PlanStepStatus::Ready,
+                watch_sources: step.watch_sources,
+                watch_terms: step.watch_terms,
+            })
+            .collect(),
+        evidence: vec![PlanEvidence {
+            kind: PlanEvidenceKind::PlannerInference,
+            event_id: None,
+            summary: request.ctx.run_id.to_string(),
+        }],
+        created_at: chrono::Utc::now(),
+    }
 }
 
 /// shell 单引号转义，用于把任务包安全嵌入命令行。
@@ -239,6 +312,7 @@ impl<P: LineParser> HarnessAdapter for ProcessHarness<P> {
         let mut completed: Option<String> = None;
         let mut failed: Option<String> = None;
         let mut observed_calls = 0_u64;
+        let mut latest_plan = request.snapshot.plan.clone();
         // stderr 由独立线程排干（防管道撑满死锁），保留尾部作为失败证据。
         let stderr_tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let stderr_drain = child
@@ -348,6 +422,19 @@ impl<P: LineParser> HarnessAdapter for ProcessHarness<P> {
                                     },
                                 },
                             )?;
+                        }
+                        BridgeEvent::PlanProposed { draft } => {
+                            let plan = plan_from_draft(request, draft, latest_plan.as_ref());
+                            let payload = if latest_plan.is_some() {
+                                EventPayload::StructuredPlanReplaced {
+                                    reason: format!("Harness {} 提交新计划", self.name),
+                                    plan: plan.clone(),
+                                }
+                            } else {
+                                EventPayload::StructuredPlanProposed { plan: plan.clone() }
+                            };
+                            self.record(request, payload)?;
+                            latest_plan = Some(plan);
                         }
                         BridgeEvent::Completed { summary } => {
                             completed = Some(summary);

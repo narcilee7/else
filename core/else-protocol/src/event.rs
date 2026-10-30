@@ -12,6 +12,7 @@ use crate::attention::{AttentionRequest, AttentionWindow, Decision, Ruling};
 use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
 use crate::ids::*;
 use crate::intent::{IntentSpec, IntentState};
+use crate::plan::{Plan, PlanImpact};
 use crate::resource::{ResourceBudget, ResourceLease};
 use crate::PROTOCOL_VERSION;
 
@@ -122,6 +123,19 @@ pub enum EventPayload {
     PlanReplaced {
         plan_id: String,
         reason: String,
+    },
+    /// 结构化计划版本。旧 `PlanProposed` 保留用于重放历史事件。
+    StructuredPlanProposed {
+        plan: Plan,
+    },
+    /// 结构化重规划版本；前序 Plan 在投影中标记为 Superseded。
+    StructuredPlanReplaced {
+        plan: Plan,
+        reason: String,
+    },
+    /// 外部事实对当前计划步骤与 Scope 的确定性影响分析。
+    PlanImpactAnalyzed {
+        impact: PlanImpact,
     },
 
     RunStarted {

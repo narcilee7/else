@@ -130,3 +130,29 @@ fn claude_parser_maps_tool_effects_conservatively() {
         if tool == "Bash"
     ));
 }
+
+#[test]
+fn both_real_parsers_accept_the_shared_structured_plan_channel() {
+    let marker = r#"ELSE_PLAN {"summary":"准备发布","steps":[{"title":"检查邮件","description":"读取合作方回复","watch_sources":["mail"],"watch_terms":["合作方"]}]}"#;
+    let codex = CodexParser.parse(
+        &serde_json::json!({
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": marker}
+        })
+        .to_string(),
+    );
+    let claude = ClaudeParser.parse(
+        &serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": marker}]}
+        })
+        .to_string(),
+    );
+    for events in [codex, claude] {
+        let [BridgeEvent::PlanProposed { draft }] = events.as_slice() else {
+            panic!("应解析为结构化计划，实际 {events:?}");
+        };
+        assert_eq!(draft.summary, "准备发布");
+        assert_eq!(draft.steps[0].watch_sources, vec!["mail"]);
+    }
+}

@@ -10,6 +10,7 @@ use else_ledger::IntentProjection;
 use else_protocol::attention::{AttentionRequest, DecisionChoice};
 use else_protocol::ids::{AttentionId, IntentId, ScopeId, TimerId};
 use else_protocol::intent::IntentSpec;
+use else_protocol::plan::Plan;
 
 use crate::kernel::KernelDrive;
 use crate::{ApiError, Result, Runtime};
@@ -54,6 +55,11 @@ enum Command {
         scope_id: Option<ScopeId>,
         request: AttentionRequest,
         reply: Reply<AttentionId>,
+    },
+    ProposePlan {
+        intent_id: IntentId,
+        plan: Plan,
+        reply: Reply<Plan>,
     },
     Abort {
         intent_id: IntentId,
@@ -156,6 +162,14 @@ impl RuntimeHandle {
             intent_id: intent_id.clone(),
             scope_id,
             request,
+            reply,
+        })
+    }
+
+    pub fn propose_plan(&self, intent_id: &IntentId, plan: Plan) -> Result<Plan> {
+        self.request(|reply| Command::ProposePlan {
+            intent_id: intent_id.clone(),
+            plan,
             reply,
         })
     }
@@ -305,6 +319,13 @@ fn handle_command(runtime: &Runtime, command: Command) {
                 None => runtime.submit_attention_request(&intent_id, &request),
             };
             let _ = reply.send(result);
+        }
+        Command::ProposePlan {
+            intent_id,
+            plan,
+            reply,
+        } => {
+            let _ = reply.send(runtime.propose_plan(&intent_id, plan));
         }
         Command::Abort {
             intent_id,

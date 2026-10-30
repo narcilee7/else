@@ -12,6 +12,7 @@ use else_protocol::memory::{
     ContextSnapshot, ExternalEventContext, MemoryRecord, MemoryScope, MemorySource, MemoryTier,
     SnapshotAudience,
 };
+use else_protocol::plan::Plan;
 
 use crate::{ApiError, Result, Runtime};
 
@@ -133,6 +134,13 @@ impl Runtime {
                 })
                 .collect()
         };
+        let plan = match audience {
+            SnapshotAudience::Verifier => None,
+            SnapshotAudience::Planner => projection.current_plan().cloned(),
+            SnapshotAudience::Executor => projection
+                .current_plan()
+                .map(|plan| plan_for_scope(plan, scope_id)),
+        };
         let snapshot = ContextSnapshot {
             id: SnapshotId::new(),
             intent_id: intent_id.clone(),
@@ -148,6 +156,7 @@ impl Runtime {
             artifact_refs,
             artifact_paths,
             external_events,
+            plan,
             created_at: now,
         };
         self.ledger.append(&EventEnvelope::new(
@@ -455,4 +464,12 @@ impl Runtime {
             .append(&envelope(EventPayload::MemoryPromoted { memory: record }))?;
         Ok(())
     }
+}
+
+fn plan_for_scope(plan: &Plan, scope_id: &ScopeId) -> Plan {
+    let mut scoped = plan.clone();
+    scoped
+        .steps
+        .retain(|step| step.scope_id.as_ref().is_none_or(|scope| scope == scope_id));
+    scoped
 }

@@ -43,7 +43,7 @@ impl Runtime {
         summary: &str,
     ) -> Result<IntentProjection> {
         let (scope_id, generation, revision) = self.kernel_context(intent_id)?;
-        self.ledger.append(&EventEnvelope::new(
+        let received = self.ledger.append(&EventEnvelope::new(
             intent_id.clone(),
             scope_id.clone(),
             generation,
@@ -54,6 +54,7 @@ impl Runtime {
                 summary: summary.to_string(),
             },
         ))?;
+        self.analyze_plan_impact(intent_id, &received.envelope.event_id, source, summary)?;
         let projection = self.projection(intent_id)?;
         if matches!(
             projection.state,
