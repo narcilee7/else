@@ -9,6 +9,33 @@ use else_protocol::intent::IntentState;
 use crate::{ApiError, Result, Runtime};
 
 impl Runtime {
+    pub fn wait_for_external(
+        &self,
+        intent_id: &IntentId,
+        reason: &str,
+    ) -> Result<IntentProjection> {
+        let (scope_id, generation, revision) = self.kernel_context(intent_id)?;
+        let envelope = |payload| {
+            EventEnvelope::new(
+                intent_id.clone(),
+                scope_id.clone(),
+                generation,
+                revision,
+                Actor::System,
+                payload,
+            )
+        };
+        self.ledger
+            .append(&envelope(EventPayload::ExternalWaitStarted {
+                reason: reason.to_string(),
+            }))?;
+        self.ledger
+            .append(&envelope(EventPayload::IntentStateChanged {
+                state: IntentState::WaitingExternal,
+            }))?;
+        self.projection(intent_id)
+    }
+
     pub fn record_external_event(
         &self,
         intent_id: &IntentId,
@@ -116,6 +143,16 @@ impl Runtime {
         self.ledger.append(&envelope(EventPayload::TimerFired {
             timer_id: timer_id.clone(),
         }))?;
+        let projection = self.projection(intent_id)?;
+        if matches!(
+            projection.state,
+            Some(IntentState::WaitingExternal | IntentState::Paused)
+        ) {
+            self.ledger
+                .append(&envelope(EventPayload::IntentStateChanged {
+                    state: IntentState::Active,
+                }))?;
+        }
         Ok(())
     }
 

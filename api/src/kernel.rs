@@ -26,6 +26,9 @@ pub enum KernelAction {
     WaitForTimer {
         due_at: DateTime<Utc>,
     },
+    WaitForExternal {
+        reason: Option<String>,
+    },
     FireTimer {
         timer_id: TimerId,
     },
@@ -44,6 +47,7 @@ pub enum KernelDriveStop {
     WaitForAttentionWindow,
     WaitForRun,
     WaitForTimer,
+    WaitForExternal,
     StepLimit,
 }
 
@@ -84,6 +88,15 @@ impl Runtime {
                     .map(|request| request.id.clone())
                     .collect(),
             });
+        }
+        if projection.state == Some(IntentState::WaitingExternal) {
+            return if let Some(due_at) = projection.next_timer_at() {
+                Ok(KernelAction::WaitForTimer { due_at })
+            } else {
+                Ok(KernelAction::WaitForExternal {
+                    reason: projection.external_wait_reason.clone(),
+                })
+            };
         }
 
         let mut active_run = None;
@@ -144,7 +157,8 @@ impl Runtime {
             | KernelAction::WaitForUser { .. }
             | KernelAction::WaitForAttentionWindow { .. }
             | KernelAction::WaitForRun { .. }
-            | KernelAction::WaitForTimer { .. } => self.projection(intent_id),
+            | KernelAction::WaitForTimer { .. }
+            | KernelAction::WaitForExternal { .. } => self.projection(intent_id),
             KernelAction::FireTimer { timer_id } => {
                 self.fire_timer(intent_id, &timer_id)?;
                 self.projection(intent_id)
@@ -183,6 +197,7 @@ impl Runtime {
                 }
                 KernelAction::WaitForRun { .. } => Some(KernelDriveStop::WaitForRun),
                 KernelAction::WaitForTimer { .. } => Some(KernelDriveStop::WaitForTimer),
+                KernelAction::WaitForExternal { .. } => Some(KernelDriveStop::WaitForExternal),
                 KernelAction::FireTimer { .. } | KernelAction::Run { .. } => None,
             };
             if let Some(stopped) = stopped {

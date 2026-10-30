@@ -92,5 +92,17 @@ pub struct ContextSnapshot {
     /// 已物化到当前 Workspace 的工件相对路径，供 Harness 直接读取。
     #[serde(default)]
     pub artifact_paths: Vec<String>,
+    /// 自本 Scope 上次 RunStarted 以来到达的外部事实。
+    #[serde(default)]
+    pub external_events: Vec<ExternalEventContext>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExternalEventContext {
+    pub event_id: String,
+    pub seq: u64,
+    pub source: String,
+    pub summary: String,
+    pub occurred_at: DateTime<Utc>,
 }

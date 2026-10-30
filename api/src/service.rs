@@ -32,6 +32,11 @@ enum Command {
         summary: String,
         reply: Reply<IntentProjection>,
     },
+    WaitForExternal {
+        intent_id: IntentId,
+        reason: String,
+        reply: Reply<IntentProjection>,
+    },
     ScheduleTimer {
         intent_id: IntentId,
         fire_at: DateTime<Utc>,
@@ -91,6 +96,18 @@ impl RuntimeHandle {
             intent_id: intent_id.clone(),
             source: source.to_string(),
             summary: summary.to_string(),
+            reply,
+        })
+    }
+
+    pub fn wait_for_external(
+        &self,
+        intent_id: &IntentId,
+        reason: &str,
+    ) -> Result<IntentProjection> {
+        self.request(|reply| Command::WaitForExternal {
+            intent_id: intent_id.clone(),
+            reason: reason.to_string(),
             reply,
         })
     }
@@ -231,6 +248,13 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.record_external_event(&intent_id, &source, &summary));
+        }
+        Command::WaitForExternal {
+            intent_id,
+            reason,
+            reply,
+        } => {
+            let _ = reply.send(runtime.wait_for_external(&intent_id, &reason));
         }
         Command::ScheduleTimer {
             intent_id,

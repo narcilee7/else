@@ -31,6 +31,15 @@ pub struct TimerProjection {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalEventProjection {
+    pub event_id: String,
+    pub seq: u64,
+    pub source: String,
+    pub summary: String,
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// Intent 的基础投影：目标契约、状态、待本人决策、产物、检查点与 Scope 树。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct IntentProjection {
@@ -48,6 +57,8 @@ pub struct IntentProjection {
     /// Scope 的创建顺序，用于打破首次调度时的 ID 随机性。
     pub scope_order: Vec<ScopeId>,
     pub timers: BTreeMap<TimerId, TimerProjection>,
+    pub external_events: Vec<ExternalEventProjection>,
+    pub external_wait_reason: Option<String>,
     pub resource_budget: ResourceBudget,
     pub resource_usage: ResourceUsage,
     /// 已重放到的事件水位。
@@ -90,7 +101,19 @@ impl Projection for IntentProjection {
             EventPayload::DecisionResolved { decision } => {
                 self.open_requests.remove(&decision.request_id);
             }
-            EventPayload::ExternalEventReceived { .. } => {}
+            EventPayload::ExternalEventReceived { source, summary } => {
+                self.external_events.push(ExternalEventProjection {
+                    event_id: event.envelope.event_id.clone(),
+                    seq: event.seq,
+                    source: source.clone(),
+                    summary: summary.clone(),
+                    occurred_at: event.envelope.occurred_at,
+                });
+                self.external_wait_reason = None;
+            }
+            EventPayload::ExternalWaitStarted { reason } => {
+                self.external_wait_reason = Some(reason.clone());
+            }
             EventPayload::TimerScheduled {
                 timer_id,
                 fire_at,
@@ -105,8 +128,11 @@ impl Projection for IntentProjection {
                     },
                 );
             }
-            EventPayload::TimerFired { timer_id }
-            | EventPayload::TimerCancelled { timer_id, .. } => {
+            EventPayload::TimerFired { timer_id } => {
+                self.timers.remove(timer_id);
+                self.external_wait_reason = None;
+            }
+            EventPayload::TimerCancelled { timer_id, .. } => {
                 self.timers.remove(timer_id);
             }
             EventPayload::RunStarted { .. } => {

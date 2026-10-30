@@ -174,6 +174,9 @@ pub enum EventPayload {
         source: String,
         summary: String,
     },
+    ExternalWaitStarted {
+        reason: String,
+    },
     TimerScheduled {
         timer_id: TimerId,
         fire_at: DateTime<Utc>,

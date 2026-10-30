@@ -221,6 +221,7 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::ToolCompleted { .. } => "tool_completed",
         P::SideEffectConcluded { .. } => "side_effect_concluded",
         P::ExternalEventReceived { .. } => "external_event_received",
+        P::ExternalWaitStarted { .. } => "external_wait_started",
         P::TimerScheduled { .. } => "timer_scheduled",
         P::TimerFired { .. } => "timer_fired",
         P::TimerCancelled { .. } => "timer_cancelled",

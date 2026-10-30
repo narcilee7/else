@@ -234,3 +234,51 @@ fn external_event_is_durable_and_can_wake_kernel_progress() {
     let driven = runtime.drive(&spec.id, Some("scripted"), 4).unwrap();
     assert_eq!(driven.stopped, KernelDriveStop::WaitForUser);
 }
+
+#[test]
+fn waiting_external_blocks_execution_and_feeds_the_next_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("整理会议纪要", None).unwrap();
+    runtime
+        .wait_for_external(&spec.id, "等待合作方回复")
+        .unwrap();
+    assert!(matches!(
+        runtime.kernel_step(&spec.id, None).unwrap(),
+        KernelAction::WaitForExternal { reason: Some(reason) } if reason == "等待合作方回复"
+    ));
+
+    runtime
+        .record_external_event(&spec.id, "mail", "合作方已回复")
+        .unwrap();
+    let snapshot = runtime
+        .compile_snapshot(&spec.id, else_protocol::memory::SnapshotAudience::Planner)
+        .unwrap();
+    assert_eq!(snapshot.external_events.len(), 1);
+    assert_eq!(snapshot.external_events[0].source, "mail");
+    assert_eq!(snapshot.external_events[0].summary, "合作方已回复");
+    assert!(matches!(
+        runtime.kernel_step(&spec.id, None).unwrap(),
+        KernelAction::Run { .. }
+    ));
+}
+
+#[test]
+fn due_timer_resumes_an_external_wait() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("整理会议纪要", None).unwrap();
+    runtime.wait_for_external(&spec.id, "等待异步任务").unwrap();
+    runtime
+        .schedule_timer(
+            &spec.id,
+            chrono::Utc::now() - chrono::Duration::seconds(1),
+            "poll async task",
+        )
+        .unwrap();
+
+    let driven = runtime.drive(&spec.id, Some("scripted"), 8).unwrap();
+    assert_eq!(driven.stopped, KernelDriveStop::WaitForUser);
+    assert_eq!(driven.projection.external_wait_reason, None);
+    assert_ne!(driven.projection.state, Some(IntentState::WaitingExternal));
+}

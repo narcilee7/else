@@ -9,7 +9,8 @@ use else_protocol::event::{Actor, EventEnvelope, EventPayload, ScopeState};
 use else_protocol::ids::{IntentId, MemoryId, ScopeId, SnapshotId};
 use else_protocol::intent::{IntentSpec, IntentState};
 use else_protocol::memory::{
-    ContextSnapshot, MemoryRecord, MemoryScope, MemorySource, MemoryTier, SnapshotAudience,
+    ContextSnapshot, ExternalEventContext, MemoryRecord, MemoryScope, MemorySource, MemoryTier,
+    SnapshotAudience,
 };
 
 use crate::{ApiError, Result, Runtime};
@@ -111,6 +112,27 @@ impl Runtime {
             SnapshotAudience::Verifier => (vec![], vec![], vec![], vec![]),
         };
         let memory_refs = facts.iter().map(|record| record.id.clone()).collect();
+        let last_run_seq = projection
+            .scopes
+            .get(scope_id)
+            .and_then(|scope| scope.last_run_started_seq)
+            .unwrap_or(0);
+        let external_events = if audience == SnapshotAudience::Verifier {
+            vec![]
+        } else {
+            projection
+                .external_events
+                .iter()
+                .filter(|event| event.seq > last_run_seq)
+                .map(|event| ExternalEventContext {
+                    event_id: event.event_id.clone(),
+                    seq: event.seq,
+                    source: event.source.clone(),
+                    summary: event.summary.clone(),
+                    occurred_at: event.occurred_at,
+                })
+                .collect()
+        };
         let snapshot = ContextSnapshot {
             id: SnapshotId::new(),
             intent_id: intent_id.clone(),
@@ -125,6 +147,7 @@ impl Runtime {
             facts,
             artifact_refs,
             artifact_paths,
+            external_events,
             created_at: now,
         };
         self.ledger.append(&EventEnvelope::new(

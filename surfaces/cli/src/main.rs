@@ -51,6 +51,12 @@ enum Command {
         source: String,
         summary: String,
     },
+    /// 标记 Intent 正在等待外部事实，停止空转执行
+    WaitExternal {
+        intent_id: String,
+        #[arg(long, default_value = "waiting for external event")]
+        reason: String,
+    },
     /// 安排一个持久化 Kernel 唤醒 Timer
     Wake {
         intent_id: String,
@@ -211,6 +217,10 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         } => {
             let projection =
                 runtime.record_external_event(&IntentId::from(intent_id), &source, &summary)?;
+            print_projection(&projection);
+        }
+        Command::WaitExternal { intent_id, reason } => {
+            let projection = runtime.wait_for_external(&IntentId::from(intent_id), &reason)?;
             print_projection(&projection);
         }
         Command::Wake {
