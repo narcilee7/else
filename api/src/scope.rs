@@ -128,7 +128,7 @@ impl Runtime {
             generation,
             snapshot_id: Some(snapshot.id),
         };
-        let lease = self.admit_run(&ctx)?;
+        let lease = self.admit_run_with_failure(&ctx)?;
         ctx.record(
             &self.ledger,
             Actor::System,

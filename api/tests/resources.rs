@@ -36,6 +36,20 @@ fn admission_rejects_over_budget_run_before_lease_or_execution() {
         runtime.resources(&spec.id).unwrap().usage,
         ResourceUsage::default()
     );
+    let projection = runtime.projection(&spec.id).unwrap();
+    assert_eq!(
+        projection.state,
+        Some(else_protocol::intent::IntentState::Failed)
+    );
+    let root = projection.root_scope_id.as_ref().unwrap();
+    assert_eq!(
+        projection.scopes[root].state,
+        else_protocol::event::ScopeState::Failed
+    );
+    assert_eq!(
+        projection.scopes[root].last_failure.as_ref().unwrap().class,
+        else_protocol::failure::FailureClass::Terminal
+    );
 
     drop(runtime);
     let reopened = Runtime::open(dir.path()).unwrap();

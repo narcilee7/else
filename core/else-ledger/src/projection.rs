@@ -8,6 +8,7 @@ use else_protocol::attention::{
     AttentionRequest, AttentionWindow, AttentionWindowKind, Decision, Ruling,
 };
 use else_protocol::event::{Actor, EventPayload, ScopeState};
+use else_protocol::failure::ScopeFailure;
 use else_protocol::ids::{ArtifactId, AttentionId, AttentionWindowId, LeaseId, ScopeId, TimerId};
 use else_protocol::intent::{IntentSpec, IntentState};
 use else_protocol::plan::{Plan, PlanImpact, PlanStepStatus};
@@ -24,6 +25,10 @@ pub struct ScopeProjection {
     /// 最近一次 RunStarted 的事件水位，用于跨 Scope 公平调度。
     pub last_run_started_seq: Option<u64>,
     pub depends_on: Vec<ScopeId>,
+    /// 自动替换来源；用于把替换链限制为一层。
+    pub replaces: Option<ScopeId>,
+    pub failure_count: u32,
+    pub last_failure: Option<ScopeFailure>,
     /// Subagent 的收窄权限契约；根 Scope 使用 IntentSpec。
     pub spec: Option<IntentSpec>,
 }
@@ -97,6 +102,8 @@ pub struct IntentProjection {
     pub artifact_scopes: BTreeMap<ArtifactId, ScopeId>,
     pub checkpoints: Vec<Checkpoint>,
     pub scopes: BTreeMap<ScopeId, ScopeProjection>,
+    /// original failed scope -> replacement scope
+    pub scope_replacements: BTreeMap<ScopeId, ScopeId>,
     /// Scope 的创建顺序，用于打破首次调度时的 ID 随机性。
     pub scope_order: Vec<ScopeId>,
     pub timers: BTreeMap<TimerId, TimerProjection>,
@@ -125,6 +132,9 @@ impl Projection for IntentProjection {
                         generation: event.envelope.generation,
                         last_run_started_seq: None,
                         depends_on: vec![],
+                        replaces: None,
+                        failure_count: 0,
+                        last_failure: None,
                         spec: None,
                     },
                 );
@@ -268,6 +278,9 @@ impl Projection for IntentProjection {
                         generation: event.envelope.generation,
                         last_run_started_seq: None,
                         depends_on: vec![],
+                        replaces: None,
+                        failure_count: 0,
+                        last_failure: None,
                         spec: None,
                     });
                 scope.state = ScopeState::Running;
@@ -299,6 +312,9 @@ impl Projection for IntentProjection {
                         generation: event.envelope.generation,
                         last_run_started_seq: None,
                         depends_on: vec![],
+                        replaces: None,
+                        failure_count: 0,
+                        last_failure: None,
                         spec: None,
                     },
                 );
@@ -317,10 +333,56 @@ impl Projection for IntentProjection {
                         generation: event.envelope.generation,
                         last_run_started_seq: None,
                         depends_on: depends_on.clone(),
+                        replaces: None,
+                        failure_count: 0,
+                        last_failure: None,
                         spec: Some(spec.clone()),
                     },
                 );
                 self.scope_order.push(child.clone());
+            }
+            EventPayload::ScopeReplacementSpawned {
+                child,
+                replaces,
+                spec,
+                depends_on,
+            } => {
+                self.scopes.insert(
+                    child.clone(),
+                    ScopeProjection {
+                        parent: Some(event.envelope.scope_id.clone()),
+                        state: ScopeState::Running,
+                        generation: event.envelope.generation,
+                        last_run_started_seq: None,
+                        depends_on: depends_on.clone(),
+                        replaces: Some(replaces.clone()),
+                        failure_count: 0,
+                        last_failure: None,
+                        spec: Some(spec.clone()),
+                    },
+                );
+                self.scope_replacements
+                    .insert(replaces.clone(), child.clone());
+                self.scope_order.push(child.clone());
+            }
+            EventPayload::ScopeDependencyReplaced {
+                previous,
+                replacement,
+                ..
+            } => {
+                if let Some(scope) = self.scopes.get_mut(&event.envelope.scope_id) {
+                    for dependency in &mut scope.depends_on {
+                        if dependency == previous {
+                            *dependency = replacement.clone();
+                        }
+                    }
+                }
+            }
+            EventPayload::ScopeFailureRecorded { failure } => {
+                if let Some(scope) = self.scopes.get_mut(&event.envelope.scope_id) {
+                    scope.failure_count = scope.failure_count.saturating_add(1);
+                    scope.last_failure = Some(failure.clone());
+                }
             }
             EventPayload::ScopeStateChanged { state } => {
                 self.scopes
@@ -331,6 +393,9 @@ impl Projection for IntentProjection {
                         generation: event.envelope.generation,
                         last_run_started_seq: None,
                         depends_on: vec![],
+                        replaces: None,
+                        failure_count: 0,
+                        last_failure: None,
                         spec: None,
                     })
                     .state = *state;
@@ -341,6 +406,7 @@ impl Projection for IntentProjection {
                 {
                     let status = match state {
                         ScopeState::Completed => Some(PlanStepStatus::Completed),
+                        ScopeState::Superseded => Some(PlanStepStatus::Superseded),
                         ScopeState::Cancelled => Some(PlanStepStatus::Cancelled),
                         ScopeState::Failed => Some(PlanStepStatus::Blocked),
                         _ => None,

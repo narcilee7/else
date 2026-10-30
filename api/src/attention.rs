@@ -382,6 +382,7 @@ impl Runtime {
                     .map(|scope| scope.state),
                 Some(else_protocol::event::ScopeState::Cancelled)
                     | Some(else_protocol::event::ScopeState::Failed)
+                    | Some(else_protocol::event::ScopeState::Superseded)
             ) {
                 continue;
             }

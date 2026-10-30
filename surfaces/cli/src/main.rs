@@ -297,9 +297,19 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             let projection = runtime.projection(&IntentId::from(intent_id))?;
             for (id, scope) in projection.scopes {
                 println!(
-                    "scope {id} parent={:?} state={:?} generation={}",
-                    scope.parent, scope.state, scope.generation
+                    "scope {id} parent={:?} replaces={:?} state={:?} generation={} failures={}",
+                    scope.parent,
+                    scope.replaces,
+                    scope.state,
+                    scope.generation,
+                    scope.failure_count
                 );
+                if let Some(failure) = scope.last_failure {
+                    println!(
+                        "  last_failure: {:?} {} attempt={}: {}",
+                        failure.class, failure.code, failure.attempt, failure.message
+                    );
+                }
             }
         }
         Command::Delegate {

@@ -35,6 +35,10 @@ pub enum KernelAction {
         scope_id: ScopeId,
         dependencies: Vec<ScopeId>,
     },
+    ConvergeDependency {
+        scope_id: ScopeId,
+        dependencies: Vec<ScopeId>,
+    },
     FireTimer {
         timer_id: TimerId,
     },
@@ -172,7 +176,10 @@ impl Runtime {
             };
             if matches!(
                 scope.state,
-                ScopeState::Completed | ScopeState::Failed | ScopeState::Cancelled
+                ScopeState::Completed
+                    | ScopeState::Failed
+                    | ScopeState::Superseded
+                    | ScopeState::Cancelled
             ) {
                 continue;
             }
@@ -213,6 +220,15 @@ impl Runtime {
             ready.push((scope.last_run_started_seq.unwrap_or(0), index, scope_id));
         }
         ready.sort_by_key(|(last_started, order, _)| (*last_started, *order));
+        if let Some((scope_id, run_id)) = active_run {
+            return Ok(KernelAction::WaitForRun { scope_id, run_id });
+        }
+        if let Some((scope_id, dependencies)) = blocked_by_dependency.into_iter().next() {
+            return Ok(KernelAction::ConvergeDependency {
+                scope_id,
+                dependencies,
+            });
+        }
         if let Some((_, _, scope_id)) = ready.into_iter().next() {
             let spec = scope_spec(&projection, &scope_id)
                 .ok_or_else(|| ApiError::NotFound(format!("scope {scope_id}")))?;
@@ -220,16 +236,6 @@ impl Runtime {
                 scope_id: scope_id.clone(),
                 generation: self.next_scope_generation(intent_id, &scope_id)?,
                 harness: else_harness::select_harness(&spec.outcome, harness_hint),
-            });
-        }
-
-        if let Some((scope_id, run_id)) = active_run {
-            return Ok(KernelAction::WaitForRun { scope_id, run_id });
-        }
-        if let Some((scope_id, dependencies)) = blocked_by_dependency.into_iter().next() {
-            return Ok(KernelAction::BlockedByDependency {
-                scope_id,
-                dependencies,
             });
         }
         if let Some(due_at) = projection.next_timer_at() {
@@ -257,6 +263,10 @@ impl Runtime {
             | KernelAction::WaitForTimer { .. }
             | KernelAction::WaitForExternal { .. }
             | KernelAction::BlockedByDependency { .. } => self.projection(intent_id),
+            KernelAction::ConvergeDependency {
+                scope_id,
+                dependencies,
+            } => self.converge_dependency_failure(intent_id, &scope_id, &dependencies),
             KernelAction::FireTimer { timer_id } => {
                 self.fire_timer(intent_id, &timer_id)?;
                 self.projection(intent_id)
@@ -326,6 +336,7 @@ impl Runtime {
                 KernelAction::BlockedByDependency { .. } => {
                     Some(KernelDriveStop::BlockedByDependency)
                 }
+                KernelAction::ConvergeDependency { .. } => None,
                 KernelAction::FireTimer { .. }
                 | KernelAction::CloseAttentionWindow { .. }
                 | KernelAction::ScheduleAttentionWindow { .. }
@@ -366,6 +377,12 @@ impl Runtime {
                     request_ids,
                 } => {
                     self.add_attention_window_members(intent_id, &window_id, request_ids)?;
+                }
+                KernelAction::ConvergeDependency {
+                    scope_id,
+                    dependencies,
+                } => {
+                    self.converge_dependency_failure(intent_id, &scope_id, &dependencies)?;
                 }
                 KernelAction::Run {
                     scope_id,

@@ -6,7 +6,9 @@
 mod abort;
 mod attention;
 mod context;
+mod dependency;
 mod dispatch;
+mod failure;
 mod kernel;
 mod outcome;
 mod plan;
@@ -155,7 +157,7 @@ impl Runtime {
         let Some((ctx, _snapshot)) = self.prepare_root_run(intent_id, false)? else {
             return self.projection(intent_id);
         };
-        let lease = self.admit_run(&ctx)?;
+        let lease = self.admit_run_with_failure(&ctx)?;
         ctx.record(
             &self.ledger,
             Actor::System,
@@ -190,7 +192,7 @@ impl Runtime {
         let Some((ctx, snapshot)) = self.prepare_root_run(intent_id, true)? else {
             return self.projection(intent_id);
         };
-        let lease = self.admit_run(&ctx)?;
+        let lease = self.admit_run_with_failure(&ctx)?;
         ctx.record(
             &self.ledger,
             Actor::System,
@@ -310,6 +312,9 @@ impl Runtime {
                 success,
             },
         )?;
+        if let Some(error) = &error {
+            self.record_scope_failure(ctx, error)?;
+        }
         self.revoke_lease(ctx, lease)?;
         if let Some(e) = error {
             return Err(e.into());
@@ -555,7 +560,7 @@ impl Runtime {
                 child: scope_id.clone(),
             },
         )?;
-        let lease = self.admit_run(&ctx)?;
+        let lease = self.admit_run_with_failure(&ctx)?;
         ctx.record(
             &self.ledger,
             Actor::System,

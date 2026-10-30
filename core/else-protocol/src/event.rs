@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::artifact::{Artifact, Checkpoint};
 use crate::attention::{AttentionRequest, AttentionWindow, Decision, Ruling};
 use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
+use crate::failure::ScopeFailure;
 use crate::ids::*;
 use crate::intent::{IntentSpec, IntentState};
 use crate::plan::{Plan, PlanImpact};
@@ -40,6 +41,8 @@ pub enum ScopeState {
     Compensating,
     Paused,
     Completed,
+    /// 上游失败或用户修订使该分支不再需要执行；保留历史，不伪装成成功。
+    Superseded,
     Cancelled,
     Failed,
 }
@@ -149,6 +152,9 @@ pub enum EventPayload {
         run_id: RunId,
         success: bool,
     },
+    ScopeFailureRecorded {
+        failure: ScopeFailure,
+    },
 
     /// Harness 桥接的归一化输出（截断后的文本块）。
     HarnessOutput {
@@ -241,6 +247,19 @@ pub enum EventPayload {
         /// 显式执行依赖；父 Scope 只定义权限与生命周期，不自动等于依赖。
         #[serde(default)]
         depends_on: Vec<ScopeId>,
+    },
+    /// 自动替换终态失败 Scope；替换链最多一层，避免无限重试。
+    ScopeReplacementSpawned {
+        child: ScopeId,
+        replaces: ScopeId,
+        spec: IntentSpec,
+        depends_on: Vec<ScopeId>,
+    },
+    /// 把依赖某个失败 Scope 的下游显式接到替换 Scope。
+    ScopeDependencyReplaced {
+        previous: ScopeId,
+        replacement: ScopeId,
+        reason: String,
     },
     ScopeAbortRequested {
         reason: String,

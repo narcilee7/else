@@ -54,7 +54,10 @@ impl Runtime {
         // 终态幂等：已完成的 Scope 不重复执行
         if matches!(
             scope.state,
-            ScopeState::Completed | ScopeState::Failed | ScopeState::Cancelled
+            ScopeState::Completed
+                | ScopeState::Failed
+                | ScopeState::Superseded
+                | ScopeState::Cancelled
         ) {
             return Ok(projection);
         }
@@ -93,7 +96,7 @@ impl Runtime {
             generation,
             snapshot_id: Some(snapshot.id.clone()),
         };
-        let lease = self.admit_run(&ctx)?;
+        let lease = self.admit_run_with_failure(&ctx)?;
         ctx.record(
             &self.ledger,
             Actor::System,

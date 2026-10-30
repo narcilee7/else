@@ -7,6 +7,7 @@ pub mod artifact;
 pub mod attention;
 pub mod effect;
 pub mod event;
+pub mod failure;
 pub mod harness;
 pub mod ids;
 pub mod intent;

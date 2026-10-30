@@ -7,7 +7,7 @@
 mod projection;
 
 pub use projection::{
-    AttentionMetrics, AttentionRecordProjection, IntentProjection, TimerProjection,
+    AttentionMetrics, AttentionRecordProjection, IntentProjection, ScopeProjection, TimerProjection,
 };
 
 use std::cell::Cell;
@@ -218,6 +218,7 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::PlanImpactAnalyzed { .. } => "plan_impact_analyzed",
         P::RunStarted { .. } => "run_started",
         P::RunFinished { .. } => "run_finished",
+        P::ScopeFailureRecorded { .. } => "scope_failure_recorded",
         P::HarnessOutput { .. } => "harness_output",
         P::ModelCalled { .. } => "model_called",
         P::ModelCompleted { .. } => "model_completed",
@@ -238,6 +239,8 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::DecisionResolved { .. } => "decision_resolved",
         P::ScopeSpawned { .. } => "scope_spawned",
         P::SubagentSpawned { .. } => "subagent_spawned",
+        P::ScopeReplacementSpawned { .. } => "scope_replacement_spawned",
+        P::ScopeDependencyReplaced { .. } => "scope_dependency_replaced",
         P::ScopeAbortRequested { .. } => "scope_abort_requested",
         P::ScopeStateChanged { .. } => "scope_state_changed",
         P::CheckpointCreated { .. } => "checkpoint_created",
