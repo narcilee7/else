@@ -38,11 +38,13 @@ fn probe_harness(script: &'static str) -> ProcessHarness<JsonParser> {
         },
         network: else_environment::NetworkPolicy::Deny,
         timeout: None,
-        prepare: Box::new(move |_, _| {
+        prepare: Box::new(move |_, _, _| {
             Ok(HarnessPrep {
-                command: script.into(),
+                command: format!("touch plan.md; {script}"),
                 env: vec![],
                 read_paths: vec![],
+                write_paths: vec![],
+                cleanup_paths: vec![],
             })
         }),
         parser: JsonParser,
@@ -100,4 +102,44 @@ fn network_is_denied_by_default_for_harnesses() {
         .unwrap_err();
     // curl 失败 → 无 Completed → 判失败（不冒充成功）
     assert!(error.to_string().contains("without completion"));
+}
+
+#[test]
+fn harness_private_credentials_are_deleted_and_never_enter_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("私有目录探针", None).unwrap();
+    let mut harness = probe_harness(
+        r#"touch plan.md
+printf '%s\n' '{"type":"completed","summary":"done"}'"#,
+    );
+    let staged = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let staged_for_prepare = staged.clone();
+    harness.prepare = Box::new(move |_, private_dir, _| {
+        let root = private_dir.join("run-private-probe");
+        let home = root.join("codex-home");
+        std::fs::create_dir_all(&home)?;
+        std::fs::write(home.join("auth.json"), "secret")?;
+        *staged_for_prepare.lock().unwrap() = Some(root.clone());
+        Ok(HarnessPrep {
+            command: private_probe_command(),
+            env: vec![("CODEX_HOME".into(), home.display().to_string())],
+            read_paths: vec![],
+            write_paths: vec![home],
+            cleanup_paths: vec![root],
+        })
+    });
+
+    runtime.run_adapter(&spec.id, &harness).unwrap();
+    let root = staged.lock().unwrap().clone().unwrap();
+    assert!(!root.exists(), "Harness 私有目录必须在运行后删除");
+    assert!(!std::fs::read_dir(dir.path().join("workspace"))
+        .unwrap()
+        .any(|entry| entry.unwrap().file_name() == ".else-harness"));
+}
+
+fn private_probe_command() -> String {
+    r#"touch plan.md
+printf '%s\n' '{"type":"completed","summary":"done"}'"#
+        .into()
 }

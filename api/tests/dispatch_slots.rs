@@ -28,11 +28,13 @@ fn fake_adapter() -> ProcessHarness<NullParser> {
         },
         network: else_environment::NetworkPolicy::Deny,
         timeout: None,
-        prepare: Box::new(|_, _| {
+        prepare: Box::new(|_, _, _| {
             Ok(HarnessPrep {
                 command: "true".into(),
                 env: vec![],
                 read_paths: vec![],
+                write_paths: vec![],
+                cleanup_paths: vec![],
             })
         }),
         parser: NullParser,
@@ -52,8 +54,6 @@ fn root_scope(runtime: &Runtime, intent_id: &IntentId) -> else_protocol::ids::Sc
 
 #[test]
 fn slot_exhaustion_rejects_run_before_any_event() {
-    // 槽位为 0：任何派发都必须被准入拒绝
-    unsafe { std::env::set_var("ELSE_MAX_RUN_SLOTS", "0") };
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime.create_intent("槽位测试", None).unwrap();
@@ -63,6 +63,8 @@ fn slot_exhaustion_rejects_run_before_any_event() {
         .spawn_subagent(&spec.id, &root, "子任务", SideEffectKind::ReadOnly)
         .unwrap();
 
+    // 根 Run 结束后槽位为 0：新的派发必须被准入拒绝。
+    unsafe { std::env::set_var("ELSE_MAX_RUN_SLOTS", "0") };
     let before = runtime.events(&spec.id).unwrap().len();
     let error = runtime
         .dispatch_scope_adapter(&spec.id, &child, &fake_adapter())

@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use else_protocol::artifact::{Artifact, Checkpoint};
-use else_protocol::attention::AttentionRequest;
+use else_protocol::attention::{AttentionRequest, Ruling};
 use else_protocol::event::{EventPayload, ScopeState};
 use else_protocol::ids::{AttentionId, ScopeId};
 use else_protocol::intent::{IntentSpec, IntentState};
@@ -26,9 +26,13 @@ pub struct ScopeProjection {
 #[derive(Debug, Default, PartialEq)]
 pub struct IntentProjection {
     pub spec: Option<IntentSpec>,
+    /// Intent 创建时确定的根 Scope。根身份不随 Run、重试或 Revision 改变。
+    pub root_scope_id: Option<ScopeId>,
     pub state: Option<IntentState>,
     /// Decision Queue：已请求但未决策的注意力请求。
     pub open_requests: BTreeMap<AttentionId, AttentionRequest>,
+    /// Attention Kernel 的持久裁决；没有裁决的请求不能被表面直接打断用户。
+    pub attention_rulings: BTreeMap<AttentionId, Ruling>,
     pub artifacts: Vec<Artifact>,
     pub checkpoints: Vec<Checkpoint>,
     pub scopes: BTreeMap<ScopeId, ScopeProjection>,
@@ -42,7 +46,20 @@ impl Projection for IntentProjection {
     fn apply(&mut self, event: &StoredEvent) {
         self.cursor = event.seq;
         match &event.envelope.payload {
-            EventPayload::IntentCreated { spec } | EventPayload::IntentRevised { spec, .. } => {
+            EventPayload::IntentCreated { spec } => {
+                self.root_scope_id = Some(event.envelope.scope_id.clone());
+                self.scopes.insert(
+                    event.envelope.scope_id.clone(),
+                    ScopeProjection {
+                        parent: None,
+                        state: ScopeState::Running,
+                        generation: event.envelope.generation,
+                        spec: None,
+                    },
+                );
+                self.spec = Some(spec.clone());
+            }
+            EventPayload::IntentRevised { spec, .. } => {
                 self.spec = Some(spec.clone());
             }
             EventPayload::IntentStateChanged { state } => {
@@ -52,11 +69,16 @@ impl Projection for IntentProjection {
                 self.open_requests
                     .insert(request.id.clone(), request.clone());
             }
+            EventPayload::AttentionRuled { request_id, ruling } => {
+                self.attention_rulings
+                    .insert(request_id.clone(), ruling.clone());
+            }
             EventPayload::DecisionResolved { decision } => {
                 self.open_requests.remove(&decision.request_id);
             }
             EventPayload::RunStarted { .. } => {
-                self.scopes
+                let scope = self
+                    .scopes
                     .entry(event.envelope.scope_id.clone())
                     .or_insert(ScopeProjection {
                         parent: None,
@@ -64,6 +86,8 @@ impl Projection for IntentProjection {
                         generation: event.envelope.generation,
                         spec: None,
                     });
+                scope.state = ScopeState::Running;
+                scope.generation = event.envelope.generation;
             }
             EventPayload::ScopeSpawned { child } => {
                 self.scopes.insert(
@@ -130,5 +154,23 @@ impl Projection for IntentProjection {
             }
             _ => {}
         }
+    }
+}
+
+impl IntentProjection {
+    /// 用户表面只展示已被 Kernel 裁决为可行动、且 Defer 已到期的请求。
+    /// 没有裁决记录的请求失败关闭，不能绕过 Attention Kernel 直接打扰用户。
+    pub fn actionable_requests(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<&AttentionRequest> {
+        self.open_requests
+            .values()
+            .filter(|request| match self.attention_rulings.get(&request.id) {
+                Some(Ruling::Interrupt | Ruling::Batch) => true,
+                Some(Ruling::Defer { until }) => *until <= now,
+                Some(Ruling::Silent) | None => false,
+            })
+            .collect()
     }
 }

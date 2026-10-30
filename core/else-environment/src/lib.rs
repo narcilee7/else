@@ -26,6 +26,9 @@ pub struct SandboxProfile {
     /// 额外只读路径（Harness 可执行文件及其运行时依赖，如 Homebrew）。
     /// 只读不写；调用方必须显式声明，不存在隐式放行。
     pub read_paths: Vec<PathBuf>,
+    /// 额外可写路径。只用于 Runtime 控制的私有 Harness 目录，
+    /// 不能用来扩大用户 Workspace 的写入范围。
+    pub write_paths: Vec<PathBuf>,
 }
 
 impl SandboxProfile {
@@ -34,6 +37,7 @@ impl SandboxProfile {
             workspace: workspace.into(),
             network: NetworkPolicy::Deny,
             read_paths: vec![],
+            write_paths: vec![],
         }
     }
 
@@ -46,6 +50,12 @@ impl SandboxProfile {
     /// 追加只读路径（Harness 二进制与运行时依赖）。
     pub fn with_read_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.read_paths = paths;
+        self
+    }
+
+    /// 追加 Runtime 管理的私有可写目录。
+    pub fn with_write_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.write_paths = paths;
         self
     }
 }
@@ -133,6 +143,20 @@ impl Sandbox {
                 profile.workspace.display()
             )));
         }
+        for path in &mut profile.write_paths {
+            *path = path.canonicalize().map_err(|error| {
+                SandboxError::InvalidProfile(format!(
+                    "private write path {}: {error}",
+                    path.display()
+                ))
+            })?;
+            if !path.is_dir() {
+                return Err(SandboxError::InvalidProfile(format!(
+                    "private write path is not a directory: {}",
+                    path.display()
+                )));
+            }
+        }
         if backend == Backend::Seatbelt && profile.workspace.to_str().is_none() {
             return Err(SandboxError::InvalidProfile(
                 "Seatbelt workspace path must be valid UTF-8".into(),
@@ -182,6 +206,7 @@ impl Sandbox {
                 shell_command,
                 self.profile.network,
                 &self.profile.read_paths,
+                &self.profile.write_paths,
             )?,
             Backend::Bubblewrap => bubblewrap::command(
                 &self.executable,
@@ -189,6 +214,7 @@ impl Sandbox {
                 shell_command,
                 self.profile.network,
                 &self.profile.read_paths,
+                &self.profile.write_paths,
             ),
         };
         command

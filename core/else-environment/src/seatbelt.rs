@@ -9,8 +9,9 @@ pub(super) fn command(
     shell_command: &str,
     network: NetworkPolicy,
     read_paths: &[PathBuf],
+    write_paths: &[PathBuf],
 ) -> Result<Command> {
-    let profile = profile(workspace, network, read_paths)?;
+    let profile = profile(workspace, network, read_paths, write_paths)?;
     let mut command = Command::new(executable);
     command
         .arg("-p")
@@ -21,11 +22,19 @@ pub(super) fn command(
     Ok(command)
 }
 
-fn profile(workspace: &Path, network: NetworkPolicy, read_paths: &[PathBuf]) -> Result<String> {
+fn profile(
+    workspace: &Path,
+    network: NetworkPolicy,
+    read_paths: &[PathBuf],
+    write_paths: &[PathBuf],
+) -> Result<String> {
     let workspace = workspace
         .to_str()
         .ok_or_else(|| SandboxError::InvalidProfile("workspace path must be UTF-8".into()))?;
-    let ancestors = workspace_ancestors(Path::new(workspace));
+    let mut metadata_paths: Vec<PathBuf> = Path::new(workspace)
+        .ancestors()
+        .map(Path::to_path_buf)
+        .collect();
     let network_rule = match network {
         NetworkPolicy::Deny => "; 没有 network-inbound/network-outbound 规则：网络默认拒绝。",
         // 显式放通全部出站（Harness 原生 Provider 流量）；入站仍默认拒绝。
@@ -47,6 +56,33 @@ fn profile(workspace: &Path, network: NetworkPolicy, read_paths: &[PathBuf]) -> 
         }
     }
     let extra_reads = extra.join(" ");
+    let mut writes = Vec::new();
+    metadata_paths.extend(write_paths.iter().cloned());
+    for path in write_paths {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        for path in [path.clone(), canonical] {
+            if let Some(path) = path.to_str() {
+                let rule = format!("(subpath {})", quoted(path));
+                if !writes.contains(&rule) {
+                    writes.push(rule);
+                }
+            }
+        }
+        if let Some(parent) = path.parent() {
+            metadata_paths.extend(parent.ancestors().map(Path::to_path_buf));
+        }
+    }
+    let extra_writes = writes.join(" ");
+    let mut metadata = Vec::new();
+    for path in metadata_paths {
+        if let Some(path) = path.to_str() {
+            let rule = format!("(literal {})", quoted(path));
+            if !metadata.contains(&rule) {
+                metadata.push(rule);
+            }
+        }
+    }
+    let metadata_paths = metadata.join(" ");
     Ok(format!(
         r#"(version 1)
 (deny default)
@@ -60,7 +96,7 @@ fn profile(workspace: &Path, network: NetworkPolicy, read_paths: &[PathBuf]) -> 
 (allow ipc-posix-shm-read-data (ipc-posix-name-regex #"apple\..*"))
 ; dyld 与 getcwd 需要根目录和 Workspace 祖先的路径元数据，不开放其文件内容。
 (allow file-read-data (literal "/"))
-(allow file-read-metadata {ancestors})
+(allow file-read-metadata {metadata_paths})
 ; 系统框架（libinfo/Network）初始化要 stat /var；拒绝会导致 DNS 整体失败。
 ; firmlink 字面匹配：/var 与 /private/var 必须同时列出。只放元数据，不放内容。
 (allow file-read-metadata (literal "/var") (literal "/private/var"))
@@ -77,26 +113,20 @@ fn profile(workspace: &Path, network: NetworkPolicy, read_paths: &[PathBuf]) -> 
     (subpath "/private/var/select")
     (subpath "/var/select")
     {extra_reads}
+    {extra_writes}
     (subpath {workspace}))
 (allow file-write*
     (literal "/dev/null")
-    (subpath {workspace}))
+    (subpath {workspace})
+    {extra_writes})
 {network_rule}
 "#,
-        ancestors = ancestors,
         workspace = quoted(workspace),
         network_rule = network_rule,
         extra_reads = extra_reads,
+        metadata_paths = metadata_paths,
+        extra_writes = extra_writes,
     ))
-}
-
-fn workspace_ancestors(workspace: &Path) -> String {
-    workspace
-        .ancestors()
-        .filter(|path| *path != workspace)
-        .map(|path| format!("(literal {})", quoted(&path.to_string_lossy())))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn quoted(value: &str) -> String {
@@ -113,6 +143,7 @@ mod tests {
             Path::new("/tmp/work space/\"quoted\""),
             NetworkPolicy::Deny,
             &[],
+            &[],
         )
         .unwrap();
         assert!(profile.contains("(deny default)"));
@@ -123,7 +154,8 @@ mod tests {
 
     #[test]
     fn allow_outbound_is_explicit_and_keeps_inbound_denied() {
-        let profile = profile(Path::new("/tmp/ws"), NetworkPolicy::AllowOutbound, &[]).unwrap();
+        let profile =
+            profile(Path::new("/tmp/ws"), NetworkPolicy::AllowOutbound, &[], &[]).unwrap();
         assert!(profile.contains("(allow network-outbound)"));
         assert!(!profile.contains("(allow network-inbound"));
         assert!(!profile.contains("(allow network)"));
@@ -135,6 +167,7 @@ mod tests {
             Path::new("/tmp/ws"),
             NetworkPolicy::Deny,
             &[PathBuf::from("/opt/homebrew")],
+            &[],
         )
         .unwrap();
         assert!(profile.contains("(subpath \"/opt/homebrew\")"));
@@ -145,7 +178,7 @@ mod tests {
 
     #[test]
     fn profile_allows_framework_shm_and_var_metadata() {
-        let profile = profile(Path::new("/tmp/ws"), NetworkPolicy::Deny, &[]).unwrap();
+        let profile = profile(Path::new("/tmp/ws"), NetworkPolicy::Deny, &[], &[]).unwrap();
         // CFPreferences 同步所需的共享内存（单反斜杠正则，双写会变成字面反斜杠）
         assert!(profile.contains(r#"(ipc-posix-name-regex #"apple\..*")"#));
         // libinfo 初始化需要 stat /var，firmlink 双形并列

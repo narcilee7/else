@@ -16,6 +16,7 @@ use else_protocol::effect::{EffectConclusion, SideEffectKind, ToolCall, ToolOutc
 use else_protocol::event::{Actor, EventPayload};
 use else_protocol::harness::HarnessCapabilities;
 use else_protocol::ids::{ArtifactId, ToolCallId};
+use else_protocol::intent::CriterionVerification;
 use else_protocol::memory::ContextSnapshot;
 use else_protocol::resource::ModelUsage;
 
@@ -54,6 +55,8 @@ pub struct HarnessRequest<'a> {
     pub ctx: &'a ExecContext,
     pub ledger: &'a Ledger,
     pub workspace: &'a Path,
+    /// Runtime 控制的私有目录，位于持久 Workspace 之外；Harness 凭据只能放这里。
+    pub private_dir: &'a Path,
     pub snapshot: &'a ContextSnapshot,
     /// 子 Scope 执行：验收只结束自身 Scope，不直接把根 Intent 标记完成。
     pub subagent: bool,
@@ -73,7 +76,16 @@ pub fn task_prompt(snapshot: &ContextSnapshot) -> String {
     if !snapshot.done_when.is_empty() {
         prompt.push_str("\n# 验收标准（DoneWhen）\n");
         for criterion in &snapshot.done_when {
-            prompt.push_str(&format!("- {}\n", criterion.description));
+            let check = match &criterion.verification {
+                CriterionVerification::Manual => "需要用户人工确认".to_string(),
+                CriterionVerification::FileExists { path } => {
+                    format!("独立检查：文件 `{path}` 必须存在")
+                }
+                CriterionVerification::FileContains { path, text } => {
+                    format!("独立检查：文件 `{path}` 必须包含 `{text}`")
+                }
+            };
+            prompt.push_str(&format!("- {}（{}）\n", criterion.description, check));
         }
     }
     if !snapshot.constraints.is_empty() {
@@ -99,6 +111,12 @@ pub fn task_prompt(snapshot: &ContextSnapshot) -> String {
             prompt.push_str(&format!("- {}: {}\n", fact.subject, fact.value));
         }
     }
+    if !snapshot.artifact_paths.is_empty() {
+        prompt.push_str("\n# 已提供工件（只读上下文）\n");
+        for path in &snapshot.artifact_paths {
+            prompt.push_str(&format!("- {path}\n"));
+        }
+    }
     prompt
 }
 
@@ -113,11 +131,25 @@ pub struct HarnessPrep {
     pub env: Vec<(String, String)>,
     /// Harness 二进制与运行时依赖（如 Homebrew），以只读方式放行。
     pub read_paths: Vec<std::path::PathBuf>,
+    /// Runtime 控制的私有可写目录，绝不进入 Workspace 快照。
+    pub write_paths: Vec<std::path::PathBuf>,
+    /// 运行结束后必须删除的私有暂存根目录。
+    pub cleanup_paths: Vec<std::path::PathBuf>,
 }
 
 /// 执行准备：暂存私有配置（如 CODEX_HOME）、解析二进制绝对路径、
 /// 构造命令与环境白名单。私有配置留在适配器，不进 else 内核。
-pub type PrepareFn = Box<dyn Fn(&Path, &str) -> std::io::Result<HarnessPrep> + Send + Sync>;
+pub type PrepareFn = Box<dyn Fn(&Path, &Path, &str) -> std::io::Result<HarnessPrep> + Send + Sync>;
+
+struct CleanupPaths(Vec<std::path::PathBuf>);
+
+impl Drop for CleanupPaths {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
 
 /// 通用进程 Harness：沙箱内启动、逐行桥接、围栏即杀、晚到输出不落账。
 pub struct ProcessHarness<P> {
@@ -161,11 +193,13 @@ impl<P: LineParser> HarnessAdapter for ProcessHarness<P> {
             .workspace
             .canonicalize()
             .unwrap_or_else(|_| request.workspace.to_path_buf());
-        let prep = (self.prepare)(&workspace, &prompt)?;
+        let prep = (self.prepare)(&workspace, request.private_dir, &prompt)?;
+        let _cleanup = CleanupPaths(prep.cleanup_paths.clone());
         let sandbox = Sandbox::new(
             SandboxProfile::new(&workspace)
                 .with_network(self.network)
-                .with_read_paths(prep.read_paths),
+                .with_read_paths(prep.read_paths)
+                .with_write_paths(prep.write_paths),
         )
         .map_err(|e| GatewayError::Model(format!("sandbox: {e}")))?;
         let child = sandbox
@@ -351,7 +385,15 @@ impl<P: LineParser> HarnessAdapter for ProcessHarness<P> {
                     let truncated: String = summary.chars().take(MAX_OUTPUT_CHARS).collect();
                     self.record(request, EventPayload::HarnessOutput { text: truncated })?;
                 }
-                crate::verify(request.ctx, request.ledger, true, request.subagent)
+                let evidence =
+                    crate::verify::verify_outcome(request.workspace, &request.ctx.spec.done_when)
+                        .map_err(|error| {
+                        GatewayError::Model(format!(
+                            "{} reported completion but outcome verification failed: {error}",
+                            self.name
+                        ))
+                    })?;
+                crate::verify_with_evidence(request.ctx, request.ledger, evidence, request.subagent)
             }
             _ => Err(GatewayError::Model(format!(
                 "{} exited {status} without completion{}",

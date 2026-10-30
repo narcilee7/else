@@ -527,6 +527,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "else-attention"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "else-protocol",
+]
+
+[[package]]
 name = "else-cli"
 version = "0.1.0"
 dependencies = [
@@ -562,6 +570,7 @@ name = "else-gateway"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "else-attention",
  "else-environment",
  "else-ledger",
  "else-protocol",
@@ -582,6 +591,7 @@ dependencies = [
  "else-ledger",
  "else-protocol",
  "serde_json",
+ "tempfile",
  "uuid",
 ]
 
@@ -589,6 +599,7 @@ dependencies = [
 name = "else-ledger"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "else-protocol",
  "rusqlite",
  "serde",

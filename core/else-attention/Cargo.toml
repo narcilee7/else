@@ -1,0 +1,9 @@
+[package]
+name = "else-attention"
+version = "0.1.0"
+edition.workspace = true
+description = "else Attention Kernel: deterministic attention rulings"
+
+[dependencies]
+else-protocol = { path = "../else-protocol" }
+chrono.workspace = true

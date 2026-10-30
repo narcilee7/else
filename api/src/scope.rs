@@ -71,6 +71,8 @@ impl Runtime {
         if scope.state != ScopeState::Running {
             return Ok(projection);
         }
+        self.ensure_slot_available()?;
+        self.ensure_scope_not_active(intent_id, scope_id)?;
         let spec = scope_spec(&projection, scope_id)
             .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
         let subagent = scope.spec.is_some();
@@ -133,6 +135,9 @@ impl Runtime {
 
     /// 最近一次根执行使用的 Scope；Decision 续跑不能换 Scope，否则授权会丢失。
     pub(crate) fn latest_root_scope(&self, intent_id: &IntentId) -> Result<Option<ScopeId>> {
+        if let Some(root) = self.projection(intent_id)?.root_scope_id {
+            return Ok(Some(root));
+        }
         let events = self.ledger.read_intent(intent_id)?;
         let children: BTreeSet<_> = events
             .iter()
@@ -151,6 +156,70 @@ impl Runtime {
                 None
             }
         }))
+    }
+
+    /// 新建 Run 的 Generation：同一 Scope 每次完整 Run 结束后递增。
+    pub(crate) fn next_scope_generation(
+        &self,
+        intent_id: &IntentId,
+        scope_id: &ScopeId,
+    ) -> Result<u64> {
+        let events = self.ledger.read_intent(intent_id)?;
+        let latest_started = events
+            .iter()
+            .filter(|event| {
+                event.envelope.scope_id == *scope_id
+                    && matches!(event.envelope.payload, EventPayload::RunStarted { .. })
+            })
+            .map(|event| event.envelope.generation)
+            .max();
+        if let Some(generation) = latest_started {
+            return Ok(generation.saturating_add(1));
+        }
+        Ok(self
+            .projection(intent_id)?
+            .scopes
+            .get(scope_id)
+            .map(|scope| scope.generation)
+            .unwrap_or(1))
+    }
+
+    /// 一个 Scope 同时最多有一个在途 Run。
+    pub(crate) fn ensure_scope_not_active(
+        &self,
+        intent_id: &IntentId,
+        scope_id: &ScopeId,
+    ) -> Result<()> {
+        if let Some(run_id) = self.active_run_id(intent_id, scope_id)? {
+            Err(ApiError::Conflict(format!(
+                "scope {scope_id} already has an active run {run_id}"
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn active_run_id(
+        &self,
+        intent_id: &IntentId,
+        scope_id: &ScopeId,
+    ) -> Result<Option<RunId>> {
+        let mut active = BTreeSet::new();
+        for event in self.ledger.read_intent(intent_id)? {
+            if event.envelope.scope_id != *scope_id {
+                continue;
+            }
+            match event.envelope.payload {
+                EventPayload::RunStarted { run_id, .. } => {
+                    active.insert(run_id);
+                }
+                EventPayload::RunFinished { run_id, .. } => {
+                    active.remove(&run_id);
+                }
+                _ => {}
+            }
+        }
+        Ok(active.into_iter().next())
     }
 }
 

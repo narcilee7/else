@@ -64,6 +64,9 @@ impl Store {
                 .map_err(|e| std::io::Error::other(e.to_string()))?
                 .to_string_lossy()
                 .to_string();
+            if is_private_runtime_path(Path::new(&rel)) {
+                continue;
+            }
             let content = std::fs::read(path)?;
             let hash = self.write_blob(&content)?;
             files.push(ManifestEntry {
@@ -96,6 +99,9 @@ impl Store {
     pub fn restore(&self, manifest_json: &str, target: &Path) -> Result<()> {
         let manifest: Manifest = serde_json::from_str(manifest_json)?;
         for file in manifest.files {
+            if is_private_runtime_path(Path::new(&file.path)) {
+                continue;
+            }
             let blob_path = self.root.join("blobs").join(&file.hash);
             if !blob_path.exists() {
                 return Err(WorkspaceError::MissingBlob(file.hash));
@@ -122,4 +128,15 @@ impl Store {
         }
         Ok(hash)
     }
+}
+
+/// 凭据与 Harness 私有状态永远不能成为任务产物，即使旧版本曾把它们
+/// 暂存在 Workspace 中。排除是 Snapshot 层的硬边界，不依赖适配器清理。
+fn is_private_runtime_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        let std::path::Component::Normal(name) = component else {
+            return false;
+        };
+        matches!(name.to_str(), Some(".else-harness" | ".codex" | ".claude"))
+    })
 }

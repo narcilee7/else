@@ -74,7 +74,14 @@ impl Runtime {
                 .map(|artifact| artifact.id.clone())
                 .collect::<Vec<_>>()
         };
-        let (facts, artifact_refs, assumptions) = match audience {
+        let artifact_paths = || {
+            projection
+                .artifacts
+                .iter()
+                .map(|artifact| self.relative_artifact_locator(&artifact.locator))
+                .collect::<Vec<_>>()
+        };
+        let (facts, artifact_refs, artifact_paths, assumptions) = match audience {
             SnapshotAudience::Planner => (
                 memory.recall(
                     spec.project.as_deref(),
@@ -83,6 +90,7 @@ impl Runtime {
                     now,
                 ),
                 artifact_refs(),
+                artifact_paths(),
                 spec.assumptions.clone(),
             ),
             SnapshotAudience::Executor => (
@@ -97,9 +105,10 @@ impl Runtime {
                     .filter(|record| matches!(record.scope, MemoryScope::Intent(_)))
                     .collect(),
                 artifact_refs(),
+                artifact_paths(),
                 spec.assumptions.clone(),
             ),
-            SnapshotAudience::Verifier => (vec![], vec![], vec![]),
+            SnapshotAudience::Verifier => (vec![], vec![], vec![], vec![]),
         };
         let memory_refs = facts.iter().map(|record| record.id.clone()).collect();
         let snapshot = ContextSnapshot {
@@ -115,6 +124,7 @@ impl Runtime {
             memory_refs,
             facts,
             artifact_refs,
+            artifact_paths,
             created_at: now,
         };
         self.ledger.append(&EventEnvelope::new(
@@ -146,6 +156,13 @@ impl Runtime {
             }
             None => Ok((ScopeId::new(), 1)),
         }
+    }
+
+    fn relative_artifact_locator(&self, locator: &str) -> String {
+        std::path::Path::new(locator)
+            .strip_prefix(&self.workspace)
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|_| locator.to_string())
     }
 
     /// Intent Revision：目标变更 revision +1 并落 IntentRevised；

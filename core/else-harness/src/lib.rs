@@ -7,12 +7,15 @@
 
 pub mod adapter;
 pub mod real;
+pub mod verify;
 
-use else_gateway::{ensure_not_fenced, ExecContext, ModelGateway, Result, ToolGateway};
+use else_gateway::{
+    ensure_not_fenced, ExecContext, GatewayError, ModelGateway, Result, ToolGateway,
+};
 use else_ledger::{Ledger, StoredEvent};
 use else_protocol::artifact::{Artifact, ArtifactKind, OutcomeEvidence};
 use else_protocol::attention::DecisionChoice;
-use else_protocol::effect::{SideEffectKind, ToolCall, ToolStatus};
+use else_protocol::effect::{SideEffectKind, ToolCall};
 use else_protocol::event::{Actor, EventPayload};
 use else_protocol::ids::{ArtifactId, ToolCallId};
 
@@ -203,7 +206,7 @@ pub fn run(
         }
 
         // 写计划产物：幂等键随计划版本，重规划生成新产物
-        let outcome = tools.execute(
+        let _outcome = tools.execute(
             ctx,
             ToolCall {
                 id: ToolCallId::new(),
@@ -221,10 +224,8 @@ pub fn run(
                 artifact: Artifact {
                     id: ArtifactId::new(),
                     kind: ArtifactKind::Document,
-                    locator: outcome.output["path"]
-                        .as_str()
-                        .unwrap_or("plan.md")
-                        .to_string(),
+                    // 跨 Scope 的协议只传 Workspace 相对路径，不暴露宿主绝对路径。
+                    locator: "plan.md".into(),
                     manifest: None,
                     produced_by: ctx.run_id.clone(),
                     note: "执行计划".into(),
@@ -237,7 +238,7 @@ pub fn run(
     let progress = Progress::from_events(&visible_events(ledger)?);
 
     // 2. 校验：替代路径用只读校验；原路径用 shell（越权则提交本人授权）
-    let verification = if options.alternative || progress.on_alternative_path() {
+    let _verification = if options.alternative || progress.on_alternative_path() {
         tools.execute(
             ctx,
             ToolCall {
@@ -261,63 +262,38 @@ pub fn run(
         )?
     };
 
-    // 3. 验收：按原始 DoneWhen，不按最新 Plan
-    verify(
-        ctx,
-        ledger,
-        verification.status == ToolStatus::Succeeded,
-        options.subagent,
-    )
+    // 3. 验收：按原始 DoneWhen 独立检查产物，不信任校验工具或 Plan 自报结果。
+    let evidence = crate::verify::verify_outcome(tools.workspace(), &ctx.spec.done_when)
+        .map_err(|error| GatewayError::Model(format!("outcome verification failed: {error}")))?;
+    verify_with_evidence(ctx, ledger, evidence, options.subagent)
 }
 
-/// Verifier：证据必须支撑 spec 里的每一条 done_when。
-/// Subagent 只结束自身 Scope；根执行才改变 Intent 终态。
-pub(crate) fn verify(
+/// 记录独立 Verifier 已产出的逐项证据。
+pub(crate) fn verify_with_evidence(
     ctx: &ExecContext,
     ledger: &Ledger,
-    verified: bool,
+    evidence: Vec<OutcomeEvidence>,
     subagent: bool,
 ) -> Result<()> {
     ensure_not_fenced(ledger, ctx)?;
-    if verified {
-        let evidence = ctx
-            .spec
-            .done_when
-            .iter()
-            .map(|criterion| OutcomeEvidence {
-                criterion: criterion.description.clone(),
-                artifact_id: None,
-                note: "校验工具调用成功，产物存在且可读".into(),
-            })
-            .collect();
-        ctx.record(
-            ledger,
-            Actor::System,
-            EventPayload::OutcomeVerified { evidence },
-        )?;
-    }
-    if subagent {
-        ctx.record(
-            ledger,
-            Actor::System,
-            EventPayload::ScopeStateChanged {
-                state: if verified {
-                    else_protocol::event::ScopeState::Completed
-                } else {
-                    else_protocol::event::ScopeState::Failed
-                },
-            },
-        )?;
-    } else {
+    ctx.record(
+        ledger,
+        Actor::System,
+        EventPayload::OutcomeVerified { evidence },
+    )?;
+    ctx.record(
+        ledger,
+        Actor::System,
+        EventPayload::ScopeStateChanged {
+            state: else_protocol::event::ScopeState::Completed,
+        },
+    )?;
+    if !subagent {
         ctx.record(
             ledger,
             Actor::System,
             EventPayload::IntentStateChanged {
-                state: if verified {
-                    else_protocol::intent::IntentState::Completed
-                } else {
-                    else_protocol::intent::IntentState::Failed
-                },
+                state: else_protocol::intent::IntentState::Completed,
             },
         )?;
     }

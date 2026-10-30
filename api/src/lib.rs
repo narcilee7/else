@@ -35,6 +35,8 @@ pub enum ApiError {
     Workspace(#[from] else_workspace::WorkspaceError),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
     #[error("subagent authority exceeds parent: {0}")]
     PermissionEscalation(String),
     #[error("io: {0}")]
@@ -46,6 +48,7 @@ pub type Result<T> = std::result::Result<T, ApiError>;
 pub struct Runtime {
     ledger: Ledger,
     workspace: PathBuf,
+    harness_private: PathBuf,
     store: else_workspace::Store,
     branches: PathBuf,
     default_budget: else_protocol::resource::ResourceBudget,
@@ -57,9 +60,12 @@ impl Runtime {
     pub fn open(dir: &Path) -> Result<Self> {
         let workspace = dir.join("workspace");
         std::fs::create_dir_all(&workspace)?;
+        let harness_private = dir.join("harness-private");
+        std::fs::create_dir_all(&harness_private)?;
         let runtime = Self {
             ledger: Ledger::open(dir.join("else.db"))?,
             workspace,
+            harness_private,
             store: else_workspace::Store::new(dir.join("store"))?,
             branches: dir.join("branches"),
             default_budget: resources::budget_from_env(),
@@ -73,13 +79,15 @@ impl Runtime {
     /// 系统补全默认验收标准与显式假设，补全内容可修正，不是隐蔽事实。
     /// `project` 决定 Episodic/Semantic 记忆的项目召回作用域。
     pub fn create_intent(&self, outcome: &str, project: Option<String>) -> Result<IntentSpec> {
+        let root_scope_id = ScopeId::new();
         let spec = IntentSpec {
             id: IntentId::new(),
             revision: 1,
             outcome: outcome.to_string(),
-            done_when: vec![else_protocol::intent::Criterion {
-                description: "计划产物写入工作区且校验通过".into(),
-            }],
+            done_when: vec![else_protocol::intent::Criterion::file_exists(
+                "计划产物写入工作区且校验通过",
+                "plan.md",
+            )],
             constraints: vec![],
             authority: Authority {
                 max_autonomous_effect: SideEffectKind::Reversible,
@@ -98,7 +106,7 @@ impl Runtime {
         };
         self.ledger.append(&EventEnvelope::new(
             spec.id.clone(),
-            ScopeId::new(),
+            root_scope_id.clone(),
             1,
             1,
             Actor::User,
@@ -106,7 +114,7 @@ impl Runtime {
         ))?;
         self.ledger.append(&EventEnvelope::new(
             spec.id.clone(),
-            ScopeId::new(),
+            root_scope_id,
             1,
             spec.revision,
             Actor::System,
@@ -176,6 +184,7 @@ impl Runtime {
             ctx: &ctx,
             ledger: &self.ledger,
             workspace: &self.workspace,
+            private_dir: &self.harness_private,
             snapshot: &snapshot,
             subagent: false,
         };
@@ -198,9 +207,14 @@ impl Runtime {
         let spec = projection
             .spec
             .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
-        let scope_id = self
-            .latest_root_scope(intent_id)?
+        let scope_id = projection
+            .root_scope_id
+            .clone()
+            .or_else(|| projection.scopes.keys().next().cloned())
             .unwrap_or_else(ScopeId::new);
+        self.ensure_slot_available()?;
+        self.ensure_scope_not_active(intent_id, &scope_id)?;
+        let generation = self.next_scope_generation(intent_id, &scope_id)?;
         // 执行前编译 Planner 快照；本 Run 后续事件都标记该上下文版本。
         let snapshot =
             self.compile_snapshot(intent_id, else_protocol::memory::SnapshotAudience::Planner)?;
@@ -209,7 +223,7 @@ impl Runtime {
                 spec,
                 scope_id,
                 run_id: RunId::new(),
-                generation: 1,
+                generation,
                 snapshot_id: Some(snapshot.id.clone()),
             },
             snapshot,
@@ -541,7 +555,7 @@ impl Runtime {
             let mut cost = 0;
             let mut verified = false;
             let mut tools = Vec::new();
-            let mut plan_path: Option<String> = None;
+            let mut plan_path: Option<(ScopeId, String)> = None;
             for event in events {
                 match &event.envelope.payload {
                     EventPayload::ModelCompleted { usage, .. } => {
@@ -560,7 +574,8 @@ impl Runtime {
                     EventPayload::ArtifactProduced { artifact }
                         if artifact.locator.ends_with("plan.md") =>
                     {
-                        plan_path = Some(artifact.locator.clone());
+                        plan_path =
+                            Some((event.envelope.scope_id.clone(), artifact.locator.clone()));
                     }
                     _ => {}
                 }
@@ -569,8 +584,26 @@ impl Runtime {
                 "generation {generation}:\n  outcome_verified: {verified}\n  model: input={input} output={output} cost_usd_micros={cost}\n  tools: {}\n",
                 tools.join(", ")
             ));
-            if let Some(path) = plan_path {
-                match else_workspace::Store::hash_file(std::path::Path::new(&path)) {
+            if let Some((scope_id, path)) = plan_path {
+                let relative = std::path::Path::new(&path);
+                let path = if relative.is_absolute() {
+                    std::path::PathBuf::from(relative)
+                } else {
+                    let branch = self.branches.join(scope_id.to_string()).join(relative);
+                    let scoped = self
+                        .workspace
+                        .join("scopes")
+                        .join(scope_id.to_string())
+                        .join(relative);
+                    if branch.exists() {
+                        branch
+                    } else if scoped.exists() {
+                        scoped
+                    } else {
+                        self.workspace.join(relative)
+                    }
+                };
+                match else_workspace::Store::hash_file(&path) {
                     Ok(hash) => {
                         plan_hashes.push((generation, hash.clone()));
                         out.push_str(&format!("  plan.md hash: {}\n", &hash[..16]));

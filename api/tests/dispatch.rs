@@ -47,11 +47,16 @@ fn fake_adapter(name: &'static str, script: &'static str) -> ProcessHarness<Json
         },
         network: else_environment::NetworkPolicy::Deny,
         timeout: None,
-        prepare: Box::new(move |_, _| {
+        prepare: Box::new(move |_, _, _| {
             Ok(HarnessPrep {
-                command: format!("printf '%s' {}", else_harness::adapter::shell_quote(script)),
+                command: format!(
+                    "touch plan.md; printf '%s' {}",
+                    else_harness::adapter::shell_quote(script)
+                ),
                 env: vec![],
                 read_paths: vec![],
+                write_paths: vec![],
+                cleanup_paths: vec![],
             })
         }),
         parser: JsonParser,
@@ -101,6 +106,13 @@ fn dispatch_runs_scope_in_isolated_workspace_and_keeps_root_running() {
         .path()
         .join(format!("workspace/scopes/{child}"))
         .is_dir());
+    let handed_off =
+        std::fs::read_to_string(dir.path().join(format!("workspace/scopes/{child}/plan.md")))
+            .unwrap();
+    assert!(
+        handed_off.contains("目标：编码任务：实现两个模块"),
+        "实际交接内容：{handed_off:?}"
+    );
 
     let events = runtime.events(&spec.id).unwrap();
     // 能力随 RunStarted 落账
@@ -126,6 +138,10 @@ fn dispatch_runs_scope_in_isolated_workspace_and_keeps_root_running() {
     assert!(
         !snapshot.artifact_refs.is_empty(),
         "父级工件引用必须随快照交接给子 Scope"
+    );
+    assert!(
+        snapshot.artifact_paths.iter().any(|path| path == "plan.md"),
+        "工件必须带可直接读取的路径"
     );
     // 子 Scope 产物落账
     assert!(events.iter().any(|event| matches!(

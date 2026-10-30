@@ -9,6 +9,7 @@ pub(super) fn command(
     shell_command: &str,
     network: NetworkPolicy,
     read_paths: &[PathBuf],
+    write_paths: &[PathBuf],
 ) -> Command {
     let mut command = Command::new(executable);
     command
@@ -37,6 +38,12 @@ pub(super) fn command(
         let path = path.canonicalize().unwrap_or_else(|_| path.clone());
         if path.exists() {
             command.arg("--ro-bind").arg(&path).arg(&path);
+        }
+    }
+    for path in write_paths {
+        let path = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if path.exists() {
+            command.arg("--bind").arg(&path).arg(&path);
         }
     }
     command
@@ -75,6 +82,7 @@ mod tests {
             "echo ok",
             NetworkPolicy::Deny,
             &[],
+            &[],
         );
         let args = command
             .get_args()
@@ -99,6 +107,7 @@ mod tests {
             Path::new("/tmp/workspace"),
             "echo ok",
             NetworkPolicy::AllowOutbound,
+            &[],
             &[],
         );
         let args = command

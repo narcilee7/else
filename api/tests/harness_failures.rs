@@ -46,11 +46,13 @@ fn fake_harness(
         },
         network: else_environment::NetworkPolicy::Deny,
         timeout,
-        prepare: Box::new(move |_, _| {
+        prepare: Box::new(move |_, _, _| {
             Ok(HarnessPrep {
                 command: script.into(),
                 env: vec![],
                 read_paths: vec![],
+                write_paths: vec![],
+                cleanup_paths: vec![],
             })
         }),
         parser: JsonParser,
@@ -73,7 +75,7 @@ fn prepare_failure_is_startup_failure() {
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime.create_intent("启动失败", None).unwrap();
     let mut harness = fake_harness("true", None);
-    harness.prepare = Box::new(|_, _| {
+    harness.prepare = Box::new(|_, _, _| {
         Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "harness binary codex not found on PATH",
@@ -196,4 +198,27 @@ fn missing_usage_is_unknown_not_zero() {
 
     let parser_usage = ModelUsage::unknown();
     assert_eq!(parser_usage.basis, UsageBasis::Unknown);
+}
+
+#[test]
+fn completion_without_done_when_evidence_is_not_verified() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("必须真实产出文件", None).unwrap();
+    let script = r#"printf '%s\n' '{"type":"completed","summary":"我完成了"}'"#;
+    let error = runtime
+        .run_adapter(&spec.id, &fake_harness(script, None))
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("outcome verification failed"),
+        "实际错误：{error}"
+    );
+    let events = runtime.events(&spec.id).unwrap();
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event.envelope.payload, EventPayload::OutcomeVerified { .. })));
+    assert_ne!(
+        runtime.projection(&spec.id).unwrap().state,
+        Some(IntentState::Completed)
+    );
 }

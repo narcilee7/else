@@ -6,6 +6,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use else_attention::AttentionKernel;
 use else_ledger::Ledger;
 use else_protocol::attention::{AttentionKind, AttentionRequest, DecisionOption, ExpectedLoss};
 use else_protocol::effect::{EffectConclusion, SideEffectKind, ToolCall, ToolOutcome, ToolStatus};
@@ -110,10 +111,19 @@ impl<'a> ToolGateway<'a> {
             related_call_key: Some(call.idempotency_key.clone()),
         };
         let request_id = request.id.clone();
+        let ruling = AttentionKernel.rule(&request, &ctx.spec.attention_policy, chrono::Utc::now());
         ctx.record(
             self.ledger,
             Actor::System,
             EventPayload::AttentionRequested { request },
+        )?;
+        ctx.record(
+            self.ledger,
+            Actor::System,
+            EventPayload::AttentionRuled {
+                request_id: request_id.clone(),
+                ruling,
+            },
         )?;
         ctx.record(
             self.ledger,

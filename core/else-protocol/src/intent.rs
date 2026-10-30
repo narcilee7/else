@@ -10,10 +10,35 @@ use serde::{Deserialize, Serialize};
 use crate::effect::SideEffectKind;
 use crate::ids::IntentId;
 
+/// 验收检查。Harness 报告完成只是候选结果，Verifier 必须独立执行检查。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum CriterionVerification {
+    /// 无法自动验证，必须由用户确认。
+    #[default]
+    Manual,
+    /// Workspace 内文件存在。
+    FileExists { path: String },
+    /// Workspace 内文件包含指定文本。
+    FileContains { path: String, text: String },
+}
+
 /// 验收标准。Verifier 永远按原始 `done_when` 验收，不按最新 Plan。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Criterion {
     pub description: String,
+    /// 缺省为 Manual，兼容旧事件；旧标准不会被静默视为已验证。
+    #[serde(default)]
+    pub verification: CriterionVerification,
+}
+
+impl Criterion {
+    pub fn file_exists(description: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            description: description.into(),
+            verification: CriterionVerification::FileExists { path: path.into() },
+        }
+    }
 }
 
 /// 系统补全的假设。抽象表达由系统补全，但补全必须显式成为

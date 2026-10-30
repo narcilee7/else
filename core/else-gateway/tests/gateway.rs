@@ -130,8 +130,17 @@ fn excessive_side_effect_requires_human_approval() {
 
     // 已提交 AttentionRequest，而不是静默拒绝
     let events = ledger.read_intent(&ctx.spec.id).unwrap();
-    let json = serde_json::to_string(&events.last().unwrap().envelope.payload).unwrap();
-    assert!(json.contains("needs_decision") || events.len() >= 2);
+    assert!(events.iter().any(|event| matches!(
+        event.envelope.payload,
+        EventPayload::AttentionRequested { .. }
+    )));
+    assert!(events.iter().any(|event| matches!(
+        &event.envelope.payload,
+        EventPayload::AttentionRuled {
+            ruling: else_protocol::attention::Ruling::Interrupt,
+            ..
+        }
+    )));
 }
 
 #[test]

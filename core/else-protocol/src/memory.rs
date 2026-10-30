@@ -89,5 +89,8 @@ pub struct ContextSnapshot {
     /// 被召回记忆的内容（只读副本，永不写回）。
     pub facts: Vec<MemoryRecord>,
     pub artifact_refs: Vec<ArtifactId>,
+    /// 已物化到当前 Workspace 的工件相对路径，供 Harness 直接读取。
+    #[serde(default)]
+    pub artifact_paths: Vec<String>,
     pub created_at: DateTime<Utc>,
 }

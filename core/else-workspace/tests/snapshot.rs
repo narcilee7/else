@@ -33,6 +33,25 @@ fn snapshot_and_restore_roundtrip() {
 }
 
 #[test]
+fn snapshots_exclude_harness_credentials_and_private_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspace");
+    let private = workspace.join(".else-harness/codex-home");
+    std::fs::create_dir_all(&private).unwrap();
+    std::fs::write(private.join("auth.json"), "secret").unwrap();
+    std::fs::write(workspace.join("result.md"), "public artifact").unwrap();
+
+    let store = Store::new(dir.path().join("store")).unwrap();
+    let artifact = store
+        .snapshot(&workspace, &else_protocol::ids::RunId::new())
+        .unwrap();
+    let manifest = artifact.manifest.unwrap();
+    assert!(manifest.contains("result.md"));
+    assert!(!manifest.contains("auth.json"));
+    assert!(!manifest.contains(".else-harness"));
+}
+
+#[test]
 fn identical_content_shares_blobs() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().join("workspace");

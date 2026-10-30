@@ -4,8 +4,8 @@
 //! - Codex：`codex exec --json`（JSONL，格式经本机 0.166.0 实测）；
 //! - Claude Code：`claude -p --output-format stream-json --verbose`（2.1.284 实测）。
 //!
-//! 私有配置留在适配器：Codex 凭据暂存到工作区 `.else-harness/codex-home`，
-//! 通过 CODEX_HOME 注入，不进入 else 内核；沙箱文件策略不放行宿主 Home。
+//! 私有配置留在适配器：Codex 凭据暂存到 Runtime 控制的 `harness-private/`，
+//! 通过 CODEX_HOME 注入；运行结束立即删除，且不进入 Workspace 快照。
 //! 模型流量走 Harness 原生 Provider：网络按显式策略放通出站（Opaque），
 //! 凭据在沙箱内且网络可达外部——这是已声明的 Opaque 边界，出口代理收敛后置。
 
@@ -40,12 +40,12 @@ pub fn codex() -> ProcessHarness<CodexParser> {
         },
         network: NetworkPolicy::AllowOutbound,
         timeout: Some(REAL_HARNESS_TIMEOUT),
-        prepare: Box::new(|workspace, prompt| {
+        prepare: Box::new(|_workspace, private_dir, prompt| {
             let binary = resolve_binary(
                 "codex",
                 &[std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/bin/codex"))],
             )?;
-            let home = stage_dir(workspace, "codex-home")?;
+            let (home, cleanup_root) = stage_private_dir(private_dir, "codex-home")?;
             if let Some(source) = host_home().map(|home| home.join(".codex")) {
                 // config.toml 可能相对引用同目录文件（如 model_catalog_json），一并暂存。
                 for file in [
@@ -85,6 +85,8 @@ pub fn codex() -> ProcessHarness<CodexParser> {
                 .into_iter()
                 .filter(|path| !path.as_os_str().is_empty())
                 .collect(),
+                write_paths: vec![home],
+                cleanup_paths: vec![cleanup_root],
             })
         }),
         parser: CodexParser,
@@ -106,9 +108,9 @@ pub fn claude_code() -> ProcessHarness<ClaudeParser> {
         },
         network: NetworkPolicy::AllowOutbound,
         timeout: Some(REAL_HARNESS_TIMEOUT),
-        prepare: Box::new(|workspace, prompt| {
+        prepare: Box::new(|_workspace, private_dir, prompt| {
             let binary = resolve_binary("claude", &[])?;
-            let home = stage_dir(workspace, "claude-config")?;
+            let (home, cleanup_root) = stage_private_dir(private_dir, "claude-config")?;
             let mut env = vec![
                 ("CLAUDE_CONFIG_DIR".to_string(), home.display().to_string()),
                 // claude 2.x 是 bun 编译的原生二进制；PATH 兜底其可能调用的子工具
@@ -134,6 +136,8 @@ pub fn claude_code() -> ProcessHarness<ClaudeParser> {
                 // claude 2.x 为 bun 编译的单文件原生二进制，canonicalize 后只读放行
                 // 其真实路径即可；若未来拆分运行时再按拒绝日志收敛。
                 read_paths: vec![binary],
+                write_paths: vec![home],
+                cleanup_paths: vec![cleanup_root],
             })
         }),
         parser: ClaudeParser,
@@ -158,10 +162,11 @@ fn resolve_binary(name: &str, extra: &[Option<PathBuf>]) -> std::io::Result<Path
         })
 }
 
-fn stage_dir(workspace: &Path, name: &str) -> std::io::Result<PathBuf> {
-    let dir = workspace.join(".else-harness").join(name);
+fn stage_private_dir(private_dir: &Path, name: &str) -> std::io::Result<(PathBuf, PathBuf)> {
+    let root = private_dir.join(format!("run-{}", uuid::Uuid::new_v4()));
+    let dir = root.join(name);
     std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    Ok((dir, root))
 }
 
 fn host_home() -> Option<PathBuf> {

@@ -431,11 +431,13 @@ fn print_projection(projection: &else_ledger::IntentProjection) {
 }
 
 fn print_decisions(projection: &else_ledger::IntentProjection) {
-    if projection.open_requests.is_empty() {
+    let requests = projection.actionable_requests(chrono::Utc::now());
+    if requests.is_empty() {
         println!("decisions: none");
         return;
     }
-    for (id, request) in &projection.open_requests {
+    for request in requests {
+        let id = &request.id;
         println!("decision {id}: {}", request.summary);
         for option in &request.options {
             println!("  [{}] {}", option.id, option.label);

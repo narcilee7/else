@@ -17,6 +17,9 @@ fn spec(intent_id: &IntentId) -> IntentSpec {
         outcome: "今天达到可对外发布".into(),
         done_when: vec![Criterion {
             description: "构建通过且产物可运行".into(),
+            verification: else_protocol::intent::CriterionVerification::FileExists {
+                path: "plan.md".into(),
+            },
         }],
         constraints: vec!["不牺牲现有稳定性".into()],
         authority: Authority {
@@ -195,6 +198,49 @@ fn decision_queue_tracks_open_requests() {
     }
     let projection = replay_projection(&ledger);
     assert_eq!(projection.open_requests.len(), 1);
+}
+
+#[test]
+fn silent_requests_never_enter_the_actionable_decision_queue() {
+    let ledger = Ledger::open_in_memory().unwrap();
+    let intent_id = IntentId::new();
+    let scope_id = ScopeId::new();
+    let request = request();
+    let envelope = |payload| {
+        EventEnvelope::new(
+            intent_id.clone(),
+            scope_id.clone(),
+            1,
+            1,
+            Actor::System,
+            payload,
+        )
+    };
+    ledger
+        .append(&envelope(EventPayload::AttentionRequested {
+            request: request.clone(),
+        }))
+        .unwrap();
+    ledger
+        .append(&envelope(EventPayload::AttentionRuled {
+            request_id: request.id.clone(),
+            ruling: else_protocol::attention::Ruling::Silent,
+        }))
+        .unwrap();
+
+    let projection = replay_projection(&ledger);
+    assert!(projection
+        .actionable_requests(chrono::Utc::now())
+        .is_empty());
+
+    ledger
+        .append(&envelope(EventPayload::AttentionRuled {
+            request_id: request.id,
+            ruling: else_protocol::attention::Ruling::Interrupt,
+        }))
+        .unwrap();
+    let projection = replay_projection(&ledger);
+    assert_eq!(projection.actionable_requests(chrono::Utc::now()).len(), 1);
 }
 
 #[test]

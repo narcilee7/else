@@ -65,11 +65,13 @@ fn fake_harness(script: &'static str) -> ProcessHarness<JsonParser> {
         },
         network: else_environment::NetworkPolicy::Deny,
         timeout: None,
-        prepare: Box::new(move |_, _| {
+        prepare: Box::new(move |_, _, _| {
             Ok(else_harness::adapter::HarnessPrep {
-                command: format!("printf '%s' {}", shell_quote(script)),
+                command: format!("touch plan.md; printf '%s' {}", shell_quote(script)),
                 env: vec![],
                 read_paths: vec![],
+                write_paths: vec![],
+                cleanup_paths: vec![],
             })
         }),
         parser: JsonParser,

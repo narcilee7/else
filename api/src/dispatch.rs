@@ -60,14 +60,23 @@ impl Runtime {
         }
         let spec = scope_spec(&projection, scope_id)
             .ok_or_else(|| ApiError::NotFound(format!("scope {scope_id}")))?;
-        let generation = scope.generation;
+        let generation = self.next_scope_generation(intent_id, scope_id)?;
 
         // 准入先于一切事件：槽位或预算不足时不产生任何新事件。
         self.ensure_slot_available()?;
+        self.ensure_scope_not_active(intent_id, scope_id)?;
 
-        // 共享不等于共同可写：每个 Scope 独立 Workspace，工件按引用交接。
-        let scope_workspace = self.workspace.join("scopes").join(scope_id.to_string());
+        // 根 Scope 使用持久 Workspace；子 Scope 使用隔离 Workspace + 工件物化。
+        let subagent = scope.spec.is_some();
+        let scope_workspace = if subagent {
+            self.workspace.join("scopes").join(scope_id.to_string())
+        } else {
+            self.workspace.clone()
+        };
         std::fs::create_dir_all(&scope_workspace)?;
+        if subagent {
+            self.materialize_artifacts(&projection, &scope_workspace)?;
+        }
 
         let snapshot = self.compile_snapshot_for(
             intent_id,
@@ -97,15 +106,61 @@ impl Runtime {
             ctx: &ctx,
             ledger: &self.ledger,
             workspace: &scope_workspace,
+            private_dir: &self.harness_private,
             snapshot: &snapshot,
-            subagent: true,
+            subagent,
         };
         self.finish_run(intent_id, &ctx, &lease, adapter.execute(&request))
     }
 
+    /// 把当前 Intent 的工件物化到隔离 Scope。CAS manifest 直接恢复；
+    /// 旧式 locator 从根 Workspace 安全复制。子 Scope 因此能真正读取父级产物。
+    fn materialize_artifacts(
+        &self,
+        projection: &IntentProjection,
+        target: &std::path::Path,
+    ) -> Result<()> {
+        let root = self.workspace.canonicalize()?;
+        for artifact in &projection.artifacts {
+            if let Some(manifest) = &artifact.manifest {
+                self.store.restore(manifest, target)?;
+                continue;
+            }
+            let (source, relative) = if let Some(relative) = safe_artifact_path(&artifact.locator) {
+                (self.workspace.join(&relative), relative)
+            } else {
+                let absolute = std::path::Path::new(&artifact.locator);
+                let Ok(canonical) = absolute.canonicalize() else {
+                    continue;
+                };
+                let Ok(relative) = canonical.strip_prefix(&root) else {
+                    continue;
+                };
+                let relative = relative.to_path_buf();
+                (canonical, relative)
+            };
+            if is_private_artifact_path(&relative) {
+                continue;
+            }
+            if source.is_file() {
+                let canonical = source.canonicalize()?;
+                if !canonical.starts_with(&root) {
+                    continue;
+                }
+                copy_file(&canonical, &target.join(&relative))?;
+            } else if source.is_dir() {
+                let canonical = source.canonicalize()?;
+                if canonical.starts_with(&root) {
+                    copy_directory(&canonical, &target.join(&relative))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// 固定槽位准入：活跃 Run（RunStarted 无对应 RunFinished）到顶则拒绝启动。
     /// 槽位是本地策略；额度不足时上层选择等待、降级或请求本人决策。
-    fn ensure_slot_available(&self) -> Result<()> {
+    pub(crate) fn ensure_slot_available(&self) -> Result<()> {
         let limit = std::env::var("ELSE_MAX_RUN_SLOTS")
             .ok()
             .and_then(|raw| raw.parse::<u64>().ok())
@@ -135,4 +190,57 @@ impl Runtime {
         }
         Ok(())
     }
+}
+
+fn safe_artifact_path(raw: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(raw);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            !matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+    {
+        return None;
+    }
+    Some(path.to_path_buf())
+}
+
+fn is_private_artifact_path(path: &std::path::Path) -> bool {
+    path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::Normal(name)
+                if matches!(name.to_str(), Some(".else-harness" | ".codex" | ".claude"))
+        )
+    })
+}
+
+fn copy_file(source: &std::path::Path, target: &std::path::Path) -> Result<()> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(source, target)?;
+    Ok(())
+}
+
+fn copy_directory(source: &std::path::Path, target: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(target)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if matches!(name.to_str(), Some(".else-harness" | ".codex" | ".claude")) {
+            continue;
+        }
+        let src = entry.path();
+        let dst = target.join(name);
+        let file_type = entry.file_type()?;
+        if file_type.is_file() {
+            copy_file(&src, &dst)?;
+        } else if file_type.is_dir() {
+            copy_directory(&src, &dst)?;
+        }
+    }
+    Ok(())
 }
