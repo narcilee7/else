@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use else_ledger::IntentProjection;
-use else_protocol::attention::DecisionChoice;
-use else_protocol::ids::{AttentionId, IntentId, TimerId};
+use else_protocol::attention::{AttentionRequest, DecisionChoice};
+use else_protocol::ids::{AttentionId, IntentId, ScopeId, TimerId};
 use else_protocol::intent::IntentSpec;
 
 use crate::kernel::KernelDrive;
@@ -48,6 +48,12 @@ enum Command {
         request_id: AttentionId,
         choice: DecisionChoice,
         reply: Reply<IntentProjection>,
+    },
+    SubmitAttention {
+        intent_id: IntentId,
+        scope_id: Option<ScopeId>,
+        request: AttentionRequest,
+        reply: Reply<AttentionId>,
     },
     Abort {
         intent_id: IntentId,
@@ -136,6 +142,20 @@ impl RuntimeHandle {
             intent_id: intent_id.clone(),
             request_id: request_id.clone(),
             choice,
+            reply,
+        })
+    }
+
+    pub fn submit_attention_request(
+        &self,
+        intent_id: &IntentId,
+        scope_id: Option<ScopeId>,
+        request: AttentionRequest,
+    ) -> Result<AttentionId> {
+        self.request(|reply| Command::SubmitAttention {
+            intent_id: intent_id.clone(),
+            scope_id,
+            request,
             reply,
         })
     }
@@ -271,6 +291,20 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.decide(&intent_id, &request_id, choice));
+        }
+        Command::SubmitAttention {
+            intent_id,
+            scope_id,
+            request,
+            reply,
+        } => {
+            let result = match scope_id {
+                Some(scope_id) => {
+                    runtime.submit_attention_request_for_scope(&intent_id, &scope_id, &request)
+                }
+                None => runtime.submit_attention_request(&intent_id, &request),
+            };
+            let _ = reply.send(result);
         }
         Command::Abort {
             intent_id,

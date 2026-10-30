@@ -94,6 +94,7 @@ impl Runtime {
         for abort in aborts {
             self.recover_scope_abort(intent_id, abort.seq)?;
         }
+        self.expire_requests_for_cancelled_scopes(intent_id)?;
 
         let events = self.ledger.read_intent(intent_id)?;
         let aborts = abort_events(&events);
@@ -140,6 +141,7 @@ impl Runtime {
                 },
             )?;
         }
+        self.close_empty_attention_windows(intent_id)?;
         if !has_intent_cancelled_after(&events, latest_abort.seq) {
             ctx.record(
                 &self.ledger,

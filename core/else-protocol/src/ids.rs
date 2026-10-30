@@ -46,6 +46,10 @@ define_id!(ScopeId, "执行 Scope：取消与权限传播的单位，树形组�
 define_id!(RunId, "一次 Agent Attempt。同一 Scope 可重试出多个 Run。");
 define_id!(ToolCallId, "一次工具调用，携带幂等键。");
 define_id!(AttentionId, "一次注意力请求 / 待本人决策。");
+define_id!(
+    AttentionWindowId,
+    "一次注意力聚合或延迟窗口，窗口截止前不进入用户表面。"
+);
 define_id!(TimerId, "一次持久化唤醒定时器。");
 define_id!(
     CheckpointId,

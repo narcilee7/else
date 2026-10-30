@@ -4,9 +4,11 @@
 use std::collections::BTreeMap;
 
 use else_protocol::artifact::{Artifact, Checkpoint};
-use else_protocol::attention::{AttentionRequest, Ruling};
-use else_protocol::event::{EventPayload, ScopeState};
-use else_protocol::ids::{ArtifactId, AttentionId, ScopeId, TimerId};
+use else_protocol::attention::{
+    AttentionRequest, AttentionWindow, AttentionWindowKind, Decision, Ruling,
+};
+use else_protocol::event::{Actor, EventPayload, ScopeState};
+use else_protocol::ids::{ArtifactId, AttentionId, AttentionWindowId, ScopeId, TimerId};
 use else_protocol::intent::{IntentSpec, IntentState};
 use else_protocol::resource::{ResourceBudget, ResourceUsage};
 
@@ -41,6 +43,35 @@ pub struct ExternalEventProjection {
     pub occurred_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// 注意力请求的完整审计记录。Decision 会关闭请求，但记录仍用于指标与解释。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttentionRecordProjection {
+    pub request: AttentionRequest,
+    pub ruling: Option<Ruling>,
+    pub decision: Option<Decision>,
+}
+
+/// 从事件投影计算的注意力成本指标。误打断率只统计用户明确 Dismiss 的
+/// Interrupt 请求，不用拒绝选项猜测。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct AttentionMetrics {
+    pub requested: u64,
+    pub resolved: u64,
+    pub interventions: u64,
+    pub batch_notifications: u64,
+    pub defer_notifications: u64,
+    pub interrupt_notifications: u64,
+    pub batched_requests: u64,
+    pub deferred_requests: u64,
+    pub silent_requests: u64,
+    pub open_critical: u64,
+    pub missed_critical: u64,
+    pub resolved_interrupts: u64,
+    pub dismissed_interrupts: u64,
+    pub batch_rate: Option<f64>,
+    pub misinterrupt_rate: Option<f64>,
+}
+
 /// Intent 的基础投影：目标契约、状态、待本人决策、产物、检查点与 Scope 树。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct IntentProjection {
@@ -52,6 +83,10 @@ pub struct IntentProjection {
     pub open_requests: BTreeMap<AttentionId, AttentionRequest>,
     /// Attention Kernel 的持久裁决；没有裁决的请求不能被表面直接打断用户。
     pub attention_rulings: BTreeMap<AttentionId, Ruling>,
+    /// 请求与裁决的完整历史，用于重放后的注意力指标。
+    pub attention_records: BTreeMap<AttentionId, AttentionRecordProjection>,
+    /// Batch / Defer 的持久调度窗口。
+    pub attention_windows: BTreeMap<AttentionWindowId, AttentionWindow>,
     pub artifacts: Vec<Artifact>,
     pub artifact_scopes: BTreeMap<ArtifactId, ScopeId>,
     pub checkpoints: Vec<Checkpoint>,
@@ -96,13 +131,53 @@ impl Projection for IntentProjection {
             EventPayload::AttentionRequested { request } => {
                 self.open_requests
                     .insert(request.id.clone(), request.clone());
+                self.attention_records.insert(
+                    request.id.clone(),
+                    AttentionRecordProjection {
+                        request: request.clone(),
+                        ruling: None,
+                        decision: None,
+                    },
+                );
             }
             EventPayload::AttentionRuled { request_id, ruling } => {
                 self.attention_rulings
                     .insert(request_id.clone(), ruling.clone());
+                if let Some(record) = self.attention_records.get_mut(request_id) {
+                    record.ruling = Some(ruling.clone());
+                }
+            }
+            EventPayload::AttentionWindowOpened { window } => {
+                self.attention_windows
+                    .insert(window.id.clone(), window.clone());
+            }
+            EventPayload::AttentionWindowMemberAdded {
+                window_id,
+                request_id,
+            } => {
+                if let Some(window) = self.attention_windows.get_mut(window_id) {
+                    if !window.request_ids.contains(request_id) {
+                        window.request_ids.push(request_id.clone());
+                    }
+                }
+            }
+            EventPayload::AttentionWindowClosed {
+                window_id,
+                closed_at,
+                delivered_at,
+            } => {
+                if let Some(window) = self.attention_windows.get_mut(window_id) {
+                    window.closed_at.get_or_insert(*closed_at);
+                    if window.delivered_at.is_none() {
+                        window.delivered_at = *delivered_at;
+                    }
+                }
             }
             EventPayload::DecisionResolved { decision } => {
                 self.open_requests.remove(&decision.request_id);
+                if let Some(record) = self.attention_records.get_mut(&decision.request_id) {
+                    record.decision = Some(decision.clone());
+                }
             }
             EventPayload::ExternalEventReceived { source, summary } => {
                 self.external_events.push(ExternalEventProjection {
@@ -237,6 +312,17 @@ impl Projection for IntentProjection {
 }
 
 impl IntentProjection {
+    /// 请求最近进入的 Attention Window。正常情况下一个请求只属于一个窗口。
+    pub fn attention_window_for_request(
+        &self,
+        request_id: &AttentionId,
+    ) -> Option<&AttentionWindow> {
+        self.attention_windows
+            .values()
+            .filter(|window| window.contains(request_id))
+            .max_by_key(|window| (window.opened_at, window.id.clone()))
+    }
+
     /// 用户表面只展示已被 Kernel 裁决为可行动、且 Defer 已到期的请求。
     /// 没有裁决记录的请求失败关闭，不能绕过 Attention Kernel 直接打扰用户。
     pub fn actionable_requests(
@@ -246,11 +332,113 @@ impl IntentProjection {
         self.open_requests
             .values()
             .filter(|request| match self.attention_rulings.get(&request.id) {
-                Some(Ruling::Interrupt | Ruling::Batch) => true,
-                Some(Ruling::Defer { until }) => *until <= now,
+                Some(Ruling::Interrupt) => true,
+                Some(Ruling::Batch | Ruling::Defer { .. }) => self
+                    .attention_window_for_request(&request.id)
+                    .is_some_and(|window| window.closed_at.is_some() && window.due_at <= now),
                 Some(Ruling::Silent) | None => false,
             })
             .collect()
+    }
+
+    /// 已关闭且仍有未决请求的窗口，按截止时间排序；一个 Batch 只出现一次。
+    pub fn actionable_attention_windows(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<(&AttentionWindow, Vec<&AttentionRequest>)> {
+        let mut windows = Vec::new();
+        for window in self.attention_windows.values() {
+            if window.closed_at.is_none() || window.due_at > now {
+                continue;
+            }
+            let mut requests: Vec<_> = window
+                .request_ids
+                .iter()
+                .filter_map(|request_id| self.open_requests.get(request_id))
+                .filter(|request| {
+                    matches!(
+                        self.attention_rulings.get(&request.id),
+                        Some(Ruling::Batch | Ruling::Defer { .. })
+                    )
+                })
+                .collect();
+            requests.sort_by_key(|request| request.id.clone());
+            if !requests.is_empty() {
+                windows.push((window, requests));
+            }
+        }
+        windows.sort_by_key(|(window, _)| {
+            (window.closed_at.unwrap_or(window.due_at), window.id.clone())
+        });
+        windows
+    }
+
+    /// 事件派生的注意力指标；不依赖进程内计数器，重启后保持一致。
+    pub fn attention_metrics(&self, now: chrono::DateTime<chrono::Utc>) -> AttentionMetrics {
+        let mut metrics = AttentionMetrics {
+            requested: self.attention_records.len() as u64,
+            ..AttentionMetrics::default()
+        };
+        for record in self.attention_records.values() {
+            if record.decision.is_some() {
+                metrics.resolved += 1;
+            }
+            match &record.ruling {
+                Some(Ruling::Interrupt) => {
+                    metrics.interrupt_notifications += 1;
+                    if record.decision.is_some() {
+                        metrics.resolved_interrupts += 1;
+                    }
+                    if matches!(
+                        &record.decision,
+                        Some(Decision {
+                            choice: else_protocol::attention::DecisionChoice::Dismissed,
+                            decided_by: Actor::User,
+                            ..
+                        })
+                    ) {
+                        metrics.dismissed_interrupts += 1;
+                    }
+                }
+                Some(Ruling::Batch) => metrics.batched_requests += 1,
+                Some(Ruling::Defer { .. }) => metrics.deferred_requests += 1,
+                Some(Ruling::Silent) => metrics.silent_requests += 1,
+                None => {}
+            }
+            if record.request.expected_loss == else_protocol::attention::ExpectedLoss::Critical
+                && record.decision.is_none()
+            {
+                metrics.open_critical += 1;
+                let actionable = self
+                    .actionable_requests(now)
+                    .iter()
+                    .any(|request| request.id == record.request.id);
+                if !actionable {
+                    metrics.missed_critical += 1;
+                }
+            }
+        }
+        for window in self.attention_windows.values() {
+            if window.delivered_at.is_none() {
+                continue;
+            }
+            match window.kind {
+                AttentionWindowKind::Batch => metrics.batch_notifications += 1,
+                AttentionWindowKind::Defer => metrics.defer_notifications += 1,
+            }
+        }
+        metrics.interventions = metrics.interrupt_notifications
+            + metrics.batch_notifications
+            + metrics.defer_notifications;
+        if metrics.interventions > 0 {
+            metrics.batch_rate =
+                Some(metrics.batch_notifications as f64 / metrics.interventions as f64);
+        }
+        if metrics.resolved_interrupts > 0 {
+            metrics.misinterrupt_rate =
+                Some(metrics.dismissed_interrupts as f64 / metrics.resolved_interrupts as f64);
+        }
+        metrics
     }
 
     pub fn due_timers(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<&TimerProjection> {

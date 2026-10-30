@@ -4,6 +4,7 @@
 //! W2 以库接口形式提供（进程内调用）；daemon 与远程 IPC 复用同一接口。
 
 mod abort;
+mod attention;
 mod context;
 mod dispatch;
 mod kernel;
@@ -372,6 +373,7 @@ impl Runtime {
                 state: IntentState::Active,
             },
         ))?;
+        self.close_empty_attention_windows(intent_id)?;
         if request_kind == AttentionKind::Verification {
             return if approved {
                 self.confirm_manual_verification(intent_id, &scope_id, generation, run_id)

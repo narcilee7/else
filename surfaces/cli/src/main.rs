@@ -1,6 +1,7 @@
 //! else CLI：Runtime API 的第一个薄客户端。
 //! 只做参数解析与打印，不含业务逻辑。
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -104,6 +105,8 @@ enum Command {
     },
     /// 查看等待本人的 Decision
     Decisions { intent_id: String },
+    /// 查看 Attention Window、批量率与误打断指标
+    Attention { intent_id: String },
     /// 回答一个 Decision（选项 id 或自由文本）
     Decide {
         intent_id: String,
@@ -341,6 +344,10 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             let projection = runtime.projection(&IntentId::from(intent_id))?;
             print_decisions(&projection);
         }
+        Command::Attention { intent_id } => {
+            let projection = runtime.projection(&IntentId::from(intent_id))?;
+            print_attention(&projection);
+        }
         Command::Decide {
             intent_id,
             request_id,
@@ -521,16 +528,90 @@ fn print_projection(projection: &else_ledger::IntentProjection) {
 }
 
 fn print_decisions(projection: &else_ledger::IntentProjection) {
+    let now = chrono::Utc::now();
+    let windows = projection.actionable_attention_windows(now);
+    let mut grouped = BTreeSet::new();
+    for (window, requests) in windows {
+        for request in &requests {
+            grouped.insert(request.id.clone());
+        }
+        let label = match window.kind {
+            else_protocol::attention::AttentionWindowKind::Batch => "batch",
+            else_protocol::attention::AttentionWindowKind::Defer => "deferred",
+        };
+        println!(
+            "decision window {} ({label}, {} items):",
+            window.id,
+            requests.len()
+        );
+        for request in requests {
+            print_decision_request(request);
+        }
+    }
     let requests = projection.actionable_requests(chrono::Utc::now());
-    if requests.is_empty() {
+    let ungrouped: Vec<_> = requests
+        .into_iter()
+        .filter(|request| !grouped.contains(&request.id))
+        .collect();
+    if ungrouped.is_empty() && grouped.is_empty() {
         println!("decisions: none");
         return;
     }
-    for request in requests {
-        let id = &request.id;
-        println!("decision {id}: {}", request.summary);
-        for option in &request.options {
-            println!("  [{}] {}", option.id, option.label);
-        }
+    for request in ungrouped {
+        print_decision_request(request);
+    }
+}
+
+fn print_decision_request(request: &else_protocol::attention::AttentionRequest) {
+    let id = &request.id;
+    println!("decision {id}: {}", request.summary);
+    for option in &request.options {
+        println!("  [{}] {}", option.id, option.label);
+    }
+}
+
+fn print_attention(projection: &else_ledger::IntentProjection) {
+    let now = chrono::Utc::now();
+    let metrics = projection.attention_metrics(now);
+    println!(
+        "attention: requested={} interventions={} resolved={}",
+        metrics.requested, metrics.interventions, metrics.resolved
+    );
+    println!(
+        "signals: interrupt={} batch={} defer={} silent={}",
+        metrics.interrupt_notifications,
+        metrics.batch_notifications,
+        metrics.defer_notifications,
+        metrics.silent_requests
+    );
+    println!(
+        "quality: batch_rate={} misinterrupt_rate={} missed_critical={}",
+        format_rate(metrics.batch_rate),
+        format_rate(metrics.misinterrupt_rate),
+        metrics.missed_critical
+    );
+    if projection.attention_windows.is_empty() {
+        println!("windows: none");
+        return;
+    }
+    for window in projection.attention_windows.values() {
+        println!(
+            "window {} kind={:?} members={} due={} closed={}",
+            window.id,
+            window.kind,
+            window.request_ids.len(),
+            window.due_at.to_rfc3339(),
+            window
+                .closed_at
+                .map(|at| at.to_rfc3339())
+                .unwrap_or_else(|| "open".into())
+        );
+    }
+}
+
+fn format_rate(rate: Option<f64>) -> String {
+    match rate {
+        Some(rate) => format!("{:.1}%", rate * 100.0),
+        None => "n/a".into(),
     }
 }

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::artifact::{Artifact, Checkpoint};
-use crate::attention::{AttentionRequest, Decision, Ruling};
+use crate::attention::{AttentionRequest, AttentionWindow, Decision, Ruling};
 use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
 use crate::ids::*;
 use crate::intent::{IntentSpec, IntentState};
@@ -196,6 +196,21 @@ pub enum EventPayload {
     AttentionRuled {
         request_id: AttentionId,
         ruling: Ruling,
+    },
+    /// 持久注意力窗口：启动时登记成员和截止时间。
+    AttentionWindowOpened {
+        window: AttentionWindow,
+    },
+    /// 新请求进入仍然打开的 Batch 窗口。
+    AttentionWindowMemberAdded {
+        window_id: AttentionWindowId,
+        request_id: AttentionId,
+    },
+    /// 窗口截止或请求失效后关闭；关闭是形成一次聚合通知的幂等边界。
+    AttentionWindowClosed {
+        window_id: AttentionWindowId,
+        closed_at: DateTime<Utc>,
+        delivered_at: Option<DateTime<Utc>>,
     },
     DecisionResolved {
         decision: Decision,

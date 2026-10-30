@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::event::Actor;
-use crate::ids::AttentionId;
+use crate::ids::{AttentionId, AttentionWindowId, TimerId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +78,40 @@ pub enum Ruling {
     Batch,
     /// 立即打断。
     Interrupt,
+}
+
+/// Attention Window 的调度类型。Batch 聚合多个请求，Defer 只延迟一个请求；
+/// 两者都必须在持久窗口关闭后才能进入 Decision Queue。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionWindowKind {
+    Batch,
+    Defer,
+}
+
+/// 由事件重放得到的注意力窗口。`timer_id` 随窗口持久化，重启后可用同一 ID
+/// 补齐丢失的唤醒事件，而不会生成第二次通知。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttentionWindow {
+    pub id: AttentionWindowId,
+    pub kind: AttentionWindowKind,
+    pub opened_at: DateTime<Utc>,
+    pub due_at: DateTime<Utc>,
+    pub timer_id: TimerId,
+    pub closed_at: Option<DateTime<Utc>>,
+    /// 只有截止时仍有未决成员的窗口才算形成一次实际通知批次。
+    pub delivered_at: Option<DateTime<Utc>>,
+    pub request_ids: Vec<AttentionId>,
+}
+
+impl AttentionWindow {
+    pub fn is_closed(&self) -> bool {
+        self.closed_at.is_some()
+    }
+
+    pub fn contains(&self, request_id: &AttentionId) -> bool {
+        self.request_ids.contains(request_id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -156,7 +156,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn kernel_context(&self, intent_id: &IntentId) -> Result<(ScopeId, u64, u64)> {
+    pub(crate) fn kernel_context(&self, intent_id: &IntentId) -> Result<(ScopeId, u64, u64)> {
         let projection = self.projection(intent_id)?;
         let spec = projection
             .spec

@@ -32,13 +32,14 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 91 tests passing on macOS.
+**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 96 tests passing on macOS.
 
 - **Kernel (MVP-0)**: durable root Scope identity, explicit Scope dependencies, artifact lineage across child workspaces, fair multi-Scope reconciliation ordered by creation and last execution, replayable external waits and ExternalEvent/Timer wakes that feed the next Context Snapshot, continuous `drive` loops, and a resident single-thread Runtime supervisor; event-sourced ledger on SQLite, Checkpoint → Fork → Rerun → Compare, Abort + Generation Fencing, Subagent delegation tree, Admission + Lease + Accounting, deny-by-default OS sandboxes (macOS Seatbelt verified on real hardware; Linux bubblewrap policy unit-tested, awaiting Linux CI).
 - **Context & Memory (MVP-1)**: Intent Resolution with revisions, three-tier memory (Working / Episodic / Semantic) with scoped promotion rules, Context Compiler producing minimal read-only snapshots per Planner / Executor / Verifier. Memory is never a source of authority.
 - **Real harnesses (MVP-2)**: Codex (`codex exec --json`) and Claude Code (`claude -p stream-json`) adapters behind one bridge contract; capabilities recorded per run; usage graded Reported / Estimated / Unknown (never silent zero-cost); wall-clock timeouts; late output fenced after abort. Harness completion is only a candidate result: Runtime independently evaluates structured DoneWhen checks before marking an outcome verified. **Codex verified end-to-end live**; Claude Code adapter ready but unverified here (local login broken, 401).
 - **Local dispatch (MVP-3)**: rule-based harness selection (explicit hint > task-type > availability > scripted fallback), fixed local slots (default 2, `ELSE_MAX_RUN_SLOTS`), isolated per-scope workspaces, and physical artifact materialization into the receiving Scope.
 - **Publishable closure (MVP-4)**: single-command install, security regression (deny-by-default network/filesystem, no host-env credential leakage), dogfooded real tasks with attention/cost accounting.
+- **Attention closure**: durable Batch / Defer windows, idempotent deadline timers, aggregated decision presentation, and replay-derived intervention metrics.
 
 ### Quickstart
 
@@ -52,6 +53,7 @@ else event <intent-id> mail "合作方已回复"    # durable external wake
 else wait-external <intent-id> --reason "等待合作方回复"
 else wake <intent-id> 3600                   # durable Timer wake
 else decisions <intent-id>               # what truly needs you
+else attention <intent-id>               # windows, batch rate, missed critical work
 else decide <intent-id> <request-id> approve
 else run-scope <intent-id> <scope-id> --harness auto   # rule-dispatch to codex / claude-code / scripted
 else memory --project myproj             # scoped recall, never permission
@@ -68,6 +70,7 @@ else compare <intent-id> <scope-a> <scope-b>
 - **Harness model traffic uses their native providers with explicit outbound network.** The sandbox allows outbound traffic for these runs, a documented Opaque boundary. Egress proxying is post-MVP.
 - **Nested sandboxes are disabled inside harnesses** (e.g. `sandbox_mode="danger-full-access"` for codex) because Seatbelt cannot nest; else's own sandbox profile is the isolation boundary.
 - **Abort Succeeded means execution converged safely, not that the world was rolled back.** Irreversible effects stay irreversible and are recorded as such.
+- **Misinterrupt rate is a lower bound.** It only counts Interrupt requests a user explicitly dismisses; system cancellations and rejected options are not assumed to be false alarms.
 - **Platform**: macOS Seatbelt is verified on real hardware; Linux bubblewrap passes policy unit tests but awaits Linux CI runtime verification. No Windows backend.
 - **No scale**: single user, single machine, ≤2 local run slots. Cloud, multi-user, and remote workers are a separate post-MVP phase (see [MVP](./MVP.md) §11).
 

@@ -2,10 +2,12 @@
 
 use chrono::{DateTime, Utc};
 use else_ledger::IntentProjection;
+use else_protocol::attention::AttentionWindowKind;
 use else_protocol::event::ScopeState;
-use else_protocol::ids::{AttentionId, IntentId, RunId, ScopeId, TimerId};
+use else_protocol::ids::{AttentionId, AttentionWindowId, IntentId, RunId, ScopeId, TimerId};
 use else_protocol::intent::IntentState;
 
+use crate::attention::{next_attention_action, AttentionScheduleAction};
 use crate::scope::scope_spec;
 use crate::{ApiError, Result, Runtime};
 
@@ -35,6 +37,23 @@ pub enum KernelAction {
     },
     FireTimer {
         timer_id: TimerId,
+    },
+    CloseAttentionWindow {
+        window_id: AttentionWindowId,
+    },
+    ScheduleAttentionWindow {
+        window_id: AttentionWindowId,
+        timer_id: TimerId,
+        due_at: DateTime<Utc>,
+    },
+    OpenAttentionWindow {
+        kind: AttentionWindowKind,
+        request_ids: Vec<AttentionId>,
+        due_at: DateTime<Utc>,
+    },
+    AddAttentionWindowMembers {
+        window_id: AttentionWindowId,
+        request_ids: Vec<AttentionId>,
     },
     Run {
         scope_id: ScopeId,
@@ -84,7 +103,6 @@ impl Runtime {
                 timer_id: timer.id.clone(),
             });
         }
-
         let actionable = projection.actionable_requests(now);
         if actionable.iter().any(|request| request.blocking) {
             return Ok(KernelAction::WaitForUser {
@@ -92,6 +110,43 @@ impl Runtime {
                     .into_iter()
                     .map(|request| request.id.clone())
                     .collect(),
+            });
+        }
+        if let Some(action) = next_attention_action(&projection, now) {
+            return Ok(match action {
+                AttentionScheduleAction::Close { window_id } => {
+                    KernelAction::CloseAttentionWindow { window_id }
+                }
+                AttentionScheduleAction::Schedule { window_id, due_at } => {
+                    let timer_id = projection
+                        .attention_windows
+                        .get(&window_id)
+                        .map(|window| window.timer_id.clone())
+                        .ok_or_else(|| {
+                            ApiError::NotFound(format!("attention window {window_id}"))
+                        })?;
+                    KernelAction::ScheduleAttentionWindow {
+                        window_id,
+                        timer_id,
+                        due_at,
+                    }
+                }
+                AttentionScheduleAction::Open {
+                    kind,
+                    request_ids,
+                    due_at,
+                } => KernelAction::OpenAttentionWindow {
+                    kind,
+                    request_ids,
+                    due_at,
+                },
+                AttentionScheduleAction::AddMembers {
+                    window_id,
+                    request_ids,
+                } => KernelAction::AddAttentionWindowMembers {
+                    window_id,
+                    request_ids,
+                },
             });
         }
         if projection.state == Some(IntentState::WaitingExternal) {
@@ -206,6 +261,33 @@ impl Runtime {
                 self.fire_timer(intent_id, &timer_id)?;
                 self.projection(intent_id)
             }
+            KernelAction::CloseAttentionWindow { window_id } => {
+                self.close_attention_window(intent_id, &window_id)?;
+                self.projection(intent_id)
+            }
+            KernelAction::ScheduleAttentionWindow {
+                window_id,
+                timer_id,
+                due_at,
+            } => {
+                self.schedule_attention_window_timer(intent_id, &window_id, &timer_id, due_at)?;
+                self.projection(intent_id)
+            }
+            KernelAction::OpenAttentionWindow {
+                kind,
+                request_ids,
+                due_at,
+            } => {
+                self.open_attention_window(intent_id, kind, request_ids, due_at)?;
+                self.projection(intent_id)
+            }
+            KernelAction::AddAttentionWindowMembers {
+                window_id,
+                request_ids,
+            } => {
+                self.add_attention_window_members(intent_id, &window_id, request_ids)?;
+                self.projection(intent_id)
+            }
             KernelAction::Run {
                 scope_id,
                 generation,
@@ -244,7 +326,12 @@ impl Runtime {
                 KernelAction::BlockedByDependency { .. } => {
                     Some(KernelDriveStop::BlockedByDependency)
                 }
-                KernelAction::FireTimer { .. } | KernelAction::Run { .. } => None,
+                KernelAction::FireTimer { .. }
+                | KernelAction::CloseAttentionWindow { .. }
+                | KernelAction::ScheduleAttentionWindow { .. }
+                | KernelAction::OpenAttentionWindow { .. }
+                | KernelAction::AddAttentionWindowMembers { .. }
+                | KernelAction::Run { .. } => None,
             };
             if let Some(stopped) = stopped {
                 return Ok(KernelDrive {
@@ -256,6 +343,29 @@ impl Runtime {
             match action {
                 KernelAction::FireTimer { timer_id } => {
                     self.fire_timer(intent_id, &timer_id)?;
+                }
+                KernelAction::CloseAttentionWindow { window_id } => {
+                    self.close_attention_window(intent_id, &window_id)?;
+                }
+                KernelAction::ScheduleAttentionWindow {
+                    window_id,
+                    timer_id,
+                    due_at,
+                } => {
+                    self.schedule_attention_window_timer(intent_id, &window_id, &timer_id, due_at)?;
+                }
+                KernelAction::OpenAttentionWindow {
+                    kind,
+                    request_ids,
+                    due_at,
+                } => {
+                    self.open_attention_window(intent_id, kind, request_ids, due_at)?;
+                }
+                KernelAction::AddAttentionWindowMembers {
+                    window_id,
+                    request_ids,
+                } => {
+                    self.add_attention_window_members(intent_id, &window_id, request_ids)?;
                 }
                 KernelAction::Run {
                     scope_id,

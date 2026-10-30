@@ -6,7 +6,9 @@
 
 mod projection;
 
-pub use projection::IntentProjection;
+pub use projection::{
+    AttentionMetrics, AttentionRecordProjection, IntentProjection, TimerProjection,
+};
 
 use std::cell::Cell;
 
@@ -227,6 +229,9 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::TimerCancelled { .. } => "timer_cancelled",
         P::AttentionRequested { .. } => "attention_requested",
         P::AttentionRuled { .. } => "attention_ruled",
+        P::AttentionWindowOpened { .. } => "attention_window_opened",
+        P::AttentionWindowMemberAdded { .. } => "attention_window_member_added",
+        P::AttentionWindowClosed { .. } => "attention_window_closed",
         P::DecisionResolved { .. } => "decision_resolved",
         P::ScopeSpawned { .. } => "scope_spawned",
         P::SubagentSpawned { .. } => "subagent_spawned",

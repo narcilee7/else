@@ -514,6 +514,7 @@ name = "else-api"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "else-attention",
  "else-context",
  "else-environment",
  "else-gateway",
