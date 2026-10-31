@@ -76,6 +76,7 @@ impl CredentialStore {
             fs::create_dir_all(&directory)?;
             restrict_directory(&directory)?;
         }
+        #[cfg(target_os = "macos")]
         let canonical = runtime_dir
             .canonicalize()
             .unwrap_or_else(|_| runtime_dir.to_path_buf());
@@ -352,6 +353,7 @@ fn form_encode(value: &str) -> String {
     encoded
 }
 
+#[cfg(target_os = "macos")]
 fn stable_hash(value: &str) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
     for byte in value.bytes() {

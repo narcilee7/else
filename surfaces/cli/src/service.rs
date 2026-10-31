@@ -19,6 +19,7 @@ use crate::error::{CliError, Result};
 ///
 /// 与 macOS App 自带的 helper **同名**：一个机器只有一个 Runtime，
 /// 两个都注册会互相抢同一个账本。
+#[cfg(target_os = "macos")]
 pub const LAUNCH_AGENT_LABEL: &str = "com.else.desktop.runtime";
 
 /// Linux 上 daemon 的 systemd user unit 名。
@@ -157,6 +158,7 @@ fn macos_status(runtime_dir: &Path) -> ServiceStatus {
 ///
 /// 单独抽出来是为了能直接检查它长什么样 —— 这个文件决定了 daemon 能不能
 /// 在登录后自动起来，出了问题很难从别处看出来。
+#[cfg(target_os = "macos")]
 fn macos_plist(program: &Path, runtime_dir: &Path) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
@@ -303,7 +305,8 @@ fn linux_install(runtime_dir: &Path) -> Result<ServiceStatus> {
     std::fs::write(&unit_path, unit).map_err(|error| {
         CliError::usage(format!("cannot write {}: {error}", unit_path.display()))
     })?;
-    systemctl(&["--user", "daemon-reload"])?;
+    systemctl(&["--user", "daemon-reload"])
+        .map_err(|error| CliError::usage(format!("cannot reload systemd user units: {error}")))?;
     systemctl(&["--user", "enable", "--now", SYSTEMD_UNIT]).map_err(|error| {
         CliError::usage(format!(
             "cannot start {SYSTEMD_UNIT} ({error}). \
@@ -373,6 +376,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn macos_launch_agent_points_at_the_runtime_directory() {
         let plist = macos_plist(
             Path::new("/usr/local/bin/else"),
@@ -388,6 +392,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn linux_unit_points_at_the_runtime_directory() {
         let unit = linux_unit(
             Path::new("/usr/local/bin/else"),
