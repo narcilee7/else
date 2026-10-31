@@ -7,13 +7,17 @@ import UserNotifications
 struct ElseMacApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store: AppStore
+    @StateObject private var runtimeService: RuntimeServiceManager
 
     init() {
         let configuration = AppDependencies.configuration()
+        let runtimeService = RuntimeServiceManager(configuration: configuration)
+        _runtimeService = StateObject(wrappedValue: runtimeService)
         _store = StateObject(
             wrappedValue: AppStore(
                 client: AppDependencies.client(for: configuration),
-                configuration: configuration
+                configuration: configuration,
+                runtimeService: runtimeService
             )
         )
     }
@@ -24,6 +28,7 @@ struct ElseMacApp: App {
                 .environmentObject(store)
                 .frame(minWidth: 960, minHeight: 620)
         }
+        .handlesExternalEvents(matching: ["*"])
         .defaultSize(width: 1_180, height: 760)
         .commands {
             CommandGroup(after: .newItem) {
@@ -65,6 +70,7 @@ struct ElseMacApp: App {
         Settings {
             SettingsView()
                 .environmentObject(store)
+                .environmentObject(runtimeService)
         }
     }
 }
@@ -72,7 +78,44 @@ struct ElseMacApp: App {
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationCoordinator.shared.configure()
+        NSApplication.shared.servicesProvider = ElseServiceProvider.shared
+        NSUpdateDynamicServices()
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard let route = ElseDeepLink(url: url) else {
+                continue
+            }
+            Foundation.NotificationCenter.default.post(
+                name: .elseOpenRoute,
+                object: route
+            )
+        }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+}
+
+@MainActor
+private final class ElseServiceProvider: NSObject {
+    static let shared = ElseServiceProvider()
+
+    @objc func submitSelectedText(
+        _ pasteboard: NSPasteboard,
+        userData: String,
+        error: AutoreleasingUnsafeMutablePointer<NSString?>
+    ) {
+        guard let text = pasteboard.string(forType: .string),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            error.pointee = "没有可提交的文本"
+            return
+        }
+        Foundation.NotificationCenter.default.post(
+            name: .elseQuickIntent,
+            object: text
+        )
     }
 }

@@ -21,6 +21,7 @@ enum AppDependencies {
             return DemoRuntimeClient()
         }
 
+        let environment = ProcessInfo.processInfo.environment
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.waitsForConnectivity = false
         sessionConfiguration.timeoutIntervalForRequest = 8
@@ -28,6 +29,9 @@ enum AppDependencies {
         return HTTPRuntimeClient(
             baseURL: configuration.runtimeURL,
             token: configuration.runtimeToken,
+            tokenProvider: {
+                configuration.currentRuntimeToken(environment: environment)
+            },
             session: URLSession(configuration: sessionConfiguration)
         )
     }

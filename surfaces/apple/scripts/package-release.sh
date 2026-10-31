@@ -14,6 +14,7 @@ if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
 fi
 
 "$ROOT/scripts/build-app.sh" release
+codesign --verify --deep --strict "$APP_DIR"
 mkdir -p "$DIST_DIR"
 rm -f "$ARCHIVE"
 ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "$ARCHIVE"
@@ -25,6 +26,7 @@ if [[ -n "${APPLE_ID:-}" && -n "${APPLE_APP_PASSWORD:-}" && -n "${APPLE_TEAM_ID:
         --team-id "$APPLE_TEAM_ID" \
         --wait
     xcrun stapler staple "$APP_DIR"
+    codesign --verify --deep --strict "$APP_DIR"
     rm -f "$ARCHIVE"
     ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "$ARCHIVE"
 fi

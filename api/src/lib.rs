@@ -10,7 +10,10 @@ mod binding;
 mod capability;
 mod connector;
 mod context;
+mod data_export;
+mod data_lifecycle;
 mod dependency;
+mod diagnostics;
 mod dispatch;
 mod failure;
 mod kernel;
@@ -18,14 +21,21 @@ mod opaque;
 mod outcome;
 mod plan;
 mod resources;
+mod runtime_settings;
 mod scope;
 mod service;
 mod tool_gateway;
 mod wake;
 mod world;
 
+pub use connector::ConnectorRepairReport;
 pub use context::IntentRevision;
+pub use data_export::RuntimeDataExport;
+pub use data_lifecycle::IntentDeletionReport;
+pub use diagnostics::RuntimeDiagnosticReport;
 pub use kernel::{KernelAction, KernelDrive, KernelDriveStop};
+pub use resources::LeaseCleanupReport;
+pub use runtime_settings::RuntimeSettings;
 pub use service::{RuntimeHandle, RuntimeService};
 
 use std::path::{Path, PathBuf};
@@ -77,6 +87,7 @@ pub struct Runtime {
     harness_private: PathBuf,
     store: else_workspace::Store,
     branches: PathBuf,
+    settings_path: PathBuf,
     default_budget: else_protocol::resource::ResourceBudget,
     connector_adapters: else_connector::AdapterRegistry,
     signal_interpreter: else_connector::SignalInterpreter,
@@ -138,6 +149,7 @@ impl Runtime {
             harness_private,
             store: else_workspace::Store::new(dir.join("store"))?,
             branches: dir.join("branches"),
+            settings_path: dir.join("runtime-settings.json"),
             default_budget: resources::budget_from_env(),
             connector_adapters,
             signal_interpreter,

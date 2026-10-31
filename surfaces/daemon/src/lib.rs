@@ -53,6 +53,11 @@ pub struct Daemon {
 impl Daemon {
     pub fn start(config: DaemonConfig) -> Result<Self> {
         std::fs::create_dir_all(&config.dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&config.dir, std::fs::Permissions::from_mode(0o700))?;
+        }
         let lock_path = config.dir.join("daemon.lock");
         let lock = OpenOptions::new()
             .create(true)
@@ -350,6 +355,30 @@ fn route(
     segments: &[&str],
     body: &str,
 ) -> Result<(u16, String)> {
+    if segments == ["v1", "export"] && request.method() == &Method::Get {
+        return Ok((200, json_string(&state.handle.export_data()?)?));
+    }
+    if segments == ["v1", "diagnostics"] && request.method() == &Method::Get {
+        return Ok((200, json_string(&state.handle.diagnostics()?)?));
+    }
+    if segments == ["v1", "diagnostics", "leases", "cleanup"] && request.method() == &Method::Post {
+        let report = state.handle.cleanup_orphan_leases()?;
+        return Ok((200, json_string(&report)?));
+    }
+    if segments == ["v1", "settings"] {
+        match request.method() {
+            Method::Get => {
+                return Ok((200, json_string(&state.handle.runtime_settings()?)?));
+            }
+            Method::Post => {
+                let settings: else_api::RuntimeSettings =
+                    serde_json::from_str(body).map_err(json_error)?;
+                let settings = state.handle.update_runtime_settings(settings)?;
+                return Ok((200, json_string(&settings)?));
+            }
+            _ => {}
+        }
+    }
     if segments == ["v1", "intents"] {
         return match request.method() {
             Method::Get => {
@@ -436,10 +465,35 @@ fn route(
     }
     if segments.len() >= 3 && segments[0..2] == ["v1", "intents"] {
         let intent_id = else_protocol::ids::IntentId::from(segments[2]);
-        if segments.len() == 3 && request.method() == &Method::Get {
+        if segments.len() == 3 {
+            match request.method() {
+                Method::Get => {
+                    return Ok((
+                        200,
+                        json_string(&snapshot(&state.handle.projection(&intent_id)?))?,
+                    ))
+                }
+                Method::Delete => {
+                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    let report = state.handle.delete_intent(&intent_id)?;
+                    return Ok((200, json_string(&report)?));
+                }
+                _ => {}
+            }
+        }
+        if segments.len() == 5
+            && segments[3] == "repair"
+            && segments[4] == "retry"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let (retried_scopes, projection) = state.handle.retry_failed_scopes(&intent_id)?;
             return Ok((
                 200,
-                json_string(&snapshot(&state.handle.projection(&intent_id)?))?,
+                json_string(&json!({
+                    "retried_scopes": retried_scopes,
+                    "intent": snapshot(&projection),
+                }))?,
             ));
         }
         if segments.len() == 4 && segments[3] == "run" && request.method() == &Method::Post {
@@ -590,6 +644,29 @@ fn route(
                 }
                 _ => {}
             }
+        }
+        if segments.len() == 7
+            && segments[3] == "connectors"
+            && segments[5] == "actions"
+            && segments[6] == "preview"
+            && request.method() == &Method::Post
+        {
+            let value: Value = serde_json::from_str(body).map_err(json_error)?;
+            let connector_id = else_protocol::ids::ConnectorId::from(segments[4]);
+            let capability = value["capability"]
+                .as_str()
+                .ok_or_else(|| DaemonError::InvalidRequest("missing capability".into()))?;
+            let target = value["target"]
+                .as_str()
+                .ok_or_else(|| DaemonError::InvalidRequest("missing target".into()))?;
+            let preview = state.handle.preview_connector_action(
+                &intent_id,
+                &connector_id,
+                capability,
+                target,
+                value["input"].clone(),
+            )?;
+            return Ok((200, json_string(&preview)?));
         }
         if segments.len() == 6
             && segments[3] == "actions"
@@ -796,6 +873,18 @@ fn route(
                 &else_protocol::ids::ConnectorId::from(segments[4]),
             )?;
             return Ok((200, json_string(&result)?));
+        }
+        if segments.len() == 6
+            && segments[3] == "connectors"
+            && segments[5] == "repair"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let report = state.handle.repair_connector(
+                &intent_id,
+                &else_protocol::ids::ConnectorId::from(segments[4]),
+            )?;
+            return Ok((200, json_string(&report)?));
         }
         if segments.len() == 5
             && segments[3] == "mcp"
@@ -1199,27 +1288,41 @@ impl Read for BindingEventStream {
 
 fn write_token(dir: &Path, token: &str) -> Result<()> {
     let path = dir.join("daemon-token");
+    let temporary = dir.join(format!(".daemon-token-{}", uuid::Uuid::new_v4()));
     let mut options = OpenOptions::new();
-    options.create(true).write(true).truncate(true);
+    options.create_new(true).write(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(path)?;
-    use std::io::Write;
-    file.write_all(token.as_bytes())?;
-    Ok(())
+    let result = (|| {
+        use std::io::Write;
+        let mut file = options.open(&temporary)?;
+        file.write_all(token.as_bytes())?;
+        file.sync_all()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::rename(&temporary, &path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 pub fn run_from_args() -> Result<()> {
-    let mut dir = PathBuf::from(".else");
+    let mut dir = None;
     let mut bind = "127.0.0.1:4180".to_string();
     let mut token = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--dir" => dir = PathBuf::from(args.next().unwrap_or_else(|| ".else".into())),
+            "--dir" => dir = args.next().map(PathBuf::from),
             "--bind" => bind = args.next().unwrap_or(bind),
             "--token" => token = args.next(),
             "--help" | "-h" => {
@@ -1229,12 +1332,30 @@ pub fn run_from_args() -> Result<()> {
             _ => return Err(DaemonError::InvalidRequest(format!("unknown arg {arg}"))),
         }
     }
+    let dir = dir
+        .or_else(|| std::env::var_os("ELSE_RUNTIME_DIR").map(PathBuf::from))
+        .unwrap_or_else(default_runtime_dir);
+    let token_path = dir.join("daemon-token");
     let daemon = Daemon::start(DaemonConfig { dir, bind, token })?;
     println!("runtime: {}", daemon.url);
-    println!("token: {}", daemon.token);
+    println!("token-file: {}", token_path.display());
     loop {
         thread::park_timeout(Duration::from_secs(60));
     }
+}
+
+fn default_runtime_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("else")
+                .join("runtime");
+        }
+    }
+    PathBuf::from(".else")
 }
 
 #[cfg(test)]
@@ -1700,6 +1821,43 @@ mod tests {
         assert_eq!(status, 200, "{projects}");
         let (status, projects) = request(&daemon, "GET", "/v1/projects", "", None, None);
         assert_eq!(status, 200, "{projects}");
+        daemon.shutdown();
+    }
+
+    #[test]
+    fn runtime_directory_and_token_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempfile::tempdir().unwrap();
+        let dir = parent.path().join("runtime");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_token(&dir, "first").unwrap();
+        let token_path = dir.join("daemon-token");
+        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_token(&dir, "second").unwrap();
+        assert_eq!(std::fs::read_to_string(&token_path).unwrap(), "second");
+        assert_eq!(
+            std::fs::metadata(&token_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(std::fs::read_dir(&dir).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".daemon-token-")));
+
+        let daemon = Daemon::start(DaemonConfig {
+            dir: dir.clone(),
+            bind: "127.0.0.1:0".into(),
+            token: Some("daemon-token".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
         daemon.shutdown();
     }
 }

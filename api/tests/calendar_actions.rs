@@ -47,7 +47,7 @@ fn google_calendar_update_verify_and_compensate_cross_http_contract() {
     let current = Arc::new(Mutex::new(original.clone()));
     let server_current = current.clone();
     let server = std::thread::spawn(move || {
-        for _ in 0..4 {
+        for _ in 0..5 {
             let (mut stream, _) = listener.accept().unwrap();
             let mut buffer = Vec::new();
             let mut chunk = [0_u8; 2048];
@@ -117,16 +117,26 @@ fn google_calendar_update_verify_and_compensate_cross_http_contract() {
             300,
         )
         .unwrap();
-    assert!(runtime
+    let update_capability = runtime
         .capabilities(&spec.id)
         .unwrap()
-        .iter()
-        .any(|capability| matches!(
-            &capability.adapter,
-            else_protocol::capability::CapabilityAdapter::ExternalAction(binding)
-                if binding.connector_id == connector.id
-                    && binding.operation == "calendar.event.update"
-        )));
+        .into_iter()
+        .find(|capability| {
+            matches!(
+                &capability.adapter,
+                else_protocol::capability::CapabilityAdapter::ExternalAction(binding)
+                    if binding.connector_id == connector.id
+                        && binding.operation == "calendar.event.update"
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        update_capability.manifest.input_schema["target_label"],
+        "Event ID"
+    );
+    assert!(update_capability.manifest.input_schema["fields"]
+        .as_array()
+        .is_some_and(|fields| !fields.is_empty()));
     let action = runtime
         .propose_connector_action(
             &spec.id,
@@ -142,6 +152,17 @@ fn google_calendar_update_verify_and_compensate_cross_http_contract() {
             Some("calendar-event-evt-1-update".into()),
         )
         .unwrap();
+    let preview = runtime
+        .preview_connector_action(
+            &spec.id,
+            &connector.id,
+            "calendar.event.update",
+            "evt-1",
+            &json!({"changes":{"summary":"New title","location":"Room B"}}),
+        )
+        .unwrap();
+    assert_eq!(preview.current["summary"], "Old title");
+    assert_eq!(preview.proposed["location"], "Room B");
 
     assert!(matches!(
         runtime.execute_connector_action(&spec.id, &action.id),

@@ -194,6 +194,18 @@ pub struct ConnectorAction {
     pub last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectorActionPreview {
+    pub connector_id: ConnectorId,
+    pub capability: String,
+    pub target: String,
+    /// Adapter 只返回允许写入的 Provider 字段，避免把无关秘密带入 Surface。
+    pub current: serde_json::Value,
+    /// 用户当前准备提交的字段，不包含授权或生命周期状态。
+    pub proposed: serde_json::Value,
+    pub checked_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectorManifest {
     #[serde(default)]

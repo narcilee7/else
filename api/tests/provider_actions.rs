@@ -77,7 +77,7 @@ fn linear_update_verify_and_compensate_cross_http_contract() {
     })));
     let server_state = state.clone();
     let server = std::thread::spawn(move || {
-        for _ in 0..4 {
+        for _ in 0..5 {
             let (mut stream, _) = listener.accept().unwrap();
             let (method, _path, body) = read_request(&mut stream);
             assert_eq!(method, "POST");
@@ -99,9 +99,25 @@ fn linear_update_verify_and_compensate_cross_http_contract() {
 
     let registry = AdapterRegistry::builtin();
     let adapter = registry.get("linear.graphql").unwrap();
+    let update_schema = adapter.action_schema("linear.issue.update").unwrap();
+    assert_eq!(update_schema["target_label"], "Issue ID");
+    assert!(update_schema["fields"]
+        .as_array()
+        .is_some_and(|fields| fields.len() >= 8));
     let connector_id = ConnectorId::from("linear-connector");
     let cred = credential("issues:read");
     let source = format!("http://{address}/graphql");
+    let preview = adapter
+        .preview_action(
+            &source,
+            "linear.issue.update",
+            "issue-1",
+            Some(&cred),
+            &json!({"changes":{"title":"New title"}}),
+        )
+        .unwrap();
+    assert_eq!(preview["title"], "Old title");
+    assert_eq!(preview["priority"], 2);
     let outcome = adapter
         .execute_action(
             &connector_id,
@@ -156,7 +172,7 @@ fn notion_page_update_verify_and_compensate_cross_http_contract() {
     })));
     let server_state = state.clone();
     let server = std::thread::spawn(move || {
-        for _ in 0..4 {
+        for _ in 0..5 {
             let (mut stream, _) = listener.accept().unwrap();
             let (method, path, body) = read_request(&mut stream);
             assert_eq!(path, "/v1/pages/page-1");
@@ -174,6 +190,11 @@ fn notion_page_update_verify_and_compensate_cross_http_contract() {
 
     let registry = AdapterRegistry::builtin();
     let adapter = registry.get("notion.api").unwrap();
+    let update_schema = adapter.action_schema("notion.page.update").unwrap();
+    assert_eq!(update_schema["target_label"], "Page ID");
+    assert!(update_schema["preview_supported"]
+        .as_bool()
+        .unwrap_or(false));
     let connector_id = ConnectorId::from("notion-connector");
     let cred = credential("pages:read");
     let source = format!("http://{address}/v1/search");
@@ -182,6 +203,20 @@ fn notion_page_update_verify_and_compensate_cross_http_contract() {
             "Name": {"type":"title","title":[{"plain_text":"New title"}]}
         }
     });
+    let preview = adapter
+        .preview_action(
+            &source,
+            "notion.page.update",
+            "page-1",
+            Some(&cred),
+            &json!({"changes":changes}),
+        )
+        .unwrap();
+    assert_eq!(preview["archived"], false);
+    assert_eq!(
+        preview["properties"]["Name"]["title"][0]["plain_text"],
+        "Old title"
+    );
     let outcome = adapter
         .execute_action(
             &connector_id,

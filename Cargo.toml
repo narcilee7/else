@@ -29,6 +29,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
 ical = "0.11"
 ureq = "2"
+base64 = "0.22"
 
 [profile.release]
 lto = "thin"

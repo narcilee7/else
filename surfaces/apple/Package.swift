@@ -10,11 +10,16 @@ let package = Package(
     products: [
         .library(name: "ElseClientCore", targets: ["ElseClientCore"]),
         .executable(name: "ElseMac", targets: ["ElseMac"]),
+        .executable(name: "ElseNotifier", targets: ["ElseNotifier"]),
     ],
     targets: [
         .target(name: "ElseClientCore"),
         .executableTarget(
             name: "ElseMac",
+            dependencies: ["ElseClientCore"]
+        ),
+        .executableTarget(
+            name: "ElseNotifier",
             dependencies: ["ElseClientCore"]
         ),
         .testTarget(

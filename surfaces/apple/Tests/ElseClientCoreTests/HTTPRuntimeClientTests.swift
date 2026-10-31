@@ -32,6 +32,35 @@ struct HTTPRuntimeClientTests {
     }
 
     @Test
+    func readsBearerTokenForEachRequest() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            tokenProvider: { "rotated-token" },
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+
+        StubURLProtocol.handler = { request in
+            #expect(
+                request.value(forHTTPHeaderField: "Authorization")
+                    == "Bearer rotated-token"
+            )
+            return (
+                HTTPURLResponse(
+                    url: try #require(request.url),
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data("[]".utf8)
+            )
+        }
+
+        _ = try await client.listIntents()
+    }
+
+    @Test
     func createsIntentWithOptionalProject() async throws {
         let session = makeSession()
         let client = HTTPRuntimeClient(
@@ -280,6 +309,433 @@ struct HTTPRuntimeClientTests {
         #expect(action.target == "event-1")
     }
 
+    @Test
+    func previewsConnectorActionAgainstCurrentProviderState() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+        let intentID = IntentID("intent-1")
+        let connectorID = ConnectorID("connector-1")
+
+        StubURLProtocol.handler = { request in
+            #expect(request.httpMethod == "POST")
+            #expect(
+                request.url?.path
+                    == "/v1/intents/intent-1/connectors/connector-1/actions/preview"
+            )
+            let data = try #require(requestBodyData(request))
+            let body = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            #expect(body?["capability"] as? String == "calendar.event.update")
+            #expect(body?["target"] as? String == "event-1")
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(Self.actionPreviewJSON.utf8)
+            )
+        }
+
+        let preview = try await client.previewConnectorAction(
+            intentID: intentID,
+            connectorID: connectorID,
+            request: PreviewConnectorActionRequest(
+                capability: "calendar.event.update",
+                target: "event-1",
+                input: .object([
+                    "changes": .object([
+                        "summary": .string("新标题"),
+                    ]),
+                ])
+            )
+        )
+
+        #expect(preview.connectorID == connectorID)
+        #expect(preview.current.objectValue?["summary"] == .string("旧标题"))
+        #expect(preview.proposed.objectValue?["summary"] == .string("新标题"))
+    }
+
+    @Test
+    func loadsCapabilityManifestSchema() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+        let intentID = IntentID("intent-1")
+
+        StubURLProtocol.handler = { request in
+            #expect(request.httpMethod == "GET")
+            #expect(request.url?.path == "/v1/intents/intent-1/capabilities")
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(Self.capabilityJSON.utf8)
+            )
+        }
+
+        let capabilities = try await client.capabilities(intentID: intentID)
+        let capability = try #require(capabilities.first)
+        #expect(
+            capability.manifest.inputSchema.connectorActionSchema?.targetLabel
+                == "Event ID"
+        )
+    }
+
+    @Test
+    func loadsRuntimeDataExport() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+
+        StubURLProtocol.handler = { request in
+            #expect(request.httpMethod == "GET")
+            #expect(request.url?.path == "/v1/export")
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(
+                    #"{"export_version":1,"protocol_version":"0.1.0","exported_at":"2026-10-31T08:00:00Z","intents":[]}"#
+                        .utf8
+                )
+            )
+        }
+
+        let export = try await client.exportRuntimeData()
+        #expect(export.objectValue?["export_version"] == .number(1))
+        #expect(export.objectValue?["protocol_version"] == .string("0.1.0"))
+    }
+
+    @Test
+    func deletesIntentWithIdempotencyAndRevision() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+        let intentID = IntentID("C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
+
+        StubURLProtocol.handler = { request in
+            if request.httpMethod == "GET" {
+                return (
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: ["Content-Type": "application/json"]
+                    )!,
+                    Data(Self.minimalSnapshotJSON.utf8)
+                )
+            }
+            #expect(request.httpMethod == "DELETE")
+            #expect(
+                request.value(forHTTPHeaderField: "Idempotency-Key") != nil
+            )
+            #expect(request.value(forHTTPHeaderField: "If-Match") == "1")
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(Self.deletionReportJSON.utf8)
+            )
+        }
+
+        _ = try await client.intent(id: intentID)
+        let report = try await client.deleteIntent(id: intentID)
+        #expect(report.intentID == intentID)
+        #expect(report.deletedEvents == 12)
+        #expect(report.removedCredentials == 1)
+        #expect(report.cleanupErrors.isEmpty)
+    }
+
+    @Test
+    func readsAndUpdatesRuntimeRetentionSettings() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+
+        StubURLProtocol.handler = { request in
+            #expect(request.url?.path == "/v1/settings")
+            let value: String
+            if request.httpMethod == "POST" {
+                #expect(
+                    request.value(forHTTPHeaderField: "Idempotency-Key") != nil
+                )
+                let data = try #require(requestBodyData(request))
+                let body = try JSONSerialization.jsonObject(with: data)
+                    as? [String: Any]
+                #expect((body?["retention_days"] as? NSNumber)?.uint64Value == 7)
+                value = #"{"retention_days":7}"#
+            } else {
+                value = #"{"retention_days":30}"#
+            }
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(value.utf8)
+            )
+        }
+
+        let settings = try await client.runtimeSettings()
+        #expect(settings.retentionDays == 30)
+        let updated = try await client.updateRuntimeSettings(
+            RuntimeSettings(retentionDays: 7)
+        )
+        #expect(updated.retentionDays == 7)
+    }
+
+    @Test
+    func loadsDiagnosticReport() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+
+        StubURLProtocol.handler = { request in
+            #expect(request.httpMethod == "GET")
+            #expect(request.url?.path == "/v1/diagnostics")
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(
+                    #"{"healthy":true,"database_integrity":"ok","event_count":10,"connectors":[]}"#.utf8
+                )
+            )
+        }
+
+        let diagnostics = try await client.diagnostics()
+        #expect(diagnostics.objectValue?["healthy"] == .bool(true))
+        #expect(diagnostics.objectValue?["database_integrity"] == .string("ok"))
+    }
+
+    @Test
+    func repairsConnectorCursorAndSyncs() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+        let intentID = IntentID("C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
+        let connectorID = ConnectorID("connector-1")
+
+        StubURLProtocol.handler = { request in
+            if request.httpMethod == "GET" {
+                return (
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: ["Content-Type": "application/json"]
+                    )!,
+                    Data(Self.minimalSnapshotJSON.utf8)
+                )
+            }
+            #expect(request.httpMethod == "POST")
+            #expect(
+                request.url?.path
+                    == "/v1/intents/C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D/connectors/connector-1/repair"
+            )
+            #expect(
+                request.value(forHTTPHeaderField: "Idempotency-Key") != nil
+            )
+            #expect(request.value(forHTTPHeaderField: "If-Match") == "1")
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(Self.repairReportJSON.utf8)
+            )
+        }
+
+        _ = try await client.intent(id: intentID)
+        let report = try await client.repairConnector(
+            intentID: intentID,
+            connectorID: connectorID
+        )
+        #expect(report.connectorID == connectorID)
+        #expect(report.resetCursors == 2)
+        #expect(report.sync?.observed == 1)
+        #expect(report.error == nil)
+    }
+
+    @Test
+    func replacesAndRevokesConnectorCredential() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+        let intentID = IntentID("C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
+        let connectorID = ConnectorID("connector-1")
+
+        StubURLProtocol.handler = { request in
+            if request.httpMethod == "GET" {
+                return (
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: ["Content-Type": "application/json"]
+                    )!,
+                    Data(Self.minimalSnapshotJSON.utf8)
+                )
+            }
+            #expect(
+                request.url?.path
+                    == "/v1/intents/C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D/connectors/connector-1/credential"
+            )
+            #expect(
+                request.value(forHTTPHeaderField: "Idempotency-Key") != nil
+            )
+            #expect(request.value(forHTTPHeaderField: "If-Match") == "1")
+            let revoked = request.httpMethod == "DELETE"
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(Self.credentialMetadataJSON(revoked: revoked).utf8)
+            )
+        }
+
+        _ = try await client.intent(id: intentID)
+        let attached = try await client.attachConnectorCredential(
+            intentID: intentID,
+            connectorID: connectorID,
+            credential: ConnectorCredentialInput(
+                accessToken: "new-token",
+                scopes: ["issues:read"]
+            )
+        )
+        #expect(attached.revokedAt == nil)
+        let revoked = try await client.revokeConnectorCredential(
+            intentID: intentID,
+            connectorID: connectorID
+        )
+        #expect(revoked.revokedAt != nil)
+    }
+
+    @Test
+    func cleansOrphanLeases() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+
+        StubURLProtocol.handler = { request in
+            #expect(request.httpMethod == "POST")
+            #expect(request.url?.path == "/v1/diagnostics/leases/cleanup")
+            #expect(
+                request.value(forHTTPHeaderField: "Idempotency-Key") != nil
+            )
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(
+                    #"{"scanned_intents":2,"orphan_leases":1,"revoked_leases":1,"sandbox_finish_records":1,"skipped_active_leases":1}"#
+                        .utf8
+                )
+            )
+        }
+
+        let report = try await client.cleanupOrphanLeases()
+        #expect(report.orphanLeases == 1)
+        #expect(report.revokedLeases == 1)
+        #expect(report.skippedActiveLeases == 1)
+    }
+
+    @Test
+    func retriesFailedIntentScopes() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+        let intentID = IntentID("C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
+
+        StubURLProtocol.handler = { request in
+            if request.httpMethod == "GET" {
+                return (
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: ["Content-Type": "application/json"]
+                    )!,
+                    Data(Self.minimalSnapshotJSON.utf8)
+                )
+            }
+            #expect(request.httpMethod == "POST")
+            #expect(
+                request.url?.path
+                    == "/v1/intents/C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D/repair/retry"
+            )
+            #expect(request.value(forHTTPHeaderField: "If-Match") == "1")
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(Self.retryResponseJSON.utf8)
+            )
+        }
+
+        _ = try await client.intent(id: intentID)
+        let snapshot = try await client.retryFailedIntent(id: intentID)
+        #expect(snapshot.id == intentID)
+        #expect(snapshot.state == .active)
+    }
+
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
@@ -337,6 +793,57 @@ struct HTTPRuntimeClientTests {
     }
     """
 
+    private static let deletionReportJSON = """
+    {
+      "intent_id": "C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D",
+      "deleted_events": 12,
+      "removed_credentials": 1,
+      "removed_workspace_paths": 2,
+      "cleanup_errors": [],
+      "retained_shared_artifacts": true
+    }
+    """
+
+    private static let repairReportJSON = """
+    {
+      "connector_id": "connector-1",
+      "reset_cursors": 2,
+      "sync": {
+        "observed": 1,
+        "inserted": 1,
+        "skipped": 0,
+        "candidates_proposed": 0,
+        "auto_accepted": 0,
+        "cursor": "cursor-1",
+        "pages_synced": 1,
+        "has_more": false,
+        "backfill_complete": true,
+        "hydrated": false
+      },
+      "error": null
+    }
+    """
+
+    private static let retryResponseJSON = """
+    {
+      "retried_scopes": ["scope-1"],
+      "intent": \(minimalSnapshotJSON)
+    }
+    """
+
+    private static func credentialMetadataJSON(revoked: Bool) -> String {
+        """
+        {
+          "reference": "credential-1",
+          "auth_mode": "api_token",
+          "scopes": ["issues:read"],
+          "expires_at": null,
+          "configured_at": "2026-10-31T08:00:00Z",
+          "revoked_at": \(revoked ? #""2026-10-31T09:00:00Z""# : "null")
+        }
+        """
+    }
+
     private static let attentionWindowJSON = """
     [{
       "intent_id": "intent-1",
@@ -382,6 +889,43 @@ struct HTTPRuntimeClientTests {
       "outcome": null,
       "last_error": null
     }
+    """
+
+    private static let actionPreviewJSON = """
+    {
+      "connector_id": "connector-1",
+      "capability": "calendar.event.update",
+      "target": "event-1",
+      "current": {"summary": "旧标题", "location": "会议室 A"},
+      "proposed": {"summary": "新标题"},
+      "checked_at": "2026-10-31T08:00:00Z"
+    }
+    """
+
+    private static let capabilityJSON = """
+    [{
+      "manifest": {
+        "id": "connector:connector-1:calendar.event.update",
+        "name": "calendar.event.update",
+        "description": "calendar write capability via Tool Gateway",
+        "kind": "external_action",
+        "effect": "unknown",
+        "idempotency_required": true,
+        "input_schema": {
+          "title": "更新日历事件",
+          "target_label": "Event ID",
+          "preview_supported": true,
+          "fields": [{"path":"changes.summary","title":"标题","kind":"text"}]
+        }
+      },
+      "adapter": {
+        "kind": "external_action",
+        "value": {
+          "connector_id": "connector-1",
+          "operation": "calendar.event.update"
+        }
+      }
+    }]
     """
 }
 

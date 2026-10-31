@@ -316,6 +316,13 @@ impl Projection for IntentProjection {
                     cursor.clone(),
                 );
             }
+            EventPayload::ConnectorCursorReset {
+                connector_id,
+                stream_id,
+            } => {
+                self.connector_cursors
+                    .remove(&(connector_id.clone(), stream_id.clone()));
+            }
             EventPayload::WorldItemResolved { resolution } => {
                 self.world_item_resolutions
                     .insert(resolution.item_id.clone(), resolution.clone());
@@ -651,6 +658,13 @@ impl Projection for IntentProjection {
                 if let Some(scope) = self.scopes.get_mut(&event.envelope.scope_id) {
                     scope.failure_count = scope.failure_count.saturating_add(1);
                     scope.last_failure = Some(failure.clone());
+                }
+            }
+            EventPayload::ScopeRetryApproved => {
+                if let Some(scope) = self.scopes.get_mut(&event.envelope.scope_id) {
+                    scope.state = ScopeState::Running;
+                    scope.failure_count = 0;
+                    scope.generation = event.envelope.generation;
                 }
             }
             EventPayload::ScopeStateChanged { state } => {

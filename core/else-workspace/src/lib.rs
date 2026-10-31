@@ -50,6 +50,10 @@ impl Store {
         Ok(Self { root })
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// 对工作区拍快照：写入全部 blob 与 manifest，返回 FileTree 工件。
     pub fn snapshot(&self, workspace: &Path, produced_by: &RunId) -> Result<Artifact> {
         let mut files = Vec::new();
@@ -113,6 +117,23 @@ impl Store {
             std::fs::write(&dest, std::fs::read(&blob_path)?)?;
         }
         Ok(())
+    }
+
+    /// 读取快照中的非私有文件，供用户数据导出使用。
+    pub fn snapshot_files(&self, manifest_json: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        let manifest: Manifest = serde_json::from_str(manifest_json)?;
+        let mut files = Vec::with_capacity(manifest.files.len());
+        for file in manifest.files {
+            if is_private_runtime_path(Path::new(&file.path)) {
+                continue;
+            }
+            let blob_path = self.root.join("blobs").join(&file.hash);
+            if !blob_path.exists() {
+                return Err(WorkspaceError::MissingBlob(file.hash));
+            }
+            files.push((file.path, std::fs::read(blob_path)?));
+        }
+        Ok(files)
     }
 
     /// 单文件内容哈希（Compare 用）。

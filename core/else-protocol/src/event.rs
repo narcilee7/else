@@ -230,6 +230,10 @@ pub enum EventPayload {
     ConnectorSyncCheckpointed {
         cursor: SyncCursor,
     },
+    ConnectorCursorReset {
+        connector_id: ConnectorId,
+        stream_id: String,
+    },
     WorldItemResolved {
         resolution: WorldItemResolution,
     },
@@ -251,6 +255,7 @@ pub enum EventPayload {
     ScopeFailureRecorded {
         failure: ScopeFailure,
     },
+    ScopeRetryApproved,
 
     /// Harness 桥接的归一化输出（截断后的文本块）。
     HarnessOutput {

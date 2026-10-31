@@ -5,6 +5,8 @@ struct IntentDetailView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isProposingAction = false
+    @State private var isConfirmingDelete = false
+    @State private var isConfirmingRetry = false
     let snapshot: IntentSnapshot?
 
     var body: some View {
@@ -42,21 +44,52 @@ struct IntentDetailView: View {
         }
         .navigationTitle(snapshot?.spec.outcome ?? "Intent")
         .toolbar {
-            if let snapshot, !snapshot.isTerminal {
+            if let snapshot {
                 ToolbarItemGroup {
-                    Button {
-                        Task { await store.run(snapshot) }
-                    } label: {
-                        Label("继续执行", systemImage: "play")
+                    if !snapshot.isTerminal {
+                        Button {
+                            Task { await store.run(snapshot) }
+                        } label: {
+                            Label("继续执行", systemImage: "play")
+                        }
+                        .disabled(store.mutatingIntentIDs.contains(snapshot.id))
+
+                        Button(role: .destructive) {
+                            Task { await store.abort(snapshot) }
+                        } label: {
+                            Label("取消", systemImage: "stop")
+                        }
+                        .disabled(store.mutatingIntentIDs.contains(snapshot.id))
                     }
-                    .disabled(store.mutatingIntentIDs.contains(snapshot.id))
+
+                    if snapshot.state == .failed {
+                        Button {
+                            isConfirmingRetry = true
+                        } label: {
+                            Label("修复并重试", systemImage: "arrow.clockwise.circle")
+                        }
+                        .disabled(store.mutatingIntentIDs.contains(snapshot.id))
+                        .confirmationDialog(
+                            "重试失败的 Scope？",
+                            isPresented: $isConfirmingRetry,
+                            titleVisibility: .visible
+                        ) {
+                            Button("修复并重试") {
+                                Task { await store.retryFailed(snapshot) }
+                            }
+                            Button("取消", role: .cancel) {}
+                        } message: {
+                            Text("会追加 ScopeRetryApproved 事件、重置失败计数并以新 Generation 重新执行。仍可能再次失败。")
+                        }
+                    }
 
                     Button(role: .destructive) {
-                        Task { await store.abort(snapshot) }
+                        isConfirmingDelete = true
                     } label: {
-                        Label("取消", systemImage: "stop")
+                        Label("永久删除", systemImage: "trash")
                     }
                     .disabled(store.mutatingIntentIDs.contains(snapshot.id))
+                    .help("永久删除 Intent、事件、关联凭据与 Scope Workspace")
                 }
             }
         }
@@ -66,6 +99,20 @@ struct IntentDetailView: View {
                 ActionProposalSheet(intentID: snapshot.id)
                     .environmentObject(store)
             }
+        }
+        .confirmationDialog(
+            "永久删除这个 Intent？",
+            isPresented: $isConfirmingDelete,
+            titleVisibility: .visible
+        ) {
+            if let snapshot {
+                Button("永久删除", role: .destructive) {
+                    Task { await store.deleteIntent(snapshot) }
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将删除事件、关联凭据与 Scope Workspace。共享 CAS 工件不会盲目删除；此操作无法撤销。")
         }
     }
 

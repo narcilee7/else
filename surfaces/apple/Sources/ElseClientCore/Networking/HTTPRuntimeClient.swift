@@ -3,16 +3,19 @@ import Foundation
 public struct HTTPRuntimeClient: RuntimeClient {
     private let baseURL: URL
     private let token: String?
+    private let tokenProvider: (@Sendable () -> String?)?
     private let session: URLSession
     private let revisions = RevisionStore()
 
     public init(
         baseURL: URL,
         token: String? = nil,
+        tokenProvider: (@Sendable () -> String?)? = nil,
         session: URLSession = .shared
     ) {
         self.baseURL = baseURL
         self.token = token
+        self.tokenProvider = tokenProvider
         self.session = session
     }
 
@@ -22,6 +25,23 @@ public struct HTTPRuntimeClient: RuntimeClient {
 
     public func intent(id: IntentID) async throws -> IntentSnapshot {
         try await send(method: "GET", path: ["v1", "intents", id.rawValue])
+    }
+
+    public func deleteIntent(id: IntentID) async throws -> IntentDeletionReport {
+        try await send(
+            method: "DELETE",
+            path: ["v1", "intents", id.rawValue],
+            intentID: id
+        )
+    }
+
+    public func retryFailedIntent(id: IntentID) async throws -> IntentSnapshot {
+        let response: ScopeRetryResponse = try await send(
+            method: "POST",
+            path: ["v1", "intents", id.rawValue, "repair", "retry"],
+            intentID: id
+        )
+        return response.intent
     }
 
     public func createIntent(outcome: String, project: String?) async throws -> IntentSnapshot {
@@ -130,6 +150,65 @@ public struct HTTPRuntimeClient: RuntimeClient {
         )
     }
 
+    public func capabilities(
+        intentID: IntentID
+    ) async throws -> [RuntimeCapabilityRegistration] {
+        try await send(
+            method: "GET",
+            path: ["v1", "intents", intentID.rawValue, "capabilities"]
+        )
+    }
+
+    public func exportRuntimeData() async throws -> JSONValue {
+        try await send(method: "GET", path: ["v1", "export"])
+    }
+
+    public func diagnostics() async throws -> JSONValue {
+        try await send(method: "GET", path: ["v1", "diagnostics"])
+    }
+
+    public func cleanupOrphanLeases() async throws -> LeaseCleanupReport {
+        try await send(
+            method: "POST",
+            path: ["v1", "diagnostics", "leases", "cleanup"]
+        )
+    }
+
+    public func runtimeSettings() async throws -> RuntimeSettings {
+        try await send(method: "GET", path: ["v1", "settings"])
+    }
+
+    public func updateRuntimeSettings(
+        _ settings: RuntimeSettings
+    ) async throws -> RuntimeSettings {
+        try await send(
+            method: "POST",
+            path: ["v1", "settings"],
+            body: settings
+        )
+    }
+
+    public func previewConnectorAction(
+        intentID: IntentID,
+        connectorID: ConnectorID,
+        request: PreviewConnectorActionRequest
+    ) async throws -> ConnectorActionPreview {
+        try await send(
+            method: "POST",
+            path: [
+                "v1",
+                "intents",
+                intentID.rawValue,
+                "connectors",
+                connectorID.rawValue,
+                "actions",
+                "preview",
+            ],
+            body: request,
+            intentID: intentID
+        )
+    }
+
     private func actionCommand(
         _ command: String,
         intentID: IntentID,
@@ -219,6 +298,44 @@ public struct HTTPRuntimeClient: RuntimeClient {
         )
     }
 
+    public func attachConnectorCredential(
+        intentID: IntentID,
+        connectorID: ConnectorID,
+        credential: ConnectorCredentialInput
+    ) async throws -> ConnectorCredentialMetadata {
+        try await send(
+            method: "POST",
+            path: [
+                "v1",
+                "intents",
+                intentID.rawValue,
+                "connectors",
+                connectorID.rawValue,
+                "credential",
+            ],
+            body: credential,
+            intentID: intentID
+        )
+    }
+
+    public func revokeConnectorCredential(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async throws -> ConnectorCredentialMetadata {
+        try await send(
+            method: "DELETE",
+            path: [
+                "v1",
+                "intents",
+                intentID.rawValue,
+                "connectors",
+                connectorID.rawValue,
+                "credential",
+            ],
+            intentID: intentID
+        )
+    }
+
     public func registerConnector(
         intentID: IntentID,
         request: RegisterConnectorRequest
@@ -244,6 +361,24 @@ public struct HTTPRuntimeClient: RuntimeClient {
                 "connectors",
                 connectorID.rawValue,
                 "sync",
+            ],
+            intentID: intentID
+        )
+    }
+
+    public func repairConnector(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async throws -> ConnectorRepairReport {
+        try await send(
+            method: "POST",
+            path: [
+                "v1",
+                "intents",
+                intentID.rawValue,
+                "connectors",
+                connectorID.rawValue,
+                "repair",
             ],
             intentID: intentID
         )
@@ -283,10 +418,14 @@ public struct HTTPRuntimeClient: RuntimeClient {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 20
-        if let token, !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let resolvedToken = tokenProvider.map { $0() } ?? token
+        if let resolvedToken, !resolvedToken.isEmpty {
+            request.setValue(
+                "Bearer \(resolvedToken)",
+                forHTTPHeaderField: "Authorization"
+            )
         }
-        if method == "POST" {
+        if method == "POST" || method == "DELETE" {
             request.setValue(UUID().uuidString, forHTTPHeaderField: "Idempotency-Key")
         }
         if let intentID, let revision = await revisions.revision(for: intentID) {
@@ -349,6 +488,16 @@ private struct EmptyBody: Encodable {}
 private struct RuntimeErrorEnvelope: Decodable {
     let error: String?
     let message: String?
+}
+
+private struct ScopeRetryResponse: Decodable {
+    let retriedScopes: [String]
+    let intent: IntentSnapshot
+
+    private enum CodingKeys: String, CodingKey {
+        case retriedScopes = "retried_scopes"
+        case intent
+    }
 }
 
 private extension String {

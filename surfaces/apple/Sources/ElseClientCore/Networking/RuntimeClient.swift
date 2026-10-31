@@ -3,6 +3,8 @@ import Foundation
 public protocol RuntimeClient: Sendable {
     func listIntents() async throws -> [IntentSnapshot]
     func intent(id: IntentID) async throws -> IntentSnapshot
+    func deleteIntent(id: IntentID) async throws -> IntentDeletionReport
+    func retryFailedIntent(id: IntentID) async throws -> IntentSnapshot
     func createIntent(outcome: String, project: String?) async throws -> IntentSnapshot
     func runIntent(id: IntentID) async throws -> IntentSnapshot
     func resolveDecision(
@@ -34,6 +36,17 @@ public protocol RuntimeClient: Sendable {
         intentID: IntentID,
         request: ProposeConnectorActionRequest
     ) async throws -> ConnectorAction
+    func capabilities(intentID: IntentID) async throws -> [RuntimeCapabilityRegistration]
+    func exportRuntimeData() async throws -> JSONValue
+    func diagnostics() async throws -> JSONValue
+    func cleanupOrphanLeases() async throws -> LeaseCleanupReport
+    func runtimeSettings() async throws -> RuntimeSettings
+    func updateRuntimeSettings(_ settings: RuntimeSettings) async throws -> RuntimeSettings
+    func previewConnectorAction(
+        intentID: IntentID,
+        connectorID: ConnectorID,
+        request: PreviewConnectorActionRequest
+    ) async throws -> ConnectorActionPreview
     func attentionWindows() async throws -> [AttentionWindowRecord]
     func projectWorlds(includeResolved: Bool) async throws -> [ProjectWorld]
     func identityWorlds(includeResolved: Bool) async throws -> [IdentityWorld]
@@ -47,6 +60,15 @@ public protocol RuntimeClient: Sendable {
         intentID: IntentID,
         connectorID: ConnectorID
     ) async throws -> ConnectorHealthReport
+    func attachConnectorCredential(
+        intentID: IntentID,
+        connectorID: ConnectorID,
+        credential: ConnectorCredentialInput
+    ) async throws -> ConnectorCredentialMetadata
+    func revokeConnectorCredential(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async throws -> ConnectorCredentialMetadata
     func registerConnector(
         intentID: IntentID,
         request: RegisterConnectorRequest
@@ -55,6 +77,10 @@ public protocol RuntimeClient: Sendable {
         intentID: IntentID,
         connectorID: ConnectorID
     ) async throws -> ConnectorSyncResult
+    func repairConnector(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async throws -> ConnectorRepairReport
 }
 
 public struct ConnectorSyncResult: Codable, Equatable, Sendable {

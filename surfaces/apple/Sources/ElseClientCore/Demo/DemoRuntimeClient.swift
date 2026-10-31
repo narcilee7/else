@@ -8,6 +8,7 @@ public actor DemoRuntimeClient: RuntimeClient {
     private var correlationRenames: [String: String] = [:]
     private var correlationMerges: [String: String] = [:]
     private var correlationSplits: Set<String> = []
+    private var settings = RuntimeSettings(retentionDays: nil)
 
     public init() {
         snapshots = Self.samples
@@ -25,6 +26,32 @@ public actor DemoRuntimeClient: RuntimeClient {
             throw RuntimeClientError.http(status: 404, message: "Intent not found")
         }
         return snapshot
+    }
+
+    public func deleteIntent(id: IntentID) async throws -> IntentDeletionReport {
+        guard let index = snapshots.firstIndex(where: { $0.id == id }) else {
+            throw RuntimeClientError.http(status: 404, message: "Intent not found")
+        }
+        snapshots.remove(at: index)
+        actions[id] = nil
+        connectorsByIntent[id] = nil
+        return IntentDeletionReport(
+            intentID: id,
+            deletedEvents: 1,
+            removedCredentials: 0,
+            removedWorkspacePaths: 0,
+            cleanupErrors: [],
+            retainedSharedArtifacts: true
+        )
+    }
+
+    public func retryFailedIntent(id: IntentID) async throws -> IntentSnapshot {
+        try update(id: id) { snapshot in
+            guard snapshot.state == .failed else {
+                return snapshot
+            }
+            return snapshot.replacing(state: .active, decisions: [])
+        }
     }
 
     public func createIntent(outcome: String, project: String?) async throws -> IntentSnapshot {
@@ -179,6 +206,118 @@ public actor DemoRuntimeClient: RuntimeClient {
         return action
     }
 
+    public func capabilities(
+        intentID: IntentID
+    ) async throws -> [RuntimeCapabilityRegistration] {
+        []
+    }
+
+    public func exportRuntimeData() async throws -> JSONValue {
+        .object([
+            "export_version": .number(1),
+            "protocol_version": .string("0.1.0"),
+            "exported_at": .string(Date.now.formatted(.iso8601)),
+            "intents": .array([]),
+        ])
+    }
+
+    public func diagnostics() async throws -> JSONValue {
+        .object([
+            "generated_at": .string(Date.now.formatted(.iso8601)),
+            "runtime_version": .string("0.1.0"),
+            "protocol_version": .string("0.1.0"),
+            "healthy": .bool(true),
+            "database_integrity": .string("ok"),
+            "event_count": .number(76),
+            "event_cursor": .number(76),
+            "intent_count": .number(2),
+            "connectors": .array([]),
+        ])
+    }
+
+    public func cleanupOrphanLeases() async throws -> LeaseCleanupReport {
+        LeaseCleanupReport(
+            scannedIntents: 2,
+            orphanLeases: 0,
+            revokedLeases: 0,
+            sandboxFinishRecords: 0,
+            skippedActiveLeases: 0
+        )
+    }
+
+    public func runtimeSettings() async throws -> RuntimeSettings {
+        settings
+    }
+
+    public func updateRuntimeSettings(
+        _ settings: RuntimeSettings
+    ) async throws -> RuntimeSettings {
+        self.settings = settings
+        return settings
+    }
+
+    public func previewConnectorAction(
+        intentID: IntentID,
+        connectorID: ConnectorID,
+        request: PreviewConnectorActionRequest
+    ) async throws -> ConnectorActionPreview {
+        let current: JSONValue =
+            switch request.capability {
+            case "calendar.event.update":
+                .object([
+                    "summary": .string("旧标题"),
+                    "location": .string("会议室 A"),
+                    "status": .string("tentative"),
+                ])
+            case "linear.issue.update", "linear.issue.comment":
+                .object([
+                    "title": .string("旧 Issue 标题"),
+                    "description": .string("旧描述"),
+                    "priority": .number(1),
+                ])
+            case "notion.page.update":
+                .object([
+                    "properties": .object([
+                        "Name": .object([
+                            "title": .array([
+                                .object([
+                                    "type": .string("text"),
+                                    "text": .object([
+                                        "content": .string("旧页面标题"),
+                                    ]),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                    "archived": .bool(false),
+                ])
+            case "notion.database.update":
+                .object([
+                    "title": .array([
+                        .object([
+                            "type": .string("text"),
+                            "text": .object([
+                                "content": .string("旧数据库标题"),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            default:
+                .object([:])
+            }
+        let proposedObject = request.input.objectValue.map { fields in
+            fields["changes"]?.objectValue ?? fields
+        } ?? [:]
+        return ConnectorActionPreview(
+            connectorID: connectorID,
+            capability: request.capability,
+            target: request.target,
+            current: current,
+            proposed: .object(proposedObject),
+            checkedAt: Date()
+        )
+    }
+
     public func attentionWindows() async throws -> [AttentionWindowRecord] {
         snapshots.compactMap { snapshot in
             guard snapshot.state == .needsDecision, let request = snapshot.decisions.first else {
@@ -291,7 +430,8 @@ public actor DemoRuntimeClient: RuntimeClient {
             connectorID: connector.id,
             provider: connector.manifest.provider,
             health: .healthy,
-            credentialConfigured: connector.credential != nil,
+            credentialConfigured: connector.credential?.revokedAt == nil
+                && connector.credential != nil,
             credentialScopes: connector.credential?.scopes ?? [],
             lastAttemptAt: Date().addingTimeInterval(-120),
             lastSuccessAt: Date().addingTimeInterval(-120),
@@ -303,6 +443,71 @@ public actor DemoRuntimeClient: RuntimeClient {
             backfillInProgress: false,
             pagesSynced: 3
         )
+    }
+
+    public func attachConnectorCredential(
+        intentID: IntentID,
+        connectorID: ConnectorID,
+        credential: ConnectorCredentialInput
+    ) async throws -> ConnectorCredentialMetadata {
+        guard let index = connectorsByIntent[intentID]?.firstIndex(where: {
+            $0.id == connectorID
+        }) else {
+            throw RuntimeClientError.http(status: 404, message: "Connector not found")
+        }
+        let old = connectorsByIntent[intentID]![index]
+        let metadata = ConnectorCredentialMetadata(
+            reference: UUID().uuidString,
+            authMode: old.manifest.authMode,
+            scopes: credential.scopes,
+            expiresAt: credential.expiresAt,
+            configuredAt: Date(),
+            revokedAt: nil
+        )
+        connectorsByIntent[intentID]![index] = ConnectorRegistration(
+            id: old.id,
+            name: old.name,
+            adapter: old.adapter,
+            source: old.source,
+            enabled: old.enabled,
+            manifest: old.manifest,
+            syncIntervalSeconds: old.syncIntervalSeconds,
+            registeredAt: old.registeredAt,
+            credential: metadata
+        )
+        return metadata
+    }
+
+    public func revokeConnectorCredential(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async throws -> ConnectorCredentialMetadata {
+        guard let index = connectorsByIntent[intentID]?.firstIndex(where: {
+            $0.id == connectorID
+        }), let existing = connectorsByIntent[intentID]?[index].credential else {
+            throw RuntimeClientError.http(status: 404, message: "Credential not found")
+        }
+        let old = connectorsByIntent[intentID]![index]
+        let metadata = ConnectorCredentialMetadata(
+            reference: existing.reference,
+            authMode: existing.authMode,
+            scopes: existing.scopes,
+            expiresAt: existing.expiresAt,
+            configuredAt: existing.configuredAt,
+            revokedAt: Date()
+        )
+        connectorsByIntent[intentID]![index] = ConnectorRegistration(
+            id: old.id,
+            name: old.name,
+            adapter: old.adapter,
+            source: old.source,
+            enabled: old.enabled,
+            manifest: old.manifest,
+            syncIntervalSeconds: old.syncIntervalSeconds,
+            registeredAt: old.registeredAt,
+            credential: metadata
+        )
+        return metadata
     }
 
     public func registerConnector(
@@ -357,6 +562,22 @@ public actor DemoRuntimeClient: RuntimeClient {
             hasMore: false,
             backfillComplete: true,
             hydrated: false
+        )
+    }
+
+    public func repairConnector(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async throws -> ConnectorRepairReport {
+        let sync = try await syncConnector(
+            intentID: intentID,
+            connectorID: connectorID
+        )
+        return ConnectorRepairReport(
+            connectorID: connectorID,
+            resetCursors: 1,
+            sync: sync,
+            error: nil
         )
     }
 
@@ -709,6 +930,42 @@ public actor DemoRuntimeClient: RuntimeClient {
                         authMode: .oauth,
                         scopes: ["calendar.events"],
                         expiresAt: Date().addingTimeInterval(3_600),
+                        configuredAt: Date().addingTimeInterval(-86_400),
+                        revokedAt: nil
+                    )
+                ),
+                ConnectorRegistration(
+                    id: ConnectorID("demo-linear"),
+                    name: "Linear",
+                    adapter: "linear.graphql",
+                    source: "https://api.linear.app/graphql",
+                    enabled: true,
+                    manifest: sampleManifests[1],
+                    syncIntervalSeconds: 300,
+                    registeredAt: Date().addingTimeInterval(-86_400),
+                    credential: ConnectorCredentialMetadata(
+                        reference: "demo-linear-credential",
+                        authMode: .apiToken,
+                        scopes: ["issues:read"],
+                        expiresAt: nil,
+                        configuredAt: Date().addingTimeInterval(-86_400),
+                        revokedAt: nil
+                    )
+                ),
+                ConnectorRegistration(
+                    id: ConnectorID("demo-notion"),
+                    name: "Notion",
+                    adapter: "notion.api",
+                    source: "https://api.notion.com/v1/search",
+                    enabled: true,
+                    manifest: sampleManifests[2],
+                    syncIntervalSeconds: 300,
+                    registeredAt: Date().addingTimeInterval(-86_400),
+                    credential: ConnectorCredentialMetadata(
+                        reference: "demo-notion-credential",
+                        authMode: .apiToken,
+                        scopes: ["pages:read", "databases:read"],
+                        expiresAt: nil,
                         configuredAt: Date().addingTimeInterval(-86_400),
                         revokedAt: nil
                     )

@@ -3,7 +3,8 @@
 use else_gateway::{ExecContext, ExternalActionExecutor, GatewayError, ToolGateway};
 use else_protocol::capability::{CapabilityAdapter, ExternalActionBinding};
 use else_protocol::connector::{
-    ConnectorAction, ConnectorActionStatus, ConnectorCredential, ConnectorRegistration,
+    ConnectorAction, ConnectorActionPreview, ConnectorActionStatus, ConnectorCredential,
+    ConnectorRegistration,
 };
 use else_protocol::effect::{EffectConclusion, ToolCall, ToolOutcome, ToolStatus};
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
@@ -13,6 +14,65 @@ use serde_json::{json, Value};
 use crate::{ApiError, Result, Runtime};
 
 impl Runtime {
+    pub fn preview_connector_action(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+        capability: &str,
+        target: &str,
+        input: &Value,
+    ) -> Result<ConnectorActionPreview> {
+        if capability.trim().is_empty() || target.trim().is_empty() {
+            return Err(ApiError::Conflict(
+                "connector action capability and target cannot be empty".into(),
+            ));
+        }
+        let projection = self.projection(intent_id)?;
+        let connector = projection
+            .connectors
+            .get(connector_id)
+            .cloned()
+            .ok_or_else(|| ApiError::NotFound(format!("connector {connector_id}")))?;
+        if !connector
+            .manifest
+            .write_capabilities
+            .iter()
+            .any(|declared| declared == capability)
+        {
+            return Err(ApiError::Conflict(format!(
+                "connector {connector_id} does not declare write capability {capability}"
+            )));
+        }
+        let adapter = self
+            .connector_adapters
+            .get(&connector.adapter)
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("connector adapter {}", connector.adapter))
+            })?;
+        let credential = self.connector_credential(&connector)?;
+        let current = adapter
+            .preview_action(
+                &connector.source,
+                capability,
+                target,
+                credential.as_ref(),
+                input,
+            )
+            .map_err(|error| ApiError::Conflict(error.to_string()))?;
+        let proposed = input
+            .get("changes")
+            .cloned()
+            .unwrap_or_else(|| input.clone());
+        Ok(ConnectorActionPreview {
+            connector_id: connector_id.clone(),
+            capability: capability.into(),
+            target: target.into(),
+            current,
+            proposed,
+            checked_at: chrono::Utc::now(),
+        })
+    }
+
     pub fn propose_connector_action(
         &self,
         intent_id: &IntentId,

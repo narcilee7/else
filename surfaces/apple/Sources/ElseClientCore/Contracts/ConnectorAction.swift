@@ -137,6 +137,116 @@ public struct ConnectorAction: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public struct ConnectorActionPreview: Codable, Equatable, Sendable {
+    public let connectorID: ConnectorID
+    public let capability: String
+    public let target: String
+    public let current: JSONValue
+    public let proposed: JSONValue
+    public let checkedAt: Date
+
+    public init(
+        connectorID: ConnectorID,
+        capability: String,
+        target: String,
+        current: JSONValue,
+        proposed: JSONValue,
+        checkedAt: Date
+    ) {
+        self.connectorID = connectorID
+        self.capability = capability
+        self.target = target
+        self.current = current
+        self.proposed = proposed
+        self.checkedAt = checkedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case connectorID = "connector_id"
+        case capability
+        case target
+        case current
+        case proposed
+        case checkedAt = "checked_at"
+    }
+}
+
+public struct ConnectorActionFieldDiff: Identifiable, Equatable, Sendable {
+    public let path: String
+    public let current: JSONValue
+    public let proposed: JSONValue
+
+    public var id: String { path }
+}
+
+public enum ConnectorActionInputDiff {
+    public static func changes(
+        current: JSONValue,
+        proposed: JSONValue
+    ) -> [ConnectorActionFieldDiff] {
+        let currentFields = flattened(current)
+        let proposedFields = flattened(proposed)
+        let paths = proposedFields.keys.sorted()
+        return paths.compactMap { path in
+            let before = currentFields[path] ?? .null
+            let after = proposedFields[path] ?? .null
+            guard before != after else {
+                return nil
+            }
+            return ConnectorActionFieldDiff(
+                path: path,
+                current: before,
+                proposed: after
+            )
+        }
+    }
+
+    public static func display(_ value: JSONValue) -> String {
+        switch value {
+        case let .string(value): value
+        case let .number(value):
+            value.rounded() == value
+                ? String(Int(value))
+                : String(value)
+        case let .bool(value): value ? "true" : "false"
+        case .null: "未设置"
+        case let .object(value):
+            encode(.object(value))
+        case let .array(value):
+            encode(.array(value))
+        }
+    }
+
+    private static func flattened(
+        _ value: JSONValue,
+        prefix: String = ""
+    ) -> [String: JSONValue] {
+        switch value {
+        case let .object(fields):
+            return fields.reduce(into: [:]) { result, item in
+                let path = prefix.isEmpty ? item.key : "\(prefix).\(item.key)"
+                result.merge(flattened(item.value, prefix: path)) { _, new in new }
+            }
+        case let .array(values):
+            return values.enumerated().reduce(into: [:]) { result, item in
+                let path = prefix.isEmpty ? "[\(item.offset)]" : "\(prefix)[\(item.offset)]"
+                result.merge(flattened(item.element, prefix: path)) { _, new in new }
+            }
+        default:
+            return [prefix: value]
+        }
+    }
+
+    private static func encode(_ value: JSONValue) -> String {
+        guard let data = try? JSONEncoder().encode(value),
+              let string = String(data: data, encoding: .utf8)
+        else {
+            return "{}"
+        }
+        return string
+    }
+}
+
 public struct ProposeConnectorActionRequest: Codable, Equatable, Sendable {
     public let connectorID: ConnectorID
     public let capability: String
@@ -164,5 +274,17 @@ public struct ProposeConnectorActionRequest: Codable, Equatable, Sendable {
         case target
         case input
         case idempotencyKey = "idempotency_key"
+    }
+}
+
+public struct PreviewConnectorActionRequest: Codable, Equatable, Sendable {
+    public let capability: String
+    public let target: String
+    public let input: JSONValue
+
+    public init(capability: String, target: String, input: JSONValue) {
+        self.capability = capability
+        self.target = target
+        self.input = input
     }
 }

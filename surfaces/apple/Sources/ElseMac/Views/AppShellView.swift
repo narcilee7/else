@@ -1,8 +1,10 @@
+import AppKit
 import ElseClientCore
 import SwiftUI
 
 struct AppShellView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         NavigationSplitView {
@@ -38,6 +40,30 @@ struct AppShellView: View {
             store.selectedIntentID = intentID
             store.section = .decisions
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .elseOpenRoute)
+        ) { notification in
+            guard let route = notification.object as? ElseDeepLink else {
+                return
+            }
+            open(route)
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .elseQuickIntent)
+        ) { notification in
+            guard let outcome = notification.object as? String else {
+                return
+            }
+            Task {
+                await store.createIntent(outcome: outcome, project: nil)
+            }
+        }
+        .onOpenURL { url in
+            guard let route = ElseDeepLink(url: url) else {
+                return
+            }
+            open(route)
+        }
         .sheet(isPresented: $store.isCreatingIntent) {
             NewIntentView()
                 .environmentObject(store)
@@ -55,6 +81,12 @@ struct AppShellView: View {
         } message: {
             Text(store.operationError ?? "")
         }
+    }
+
+    private func open(_ route: ElseDeepLink) {
+        store.open(route)
+        openWindow(id: "main")
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 }
 

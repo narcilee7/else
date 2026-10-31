@@ -12,9 +12,9 @@ use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, AgentBindingState, AgentTransport, CapabilityRegistration,
 };
 use else_protocol::connector::{
-    ConnectorAction, ConnectorCredential, ConnectorCredentialMetadata, ConnectorHealthReport,
-    ConnectorManifest, ConnectorPolicy, ConnectorRegistration, ConnectorSyncResult,
-    IntentCandidate,
+    ConnectorAction, ConnectorActionPreview, ConnectorCredential, ConnectorCredentialMetadata,
+    ConnectorHealthReport, ConnectorManifest, ConnectorPolicy, ConnectorRegistration,
+    ConnectorSyncResult, IntentCandidate,
 };
 use else_protocol::ids::{
     AgentBindingId, AgentId, AttentionId, CapabilityId, ConnectorActionId, ConnectorId,
@@ -24,7 +24,10 @@ use else_protocol::intent::IntentSpec;
 use else_protocol::plan::Plan;
 
 use crate::kernel::KernelDrive;
-use crate::{ApiError, Result, Runtime};
+use crate::{
+    ApiError, ConnectorRepairReport, IntentDeletionReport, LeaseCleanupReport, Result, Runtime,
+    RuntimeDataExport, RuntimeDiagnosticReport, RuntimeSettings,
+};
 
 type Reply<T> = SyncSender<Result<T>>;
 
@@ -44,6 +47,30 @@ enum Command {
     Events {
         intent_id: IntentId,
         reply: Reply<Vec<StoredEvent>>,
+    },
+    ExportData {
+        reply: Reply<RuntimeDataExport>,
+    },
+    DeleteIntent {
+        intent_id: IntentId,
+        reply: Reply<IntentDeletionReport>,
+    },
+    RetryFailedScopes {
+        intent_id: IntentId,
+        reply: Reply<(Vec<ScopeId>, IntentProjection)>,
+    },
+    GetRuntimeSettings {
+        reply: Reply<RuntimeSettings>,
+    },
+    UpdateRuntimeSettings {
+        settings: RuntimeSettings,
+        reply: Reply<RuntimeSettings>,
+    },
+    Diagnostics {
+        reply: Reply<RuntimeDiagnosticReport>,
+    },
+    CleanupOrphanLeases {
+        reply: Reply<LeaseCleanupReport>,
     },
     Capabilities {
         intent_id: IntentId,
@@ -136,6 +163,14 @@ enum Command {
         connector_id: ConnectorId,
         reply: Reply<ConnectorHealthReport>,
     },
+    PreviewConnectorAction {
+        intent_id: IntentId,
+        connector_id: ConnectorId,
+        capability: String,
+        target: String,
+        input: serde_json::Value,
+        reply: Reply<ConnectorActionPreview>,
+    },
     ProposeConnectorAction {
         intent_id: IntentId,
         connector_id: ConnectorId,
@@ -171,6 +206,11 @@ enum Command {
         intent_id: IntentId,
         connector_id: ConnectorId,
         reply: Reply<ConnectorSyncResult>,
+    },
+    RepairConnector {
+        intent_id: IntentId,
+        connector_id: ConnectorId,
+        reply: Reply<ConnectorRepairReport>,
     },
     IngestConnectorWebhook {
         intent_id: IntentId,
@@ -319,6 +359,43 @@ impl RuntimeHandle {
             intent_id: intent_id.clone(),
             reply,
         })
+    }
+
+    pub fn export_data(&self) -> Result<RuntimeDataExport> {
+        self.request(|reply| Command::ExportData { reply })
+    }
+
+    pub fn delete_intent(&self, intent_id: &IntentId) -> Result<IntentDeletionReport> {
+        self.request(|reply| Command::DeleteIntent {
+            intent_id: intent_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn retry_failed_scopes(
+        &self,
+        intent_id: &IntentId,
+    ) -> Result<(Vec<ScopeId>, IntentProjection)> {
+        self.request(|reply| Command::RetryFailedScopes {
+            intent_id: intent_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn runtime_settings(&self) -> Result<RuntimeSettings> {
+        self.request(|reply| Command::GetRuntimeSettings { reply })
+    }
+
+    pub fn update_runtime_settings(&self, settings: RuntimeSettings) -> Result<RuntimeSettings> {
+        self.request(|reply| Command::UpdateRuntimeSettings { settings, reply })
+    }
+
+    pub fn diagnostics(&self) -> Result<RuntimeDiagnosticReport> {
+        self.request(|reply| Command::Diagnostics { reply })
+    }
+
+    pub fn cleanup_orphan_leases(&self) -> Result<LeaseCleanupReport> {
+        self.request(|reply| Command::CleanupOrphanLeases { reply })
     }
 
     pub fn capabilities(&self, intent_id: &IntentId) -> Result<Vec<CapabilityRegistration>> {
@@ -558,6 +635,24 @@ impl RuntimeHandle {
         })
     }
 
+    pub fn preview_connector_action(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+        capability: &str,
+        target: &str,
+        input: serde_json::Value,
+    ) -> Result<ConnectorActionPreview> {
+        self.request(|reply| Command::PreviewConnectorAction {
+            intent_id: intent_id.clone(),
+            connector_id: connector_id.clone(),
+            capability: capability.into(),
+            target: target.into(),
+            input,
+            reply,
+        })
+    }
+
     pub fn execute_connector_action(
         &self,
         intent_id: &IntentId,
@@ -611,6 +706,18 @@ impl RuntimeHandle {
         connector_id: &ConnectorId,
     ) -> Result<ConnectorSyncResult> {
         self.request(|reply| Command::SyncConnector {
+            intent_id: intent_id.clone(),
+            connector_id: connector_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn repair_connector(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+    ) -> Result<ConnectorRepairReport> {
+        self.request(|reply| Command::RepairConnector {
             intent_id: intent_id.clone(),
             connector_id: connector_id.clone(),
             reply,
@@ -951,6 +1058,27 @@ fn handle_command(runtime: &Runtime, command: Command) {
         Command::Events { intent_id, reply } => {
             let _ = reply.send(runtime.events(&intent_id));
         }
+        Command::ExportData { reply } => {
+            let _ = reply.send(runtime.export_data());
+        }
+        Command::DeleteIntent { intent_id, reply } => {
+            let _ = reply.send(runtime.delete_intent(&intent_id));
+        }
+        Command::RetryFailedScopes { intent_id, reply } => {
+            let _ = reply.send(runtime.retry_failed_scopes(&intent_id));
+        }
+        Command::GetRuntimeSettings { reply } => {
+            let _ = reply.send(runtime.runtime_settings());
+        }
+        Command::UpdateRuntimeSettings { settings, reply } => {
+            let _ = reply.send(runtime.update_runtime_settings(settings));
+        }
+        Command::Diagnostics { reply } => {
+            let _ = reply.send(runtime.diagnostics());
+        }
+        Command::CleanupOrphanLeases { reply } => {
+            let _ = reply.send(runtime.cleanup_orphan_leases());
+        }
         Command::Capabilities { intent_id, reply } => {
             let _ = reply.send(runtime.capabilities(&intent_id));
         }
@@ -1091,6 +1219,22 @@ fn handle_command(runtime: &Runtime, command: Command) {
         } => {
             let _ = reply.send(runtime.connector_health(&intent_id, &connector_id));
         }
+        Command::PreviewConnectorAction {
+            intent_id,
+            connector_id,
+            capability,
+            target,
+            input,
+            reply,
+        } => {
+            let _ = reply.send(runtime.preview_connector_action(
+                &intent_id,
+                &connector_id,
+                &capability,
+                &target,
+                &input,
+            ));
+        }
         Command::ProposeConnectorAction {
             intent_id,
             connector_id,
@@ -1142,6 +1286,13 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.sync_connector(&intent_id, &connector_id));
+        }
+        Command::RepairConnector {
+            intent_id,
+            connector_id,
+            reply,
+        } => {
+            let _ = reply.send(runtime.repair_connector(&intent_id, &connector_id));
         }
         Command::IngestConnectorWebhook {
             intent_id,
@@ -1308,6 +1459,7 @@ fn handle_command(runtime: &Runtime, command: Command) {
 }
 
 fn reconcile_all(runtime: &Runtime) -> Option<DateTime<Utc>> {
+    let _ = runtime.enforce_retention(Utc::now());
     let _ = runtime.refresh_dirty_mcp_servers();
     let mut next_wake = runtime.sync_due_connectors(Utc::now());
     let Ok(intents) = runtime.list_intents() else {

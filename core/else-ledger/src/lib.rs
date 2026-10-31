@@ -145,6 +145,19 @@ impl Ledger {
         Ok(seq as u64)
     }
 
+    pub fn event_count(&self) -> Result<u64> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
+        Ok(count as u64)
+    }
+
+    pub fn integrity_check(&self) -> Result<String> {
+        Ok(self
+            .conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))?)
+    }
+
     /// 按 seq 升序读取全部事件。
     pub fn read_all(&self) -> Result<Vec<StoredEvent>> {
         self.read_where("1 = 1", &[])
@@ -158,6 +171,15 @@ impl Ledger {
     /// 从检查点水位之后继续读取（增量重放）。
     pub fn read_after(&self, cursor: u64) -> Result<Vec<StoredEvent>> {
         self.read_where("seq > ?1", &[&(cursor as i64)])
+    }
+
+    /// 用户显式永久删除某个 Intent 的全部事件。
+    /// 这是唯一允许破坏 append-only 的维护边界；AUTOINCREMENT 保证 seq 不复用。
+    pub fn delete_intent(&self, intent_id: &IntentId) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM events WHERE intent_id = ?1",
+            params![intent_id.to_string()],
+        )?)
     }
 
     fn read_where(
@@ -231,6 +253,7 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::ConnectorActionProposed { .. } => "connector_action_proposed",
         P::ConnectorActionStateChanged { .. } => "connector_action_state_changed",
         P::ConnectorSyncCheckpointed { .. } => "connector_sync_checkpointed",
+        P::ConnectorCursorReset { .. } => "connector_cursor_reset",
         P::WorldItemResolved { .. } => "world_item_resolved",
         P::WorldCorrelationCorrected { .. } => "world_correlation_corrected",
         P::ExternalFactIngested { .. } => "external_fact_ingested",
@@ -242,6 +265,7 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::RunStarted { .. } => "run_started",
         P::RunFinished { .. } => "run_finished",
         P::ScopeFailureRecorded { .. } => "scope_failure_recorded",
+        P::ScopeRetryApproved => "scope_retry_approved",
         P::HarnessOutput { .. } => "harness_output",
         P::ModelCalled { .. } => "model_called",
         P::ModelCompleted { .. } => "model_completed",

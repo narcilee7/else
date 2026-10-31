@@ -19,9 +19,18 @@ use else_protocol::effect::SideEffectKind;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::ids::{CapabilityId, ConnectorId, IntentId};
 use else_protocol::intent::{AttentionPolicy, Authority, Criterion};
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::{ApiError, IntentDraft, Result, Runtime};
+
+#[derive(Debug, Serialize)]
+pub struct ConnectorRepairReport {
+    pub connector_id: ConnectorId,
+    pub reset_cursors: usize,
+    pub sync: Option<ConnectorSyncResult>,
+    pub error: Option<String>,
+}
 
 impl Runtime {
     pub fn register_calendar_connector(
@@ -166,6 +175,11 @@ impl Runtime {
             if projection.capabilities.contains_key(&id) {
                 continue;
             }
+            let input_schema = self
+                .connector_adapters
+                .get(&connector.adapter)
+                .and_then(|adapter| adapter.action_schema(operation))
+                .unwrap_or_else(|| serde_json::json!({"type":"object"}));
             self.ledger.append(&EventEnvelope::new(
                 intent_id.clone(),
                 root.clone(),
@@ -186,7 +200,7 @@ impl Runtime {
                             // authorization is conservative until it does.
                             effect: SideEffectKind::Unknown,
                             idempotency_required: true,
-                            input_schema: serde_json::json!({"type":"object"}),
+                            input_schema,
                         },
                         adapter: CapabilityAdapter::ExternalAction(ExternalActionBinding {
                             connector_id: connector.id.clone(),
@@ -437,6 +451,64 @@ impl Runtime {
             }
         }
         result
+    }
+
+    /// 诊断修复：移除 Connector 的所有持久 Cursor，重置退避状态，再重新同步。
+    pub fn repair_connector(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+    ) -> Result<ConnectorRepairReport> {
+        let projection = self.projection(intent_id)?;
+        if !projection.connectors.contains_key(connector_id) {
+            return Err(ApiError::NotFound(format!("connector {connector_id}")));
+        }
+        let streams = projection
+            .connector_cursors
+            .keys()
+            .filter(|(id, _)| id == connector_id)
+            .map(|(_, stream)| stream.clone())
+            .collect::<Vec<_>>();
+        for stream_id in &streams {
+            let (root, generation, revision) = self.kernel_context(intent_id)?;
+            self.ledger.append(&EventEnvelope::new(
+                intent_id.clone(),
+                root,
+                generation,
+                revision,
+                Actor::User,
+                EventPayload::ConnectorCursorReset {
+                    connector_id: connector_id.clone(),
+                    stream_id: stream_id.clone(),
+                },
+            ))?;
+        }
+        let previous = projection.connector_sync_status.get(connector_id);
+        self.append_connector_sync_status(
+            intent_id,
+            ConnectorSyncStatus {
+                connector_id: connector_id.clone(),
+                last_attempt_at: previous.and_then(|status| status.last_attempt_at),
+                last_success_at: previous.and_then(|status| status.last_success_at),
+                consecutive_failures: 0,
+                last_error: None,
+                next_sync_at: Utc::now(),
+            },
+        )?;
+        match self.sync_connector(intent_id, connector_id) {
+            Ok(sync) => Ok(ConnectorRepairReport {
+                connector_id: connector_id.clone(),
+                reset_cursors: streams.len(),
+                sync: Some(sync),
+                error: None,
+            }),
+            Err(error) => Ok(ConnectorRepairReport {
+                connector_id: connector_id.clone(),
+                reset_cursors: streams.len(),
+                sync: None,
+                error: Some(error.to_string()),
+            }),
+        }
     }
 
     pub(crate) fn connector_credential(

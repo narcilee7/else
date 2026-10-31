@@ -115,3 +115,21 @@ public enum IntentState: String, Codable, Sendable {
     case cancelled
     case failed
 }
+
+public struct IntentDeletionReport: Codable, Equatable, Sendable {
+    public let intentID: IntentID
+    public let deletedEvents: Int
+    public let removedCredentials: Int
+    public let removedWorkspacePaths: Int
+    public let cleanupErrors: [String]
+    public let retainedSharedArtifacts: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case intentID = "intent_id"
+        case deletedEvents = "deleted_events"
+        case removedCredentials = "removed_credentials"
+        case removedWorkspacePaths = "removed_workspace_paths"
+        case cleanupErrors = "cleanup_errors"
+        case retainedSharedArtifacts = "retained_shared_artifacts"
+    }
+}

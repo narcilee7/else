@@ -26,6 +26,8 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 - [MVP](./MVP.md) — the no-scale MVP cutline: Memory, Codex / Claude Code harnesses, local dispatch, shared context and resources, followed by a separate Scale phase.（中文）
 - [ARCHITECTURE](./ARCHITECTURE.md) — system design, invariants, and technology choices: Rust core, event sourcing on SQLite, pluggable artifact backends (CAS / Git), MCP + model gateways, local & cloud environments.（中文）
+- [CURRENT_ARCHITECTURE](./CURRENT_ARCHITECTURE.md) — 当前实现快照：Agent 通信与调度、NativeSandbox 上云路径、macOS 产品化状态与剩余缺口。（中文）
+- [PRODUCT_READINESS](./PRODUCT_READINESS.md) — Personal Agent 产品化差距、验证边界、发布阻塞与推荐实施顺序。（中文）
 - [DESIGN](./DESIGN.md) — visual language, Motion grammar, component rules, accessibility, and the three-surface experience.（中文）
 - [GAPS](./GAPS.md) — prioritized product, kernel, release, and scale-readiness gaps.（中文）
 - [PERSONAL_AGENT_PROGRESS](./PERSONAL_AGENT_PROGRESS.md) — Personal Agent 产品阶段、出口条件、阻塞项与迭代记录。（中文）

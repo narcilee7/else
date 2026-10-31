@@ -57,12 +57,16 @@ final class AppStore: ObservableObject {
     @Published private(set) var identityWorlds: [IdentityWorld] = []
     @Published private(set) var connectorManifests: [ConnectorManifest] = []
     @Published private(set) var connectorsByIntent: [IntentID: [ConnectorRegistration]] = [:]
+    @Published private(set) var capabilitiesByIntent:
+        [IntentID: [RuntimeCapabilityRegistration]] = [:]
     @Published private(set) var connectorHealth: [ConnectorID: ConnectorHealthReport] = [:]
     @Published private(set) var resolvingWorldItemIDs: Set<WorldItemID> = []
     @Published private(set) var mutatingActionIDs: Set<ConnectorActionID> = []
+    @Published private(set) var authenticatingConnectorIDs: Set<ConnectorID> = []
     @Published private(set) var notificationsEnabled: Bool
     @Published private(set) var backgroundRefreshEnabled: Bool
     @Published private(set) var backgroundRefreshInterval: TimeInterval
+    @Published private(set) var retentionDays: UInt64?
     @Published private(set) var connection: RuntimeConnection = .idle
     @Published var section: AppSection = .today
     @Published var selectedIntentID: IntentID?
@@ -74,6 +78,7 @@ final class AppStore: ObservableObject {
 
     private let client: any RuntimeClient
     private let configuration: ClientConfiguration
+    private let runtimeService: RuntimeServiceManager
     private let defaults: UserDefaults
     private var didLoad = false
     private var backgroundTask: Task<Void, Never>?
@@ -82,10 +87,12 @@ final class AppStore: ObservableObject {
     init(
         client: any RuntimeClient,
         configuration: ClientConfiguration,
+        runtimeService: RuntimeServiceManager,
         defaults: UserDefaults = .standard
     ) {
         self.client = client
         self.configuration = configuration
+        self.runtimeService = runtimeService
         self.defaults = defaults
         notificationsEnabled = defaults.bool(forKey: PreferenceKey.notifications)
         backgroundRefreshEnabled = defaults.object(
@@ -94,6 +101,11 @@ final class AppStore: ObservableObject {
         backgroundRefreshInterval = defaults.object(
             forKey: PreferenceKey.refreshInterval
         ) as? TimeInterval ?? 30
+        retentionDays = nil
+        if let intentID = Self.launchIntentID {
+            selectedIntentID = IntentID(intentID)
+            section = .decisions
+        }
     }
 
     var runtimeURL: URL { configuration.runtimeURL }
@@ -131,6 +143,13 @@ final class AppStore: ObservableObject {
     func load() async {
         guard !didLoad else { return }
         didLoad = true
+        if !configuration.usesDemoRuntime {
+            runtimeService.ensureEnabledIfNeeded()
+            if runtimeService.status != .notFound,
+               runtimeService.status != .unavailable {
+                _ = await runtimeService.waitUntilReachable()
+            }
+        }
         await refresh()
         restartBackgroundTask()
     }
@@ -151,14 +170,24 @@ final class AppStore: ObservableObject {
                 selectedIntentID = snapshots.first?.id
             }
             var actions: [IntentID: [ConnectorAction]] = [:]
+            var capabilities: [IntentID: [RuntimeCapabilityRegistration]] = [:]
             for snapshot in snapshots {
                 if let intentActions = try? await client.connectorActions(
                     intentID: snapshot.id
                 ), !intentActions.isEmpty {
                     actions[snapshot.id] = intentActions
                 }
+                if let intentCapabilities = try? await client.capabilities(
+                    intentID: snapshot.id
+                ), !intentCapabilities.isEmpty {
+                    capabilities[snapshot.id] = intentCapabilities
+                }
             }
             actionsByIntent = actions
+            capabilitiesByIntent = capabilities
+            if let settings = try? await client.runtimeSettings() {
+                retentionDays = settings.retentionDays
+            }
         } catch {
             connection = .failed(error.localizedDescription)
             operationError = error.localizedDescription
@@ -199,6 +228,12 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func retryFailed(_ snapshot: IntentSnapshot) async {
+        await mutate(snapshot.id) {
+            try await self.client.retryFailedIntent(id: snapshot.id)
+        }
+    }
+
     func resolve(
         snapshot: IntentSnapshot,
         request: AttentionRequest,
@@ -219,6 +254,30 @@ final class AppStore: ObservableObject {
                 id: snapshot.id,
                 reason: "用户从 macOS 客户端取消"
             )
+        }
+    }
+
+    func deleteIntent(_ snapshot: IntentSnapshot) async {
+        guard !mutatingIntentIDs.contains(snapshot.id) else {
+            return
+        }
+        mutatingIntentIDs.insert(snapshot.id)
+        defer { mutatingIntentIDs.remove(snapshot.id) }
+        do {
+            let report = try await client.deleteIntent(id: snapshot.id)
+            snapshots.removeAll { $0.id == snapshot.id }
+            actionsByIntent[snapshot.id] = nil
+            connectorsByIntent[snapshot.id] = nil
+            capabilitiesByIntent[snapshot.id] = nil
+            if selectedIntentID == snapshot.id {
+                selectedIntentID = snapshots.first?.id
+            }
+            if !report.cleanupErrors.isEmpty {
+                operationError = report.cleanupErrors.joined(separator: "\n")
+            }
+            await refresh()
+        } catch {
+            operationError = error.localizedDescription
         }
     }
 
@@ -293,8 +352,79 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func previewConnectorAction(
+        intentID: IntentID,
+        connectorID: ConnectorID,
+        request: PreviewConnectorActionRequest
+    ) async -> ConnectorActionPreview? {
+        do {
+            return try await client.previewConnectorAction(
+                intentID: intentID,
+                connectorID: connectorID,
+                request: request
+            )
+        } catch {
+            operationError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func exportRuntimeData() async -> Data? {
+        do {
+            let export = try await client.exportRuntimeData()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            return try encoder.encode(export)
+        } catch {
+            operationError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func exportDiagnostics() async -> Data? {
+        do {
+            let diagnostics = try await client.diagnostics()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            return try encoder.encode(diagnostics)
+        } catch {
+            operationError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func cleanupOrphanLeases() async -> LeaseCleanupReport? {
+        do {
+            return try await client.cleanupOrphanLeases()
+        } catch {
+            operationError = error.localizedDescription
+            return nil
+        }
+    }
+
     func clearError() {
         operationError = nil
+    }
+
+    func open(_ deepLink: ElseDeepLink) {
+        switch deepLink {
+        case .today:
+            section = .today
+        case .world:
+            section = .world
+        case .connectors:
+            section = .connectors
+        case .decisions:
+            section = .decisions
+        case .results:
+            section = .results
+        case .newIntent:
+            section = .today
+            isCreatingIntent = true
+        case let .intent(intentID):
+            selectedIntentID = intentID
+            section = .decisions
+        }
     }
 
     func setNotificationsEnabled(_ enabled: Bool) async {
@@ -324,6 +454,17 @@ final class AppStore: ObservableObject {
         backgroundRefreshInterval = interval
         defaults.set(interval, forKey: PreferenceKey.refreshInterval)
         restartBackgroundTask()
+    }
+
+    func setRetentionDays(_ days: UInt64?) async {
+        do {
+            let settings = try await client.updateRuntimeSettings(
+                RuntimeSettings(retentionDays: days)
+            )
+            retentionDays = settings.retentionDays
+        } catch {
+            operationError = error.localizedDescription
+        }
     }
 
     func correctWorldCorrelation(
@@ -385,6 +526,116 @@ final class AppStore: ObservableObject {
             }
         } catch {
             operationError = error.localizedDescription
+        }
+    }
+
+    func repairConnector(intentID: IntentID, connectorID: ConnectorID) async {
+        do {
+            let report = try await client.repairConnector(
+                intentID: intentID,
+                connectorID: connectorID
+            )
+            if let error = report.error {
+                operationError = "Cursor 已重建，但重新同步失败：\(error)"
+            }
+            if let health = try? await client.connectorHealth(
+                intentID: intentID,
+                connectorID: connectorID
+            ) {
+                connectorHealth[connectorID] = health
+            }
+        } catch {
+            operationError = error.localizedDescription
+        }
+    }
+
+    func attachConnectorCredential(
+        intentID: IntentID,
+        connectorID: ConnectorID,
+        credential: ConnectorCredentialInput
+    ) async -> Bool {
+        authenticatingConnectorIDs.insert(connectorID)
+        defer { authenticatingConnectorIDs.remove(connectorID) }
+        do {
+            let metadata = try await client.attachConnectorCredential(
+                intentID: intentID,
+                connectorID: connectorID,
+                credential: credential
+            )
+            replaceConnectorCredential(
+                intentID: intentID,
+                connectorID: connectorID,
+                credential: metadata
+            )
+            await refreshConnectorHealth(
+                intentID: intentID,
+                connectorID: connectorID
+            )
+            return true
+        } catch {
+            operationError = error.localizedDescription
+            return false
+        }
+    }
+
+    func revokeConnectorCredential(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async {
+        authenticatingConnectorIDs.insert(connectorID)
+        defer { authenticatingConnectorIDs.remove(connectorID) }
+        do {
+            let metadata = try await client.revokeConnectorCredential(
+                intentID: intentID,
+                connectorID: connectorID
+            )
+            replaceConnectorCredential(
+                intentID: intentID,
+                connectorID: connectorID,
+                credential: metadata
+            )
+            await refreshConnectorHealth(
+                intentID: intentID,
+                connectorID: connectorID
+            )
+        } catch {
+            operationError = error.localizedDescription
+        }
+    }
+
+    private func replaceConnectorCredential(
+        intentID: IntentID,
+        connectorID: ConnectorID,
+        credential: ConnectorCredentialMetadata
+    ) {
+        guard let index = connectorsByIntent[intentID]?.firstIndex(where: {
+            $0.id == connectorID
+        }) else {
+            return
+        }
+        let old = connectorsByIntent[intentID]![index]
+        connectorsByIntent[intentID]![index] = ConnectorRegistration(
+            id: old.id,
+            name: old.name,
+            adapter: old.adapter,
+            source: old.source,
+            enabled: old.enabled,
+            manifest: old.manifest,
+            syncIntervalSeconds: old.syncIntervalSeconds,
+            registeredAt: old.registeredAt,
+            credential: credential
+        )
+    }
+
+    private func refreshConnectorHealth(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async {
+        if let health = try? await client.connectorHealth(
+            intentID: intentID,
+            connectorID: connectorID
+        ) {
+            connectorHealth[connectorID] = health
         }
     }
 
@@ -511,9 +762,21 @@ final class AppStore: ObservableObject {
 }
 
 private enum PreferenceKey {
-    static let notifications = "ElseNotificationsEnabled"
-    static let backgroundRefresh = "ElseBackgroundRefreshEnabled"
-    static let refreshInterval = "ElseBackgroundRefreshInterval"
+    static let notifications = ElsePreferenceKey.notificationsEnabled
+    static let backgroundRefresh = ElsePreferenceKey.backgroundRefreshEnabled
+    static let refreshInterval = ElsePreferenceKey.backgroundRefreshInterval
+}
+
+private extension AppStore {
+    static var launchIntentID: String? {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--open-intent"),
+              arguments.indices.contains(index + 1)
+        else {
+            return nil
+        }
+        return arguments[index + 1]
+    }
 }
 
 private extension PersonalBrief {

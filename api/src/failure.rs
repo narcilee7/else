@@ -1,14 +1,75 @@
 //! Scope 失败分类、有限重试与终态收敛。
 
 use else_gateway::{ExecContext, GatewayError};
-use else_protocol::event::{Actor, EventPayload, ScopeState};
+use else_protocol::event::{Actor, EventEnvelope, EventPayload, ScopeState};
 use else_protocol::failure::{FailureClass, ScopeFailure};
+use else_protocol::ids::{IntentId, ScopeId};
+use else_protocol::intent::IntentState;
 
 use crate::{ApiError, Result, Runtime};
 
 const DEFAULT_MAX_SCOPE_RETRIES: u32 = 2;
 
 impl Runtime {
+    pub fn retry_failed_scopes(
+        &self,
+        intent_id: &IntentId,
+    ) -> Result<(Vec<ScopeId>, else_ledger::IntentProjection)> {
+        let projection = self.projection(intent_id)?;
+        let revision = projection
+            .spec
+            .as_ref()
+            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?
+            .revision;
+        let failed = projection
+            .scopes
+            .iter()
+            .filter(|(_, scope)| scope.state == ScopeState::Failed)
+            .map(|(scope_id, _)| scope_id.clone())
+            .collect::<Vec<_>>();
+        if failed.is_empty() {
+            return Err(ApiError::Conflict(
+                "intent has no failed scopes to retry".into(),
+            ));
+        }
+        let generation = self
+            .events(intent_id)?
+            .iter()
+            .map(|event| event.envelope.generation)
+            .max()
+            .unwrap_or(1)
+            .saturating_add(1);
+        for scope_id in &failed {
+            self.ledger.append(&EventEnvelope::new(
+                intent_id.clone(),
+                scope_id.clone(),
+                generation,
+                revision,
+                Actor::User,
+                EventPayload::ScopeRetryApproved,
+            ))?;
+        }
+        if projection
+            .root_scope_id
+            .as_ref()
+            .is_some_and(|root| failed.contains(root))
+        {
+            self.ledger.append(&EventEnvelope::new(
+                intent_id.clone(),
+                projection.root_scope_id.clone().unwrap(),
+                generation,
+                revision,
+                Actor::User,
+                EventPayload::IntentStateChanged {
+                    state: IntentState::Active,
+                },
+            ))?;
+        }
+        let _ = self.drive(intent_id, None, 16)?;
+        let projection = self.projection(intent_id)?;
+        Ok((failed, projection))
+    }
+
     /// Admission 发生在 RunStarted 之前；失败也必须落 ScopeFailure，
     /// 否则依赖会永久等待一个永远不会启动的上游。
     pub(crate) fn admit_run_with_failure(

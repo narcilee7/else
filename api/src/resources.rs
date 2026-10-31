@@ -3,12 +3,13 @@
 use chrono::{DateTime, Utc};
 use else_gateway::{resource::ensure_capacity, ExecContext};
 use else_ledger::StoredEvent;
-use else_protocol::event::{Actor, EventPayload};
+use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::ids::IntentId;
 use else_protocol::resource::{
     ResourceBudget, ResourceClass, ResourceLease, ResourceUsage, SandboxTerminationReason,
     SandboxUsage, SandboxUsageBasis,
 };
+use serde::Serialize;
 
 use crate::{Result, Runtime};
 
@@ -24,6 +25,15 @@ pub struct ResourceReport {
     pub budget: ResourceBudget,
     pub usage: ResourceUsage,
     pub sandboxes: Vec<SandboxUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LeaseCleanupReport {
+    pub scanned_intents: usize,
+    pub orphan_leases: usize,
+    pub revoked_leases: usize,
+    pub sandbox_finish_records: usize,
+    pub skipped_active_leases: usize,
 }
 
 impl Runtime {
@@ -247,6 +257,121 @@ impl Runtime {
         }
         Ok(())
     }
+
+    pub fn cleanup_orphan_leases(&self) -> Result<LeaseCleanupReport> {
+        let specs = self.list_intents()?;
+        let mut report = LeaseCleanupReport {
+            scanned_intents: specs.len(),
+            orphan_leases: 0,
+            revoked_leases: 0,
+            sandbox_finish_records: 0,
+            skipped_active_leases: 0,
+        };
+        for spec in specs {
+            let events = self.events(&spec.id)?;
+            let projection = self.projection(&spec.id)?;
+            let revision = projection.spec.as_ref().map_or(1, |spec| spec.revision);
+            let revoked: std::collections::BTreeSet<_> = events
+                .iter()
+                .filter_map(|event| match &event.envelope.payload {
+                    EventPayload::LeaseRevoked { lease_id } => Some(lease_id.clone()),
+                    _ => None,
+                })
+                .collect();
+            let finished_runs: std::collections::BTreeSet<_> = events
+                .iter()
+                .filter_map(|event| match &event.envelope.payload {
+                    EventPayload::RunFinished { run_id, .. } => Some(run_id.clone()),
+                    _ => None,
+                })
+                .collect();
+            for event in &events {
+                let EventPayload::LeaseGranted { lease } = &event.envelope.payload else {
+                    continue;
+                };
+                if revoked.contains(&lease.id) {
+                    continue;
+                }
+                let scope = projection.scopes.get(&lease.scope_id);
+                let scope_terminal = scope.is_some_and(|scope| {
+                    matches!(
+                        scope.state,
+                        else_protocol::event::ScopeState::Completed
+                            | else_protocol::event::ScopeState::Failed
+                            | else_protocol::event::ScopeState::Cancelled
+                            | else_protocol::event::ScopeState::Superseded
+                    )
+                });
+                let generation_stale =
+                    scope.is_some_and(|scope| scope.generation > lease.generation);
+                let run_finished = lease
+                    .run_id
+                    .as_ref()
+                    .is_some_and(|run_id| finished_runs.contains(run_id));
+                if !scope_terminal && !generation_stale && !run_finished {
+                    report.skipped_active_leases += 1;
+                    continue;
+                }
+                report.orphan_leases += 1;
+                if lease.class == ResourceClass::Sandbox
+                    && !projection.sandbox_usages.contains_key(&lease.id)
+                {
+                    let started_at =
+                        events
+                            .iter()
+                            .find_map(|candidate| match &candidate.envelope.payload {
+                                EventPayload::SandboxStarted {
+                                    lease_id,
+                                    started_at,
+                                    ..
+                                } if lease_id == &lease.id => Some(*started_at),
+                                _ => None,
+                            });
+                    let (started_at, basis) = started_at.map_or(
+                        (
+                            lease.granted_at.unwrap_or(event.envelope.occurred_at),
+                            SandboxUsageBasis::Estimated,
+                        ),
+                        |started_at| (started_at, SandboxUsageBasis::Unknown),
+                    );
+                    let finished_at = Utc::now();
+                    let usage = SandboxUsage {
+                        lease_id: lease.id.clone(),
+                        backend: sandbox_backend_name().into(),
+                        started_at,
+                        finished_at,
+                        elapsed_millis: finished_at
+                            .signed_duration_since(started_at)
+                            .num_milliseconds()
+                            .max(0) as u64,
+                        basis,
+                        termination: SandboxTerminationReason::Crashed,
+                    };
+                    self.ledger.append(&EventEnvelope::new(
+                        spec.id.clone(),
+                        lease.scope_id.clone(),
+                        lease.generation,
+                        revision,
+                        Actor::System,
+                        EventPayload::SandboxFinished { usage },
+                    ))?;
+                    report.sandbox_finish_records += 1;
+                }
+                self.ledger.append(&EventEnvelope::new(
+                    spec.id.clone(),
+                    lease.scope_id.clone(),
+                    lease.generation,
+                    revision,
+                    Actor::System,
+                    EventPayload::LeaseRevoked {
+                        lease_id: lease.id.clone(),
+                    },
+                ))?;
+                report.revoked_leases += 1;
+            }
+        }
+        Ok(report)
+    }
 }
 
 fn sandbox_backend_name() -> &'static str {
@@ -275,4 +400,93 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use else_protocol::ids::RunId;
+
+    #[test]
+    fn orphan_lease_cleanup_skips_active_runs_and_revokes_finished_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Runtime::open(dir.path()).unwrap();
+        let spec = runtime.create_intent("lease cleanup", None).unwrap();
+        let projection = runtime.projection(&spec.id).unwrap();
+        let scope_id = projection.root_scope_id.unwrap();
+        let revision = projection.spec.unwrap().revision;
+        let active_run = RunId::new();
+        let orphan_run = RunId::new();
+        for (run_id, orphan) in [(active_run.clone(), false), (orphan_run.clone(), true)] {
+            runtime
+                .ledger
+                .append(&EventEnvelope::new(
+                    spec.id.clone(),
+                    scope_id.clone(),
+                    1,
+                    revision,
+                    Actor::System,
+                    EventPayload::RunStarted {
+                        run_id: run_id.clone(),
+                        harness: "test".into(),
+                        capabilities: None,
+                    },
+                ))
+                .unwrap();
+            let now = Utc::now();
+            runtime
+                .ledger
+                .append(&EventEnvelope::new(
+                    spec.id.clone(),
+                    scope_id.clone(),
+                    1,
+                    revision,
+                    Actor::System,
+                    EventPayload::LeaseGranted {
+                        lease: ResourceLease {
+                            id: else_protocol::ids::LeaseId::new(),
+                            scope_id: scope_id.clone(),
+                            run_id: Some(run_id.clone()),
+                            class: ResourceClass::Sandbox,
+                            quantity: 900,
+                            unit: "seconds".into(),
+                            generation: 1,
+                            granted_at: Some(now),
+                            expires_at: now + chrono::Duration::minutes(15),
+                        },
+                    },
+                ))
+                .unwrap();
+            if orphan {
+                runtime
+                    .ledger
+                    .append(&EventEnvelope::new(
+                        spec.id.clone(),
+                        scope_id.clone(),
+                        1,
+                        revision,
+                        Actor::System,
+                        EventPayload::RunFinished {
+                            run_id,
+                            success: false,
+                        },
+                    ))
+                    .unwrap();
+            }
+        }
+
+        let report = runtime.cleanup_orphan_leases().unwrap();
+        assert_eq!(report.orphan_leases, 1);
+        assert_eq!(report.revoked_leases, 1);
+        assert_eq!(report.sandbox_finish_records, 1);
+        assert_eq!(report.skipped_active_leases, 1);
+        assert_eq!(
+            runtime
+                .projection(&spec.id)
+                .unwrap()
+                .resource_usage
+                .sandbox_reserved_seconds,
+            900
+        );
+    }
 }

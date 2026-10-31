@@ -187,15 +187,18 @@ impl Runtime {
         scope_id: &ScopeId,
     ) -> Result<u64> {
         let events = self.ledger.read_intent(intent_id)?;
-        let latest_started = events
+        let latest_generation = events
             .iter()
             .filter(|event| {
                 event.envelope.scope_id == *scope_id
-                    && matches!(event.envelope.payload, EventPayload::RunStarted { .. })
+                    && matches!(
+                        event.envelope.payload,
+                        EventPayload::RunStarted { .. } | EventPayload::ScopeRetryApproved
+                    )
             })
             .map(|event| event.envelope.generation)
             .max();
-        if let Some(generation) = latest_started {
+        if let Some(generation) = latest_generation {
             return Ok(generation.saturating_add(1));
         }
         Ok(self

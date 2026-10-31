@@ -89,6 +89,22 @@ pub trait ConnectorAdapter: Send + Sync {
             capability: capability.into(),
         })
     }
+    fn preview_action(
+        &self,
+        _source: &str,
+        capability: &str,
+        _target: &str,
+        _credential: Option<&ConnectorCredential>,
+        _input: &Value,
+    ) -> Result<Value> {
+        Err(ConnectorError::ActionUnsupported {
+            adapter: self.id().into(),
+            capability: format!("{capability}#preview"),
+        })
+    }
+    fn action_schema(&self, _capability: &str) -> Option<Value> {
+        None
+    }
     fn verify_action(
         &self,
         _source: &str,
@@ -273,6 +289,31 @@ impl ConnectorAdapter for GoogleCalendarAdapter {
             }),
             effect: EffectConclusion::Applied,
         })
+    }
+
+    fn preview_action(
+        &self,
+        source: &str,
+        capability: &str,
+        target: &str,
+        credential: Option<&ConnectorCredential>,
+        _input: &Value,
+    ) -> Result<Value> {
+        if capability != "calendar.event.update" {
+            return Err(ConnectorError::ActionUnsupported {
+                adapter: self.id().into(),
+                capability: capability.into(),
+            });
+        }
+        let url = google_event_url(source, target)?;
+        let current = google_calendar_json("GET", &url, credential, None)?;
+        Ok(writable_google_event_fields(&current))
+    }
+
+    fn action_schema(&self, capability: &str) -> Option<Value> {
+        matches!(capability, "calendar.event.update")
+            .then(|| connector_action_schema(capability))
+            .flatten()
     }
 
     fn verify_action(
@@ -473,6 +514,30 @@ impl ConnectorAdapter for LinearAdapter {
                 capability: capability.into(),
             }),
         }
+    }
+
+    fn preview_action(
+        &self,
+        source: &str,
+        capability: &str,
+        target: &str,
+        credential: Option<&ConnectorCredential>,
+        _input: &Value,
+    ) -> Result<Value> {
+        if !matches!(capability, "linear.issue.update" | "linear.issue.comment") {
+            return Err(ConnectorError::ActionUnsupported {
+                adapter: self.id().into(),
+                capability: capability.into(),
+            });
+        }
+        let issue = linear_fetch_issue(source, credential, target)?;
+        Ok(linear_writable_issue_fields(&issue))
+    }
+
+    fn action_schema(&self, capability: &str) -> Option<Value> {
+        matches!(capability, "linear.issue.update" | "linear.issue.comment")
+            .then(|| connector_action_schema(capability))
+            .flatten()
     }
 
     fn verify_action(
@@ -680,6 +745,35 @@ impl ConnectorAdapter for NotionAdapter {
             }),
             effect: EffectConclusion::Applied,
         })
+    }
+
+    fn preview_action(
+        &self,
+        source: &str,
+        capability: &str,
+        target: &str,
+        credential: Option<&ConnectorCredential>,
+        _input: &Value,
+    ) -> Result<Value> {
+        let (object_type, writable): (&str, fn(&Value) -> Value) = match capability {
+            "notion.page.update" => ("pages", notion_writable_page_fields),
+            "notion.database.update" => ("databases", notion_writable_database_fields),
+            _ => {
+                return Err(ConnectorError::ActionUnsupported {
+                    adapter: self.id().into(),
+                    capability: capability.into(),
+                })
+            }
+        };
+        let url = notion_object_url(source, object_type, target)?;
+        let current = notion_object_json("GET", &url, credential, None)?;
+        Ok(writable(&current))
+    }
+
+    fn action_schema(&self, capability: &str) -> Option<Value> {
+        matches!(capability, "notion.page.update" | "notion.database.update")
+            .then(|| connector_action_schema(capability))
+            .flatten()
     }
 
     fn verify_action(
@@ -953,6 +1047,106 @@ fn writable_google_event_fields(event: &Value) -> Value {
         }
     }
     Value::Object(writable)
+}
+
+fn connector_action_schema(capability: &str) -> Option<Value> {
+    let schema = match capability {
+        "calendar.event.update" => json!({
+            "type": "object",
+            "title": "更新日历事件",
+            "target_label": "Event ID",
+            "preview_supported": true,
+            "fields": [
+                {"path":"changes.summary","title":"标题","kind":"text"},
+                {"path":"changes.description","title":"描述","kind":"multiline"},
+                {"path":"changes.location","title":"地点","kind":"text"},
+                {"path":"changes.start","title":"开始时间","kind":"datetime"},
+                {"path":"changes.end","title":"结束时间","kind":"datetime"},
+                {
+                    "path":"changes.status",
+                    "title":"状态",
+                    "kind":"enum",
+                    "options":[
+                        {"value":"confirmed","label":"已确认"},
+                        {"value":"tentative","label":"暂定"},
+                        {"value":"cancelled","label":"已取消"}
+                    ]
+                },
+                {
+                    "path":"changes.visibility",
+                    "title":"可见性",
+                    "kind":"enum",
+                    "options":[
+                        {"value":"default","label":"默认"},
+                        {"value":"public","label":"公开"},
+                        {"value":"private","label":"私密"},
+                        {"value":"confidential","label":"机密"}
+                    ]
+                }
+            ]
+        }),
+        "linear.issue.update" => json!({
+            "type": "object",
+            "title": "更新 Linear Issue",
+            "target_label": "Issue ID",
+            "preview_supported": true,
+            "fields": [
+                {"path":"changes.title","title":"标题","kind":"text"},
+                {"path":"changes.description","title":"描述","kind":"multiline"},
+                {"path":"changes.dueDate","title":"截止日期","kind":"date"},
+                {
+                    "path":"changes.priority",
+                    "title":"优先级",
+                    "kind":"enum",
+                    "options":[
+                        {"value":0,"label":"无"},
+                        {"value":1,"label":"低"},
+                        {"value":2,"label":"中"},
+                        {"value":3,"label":"高"},
+                        {"value":4,"label":"紧急"}
+                    ]
+                },
+                {"path":"changes.assigneeId","title":"Assignee ID","kind":"text"},
+                {"path":"changes.projectId","title":"Project ID","kind":"text"},
+                {"path":"changes.stateId","title":"State ID","kind":"text"},
+                {"path":"changes.milestoneId","title":"Milestone ID","kind":"text"}
+            ]
+        }),
+        "linear.issue.comment" => json!({
+            "type": "object",
+            "title": "评论 Linear Issue",
+            "target_label": "Issue ID",
+            "preview_supported": true,
+            "fields": [
+                {"path":"body","title":"评论内容","kind":"multiline","required":true}
+            ]
+        }),
+        "notion.page.update" => json!({
+            "type": "object",
+            "title": "更新 Notion 页面",
+            "target_label": "Page ID",
+            "preview_supported": true,
+            "fields": [
+                {"path":"changes.properties","title":"页面属性","kind":"json"},
+                {"path":"changes.archived","title":"归档状态","kind":"boolean"},
+                {"path":"changes.icon","title":"图标","kind":"json"},
+                {"path":"changes.cover","title":"封面","kind":"json"}
+            ]
+        }),
+        "notion.database.update" => json!({
+            "type": "object",
+            "title": "更新 Notion 数据库",
+            "target_label": "Database ID",
+            "preview_supported": true,
+            "fields": [
+                {"path":"changes.title","title":"数据库标题","kind":"json"},
+                {"path":"changes.description","title":"数据库描述","kind":"json"},
+                {"path":"changes.archived","title":"归档状态","kind":"boolean"}
+            ]
+        }),
+        _ => return None,
+    };
+    Some(schema)
 }
 
 fn google_calendar_json(

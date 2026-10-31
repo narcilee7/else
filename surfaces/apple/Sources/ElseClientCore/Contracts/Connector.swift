@@ -289,3 +289,17 @@ public struct ConnectorHealthReport: Codable, Equatable, Sendable {
         case pagesSynced = "pages_synced"
     }
 }
+
+public struct ConnectorRepairReport: Codable, Equatable, Sendable {
+    public let connectorID: ConnectorID
+    public let resetCursors: Int
+    public let sync: ConnectorSyncResult?
+    public let error: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case connectorID = "connector_id"
+        case resetCursors = "reset_cursors"
+        case sync
+        case error
+    }
+}

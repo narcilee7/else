@@ -124,6 +124,8 @@ private struct ConnectorRow: View {
     let intentID: IntentID?
     let connector: ConnectorRegistration
     let health: ConnectorHealthReport?
+    @State private var isReauthenticating = false
+    @State private var isConfirmingRevoke = false
 
     var body: some View {
         HStack(alignment: .top, spacing: ElseSpacing.x3) {
@@ -159,7 +161,8 @@ private struct ConnectorRow: View {
                             ) ?? "从未同步"
                         )
                     }
-                    if connector.credential != nil {
+                    if connector.credential?.revokedAt == nil,
+                       connector.credential != nil {
                         Label("凭据", systemImage: "key")
                     }
                 }
@@ -175,6 +178,47 @@ private struct ConnectorRow: View {
             }
 
             Spacer()
+
+            if connector.manifest.authMode != .none {
+                Button {
+                    isReauthenticating = true
+                } label: {
+                    Image(systemName: "key")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(ElseColor.textSecondary)
+                .help("重新认证 Connector")
+
+                if connector.credential?.revokedAt == nil,
+                   connector.credential != nil {
+                    Button {
+                        isConfirmingRevoke = true
+                    } label: {
+                        Image(systemName: "key.slash")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(ElseColor.danger)
+                    .help("撤销 Connector 凭据")
+                }
+            }
+
+            if let intentID,
+               let health,
+               health.health != .healthy {
+                Button {
+                    Task {
+                        await store.repairConnector(
+                            intentID: intentID,
+                            connectorID: connector.id
+                        )
+                    }
+                } label: {
+                    Image(systemName: "wrench.and.screwdriver")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(ElseColor.signal)
+                .help("重建 Cursor 并重新同步")
+            }
 
             if let intentID {
                 Button {
@@ -198,6 +242,116 @@ private struct ConnectorRow: View {
             Rectangle()
                 .fill(ElseColor.lineSubtle)
                 .frame(height: 1)
+        }
+        .sheet(isPresented: $isReauthenticating) {
+            if let intentID {
+                ReauthenticateConnectorSheet(
+                    intentID: intentID,
+                    connector: connector
+                )
+                .environmentObject(store)
+            }
+        }
+        .confirmationDialog(
+            "撤销 Connector 凭据？",
+            isPresented: $isConfirmingRevoke,
+            titleVisibility: .visible
+        ) {
+            if let intentID {
+                Button("撤销凭据", role: .destructive) {
+                    Task {
+                        await store.revokeConnectorCredential(
+                            intentID: intentID,
+                            connectorID: connector.id
+                        )
+                    }
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("后续同步会立即失败关闭，直到重新录入凭据。")
+        }
+    }
+}
+
+private struct ReauthenticateConnectorSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let intentID: IntentID
+    let connector: ConnectorRegistration
+
+    @State private var accessToken = ""
+    @State private var refreshToken = ""
+    @State private var tokenURL = ""
+    @State private var clientID = ""
+    @State private var clientSecret = ""
+    @State private var isSaving = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: ElseSpacing.x4) {
+            Text("重新认证 \(connector.name)")
+                .font(ElseType.pageTitle)
+                .foregroundStyle(ElseColor.textPrimary)
+
+            Form {
+                SecureField("Access Token", text: $accessToken)
+                SecureField("Refresh Token（可选）", text: $refreshToken)
+                TextField("OAuth Token URL（可选）", text: $tokenURL)
+                TextField("OAuth Client ID（可选）", text: $clientID)
+                SecureField("OAuth Client Secret（可选）", text: $clientSecret)
+
+                LabeledContent("Scope", value: connector.manifest.scopes.joined(separator: ", "))
+            }
+            .formStyle(.grouped)
+
+            HStack {
+                Text("新凭据会替换现有引用，并立即刷新 Health。")
+                    .font(ElseType.micro)
+                    .foregroundStyle(ElseColor.textTertiary)
+                Spacer()
+                Button("取消") {
+                    dismiss()
+                }
+                Button(isSaving ? "认证中" : "重新认证") {
+                    Task { await save() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(ElseColor.action)
+                .disabled(
+                    isSaving
+                        || accessToken.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty
+                )
+            }
+        }
+        .padding(ElseSpacing.x6)
+        .frame(width: 540, height: 430)
+        .background(ElseColor.canvas)
+    }
+
+    private func save() async {
+        isSaving = true
+        defer { isSaving = false }
+        let hasRefreshConfig = !tokenURL.isEmpty && !clientID.isEmpty
+        let credential = ConnectorCredentialInput(
+            accessToken: accessToken,
+            refreshToken: refreshToken.nilIfEmpty,
+            scopes: connector.manifest.scopes,
+            refresh: hasRefreshConfig
+                ? OAuthRefreshConfigInput(
+                    tokenURL: tokenURL,
+                    clientID: clientID,
+                    clientSecret: clientSecret.nilIfEmpty
+                )
+                : nil
+        )
+        if await store.attachConnectorCredential(
+            intentID: intentID,
+            connectorID: connector.id,
+            credential: credential
+        ) {
+            dismiss()
         }
     }
 }

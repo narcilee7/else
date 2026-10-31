@@ -75,6 +75,10 @@ struct IntentListView: View {
                                             Task { await store.abort(snapshot) }
                                         }
                                     }
+                                    Divider()
+                                    Button("永久删除", role: .destructive) {
+                                        Task { await store.deleteIntent(snapshot) }
+                                    }
                                 }
                             }
                         }

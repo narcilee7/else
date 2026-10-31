@@ -19,6 +19,26 @@
       "target": "ElseMac",
       "configuration": "release",
       "preLaunchTask": "swift: Build Release ElseMac (surfaces/apple)"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:else}/surfaces/apple",
+      "name": "Debug ElseNotifier (surfaces/apple)",
+      "target": "ElseNotifier",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug ElseNotifier (surfaces/apple)"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:else}/surfaces/apple",
+      "name": "Release ElseNotifier (surfaces/apple)",
+      "target": "ElseNotifier",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release ElseNotifier (surfaces/apple)"
     }
   ]
 }

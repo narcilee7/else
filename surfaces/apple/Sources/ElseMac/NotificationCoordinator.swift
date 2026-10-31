@@ -5,6 +5,8 @@ import UserNotifications
 
 extension Notification.Name {
     static let elseOpenIntent = Notification.Name("else.openIntent")
+    static let elseOpenRoute = Notification.Name("else.openRoute")
+    static let elseQuickIntent = Notification.Name("else.quickIntent")
 }
 
 @MainActor
@@ -12,17 +14,15 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
     static let shared = NotificationCoordinator()
 
     private let center = UNUserNotificationCenter.current()
-    private static let decisionCategory = "ELSE_DECISION"
-    private static let openAction = "ELSE_OPEN"
 
     func configure() {
         center.delegate = self
         center.setNotificationCategories([
             UNNotificationCategory(
-                identifier: Self.decisionCategory,
+                identifier: ElseNotificationContract.decisionCategory,
                 actions: [
                     UNNotificationAction(
-                        identifier: Self.openAction,
+                        identifier: ElseNotificationContract.openAction,
                         title: "查看",
                         options: [.foreground]
                     ),
@@ -49,11 +49,13 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         content.title = request.kind.notificationTitle
         content.body = request.summary
         content.sound = .default
-        content.categoryIdentifier = Self.decisionCategory
-        content.userInfo = ["intent_id": intentID.rawValue]
+        content.categoryIdentifier = ElseNotificationContract.decisionCategory
+        content.userInfo = [
+            ElseNotificationContract.intentIDKey: intentID.rawValue,
+        ]
 
         let notification = UNNotificationRequest(
-            identifier: "decision:\(request.id.rawValue)",
+            identifier: ElseNotificationContract.decisionIdentifier(request.id),
             content: content,
             trigger: nil
         )
@@ -77,7 +79,8 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         didReceive response: UNNotificationResponse
     ) async {
         let userInfo = response.notification.request.content.userInfo
-        guard let rawIntentID = userInfo["intent_id"] as? String else {
+        guard let rawIntentID = userInfo[ElseNotificationContract.intentIDKey] as? String
+        else {
             return
         }
         await MainActor.run {
@@ -86,18 +89,6 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
                 name: .elseOpenIntent,
                 object: IntentID(rawIntentID)
             )
-        }
-    }
-}
-
-private extension AttentionKind {
-    var notificationTitle: String {
-        switch self {
-        case .judgment: "需要你的判断"
-        case .authorization: "需要一次性授权"
-        case .missingInfo: "需要补充信息"
-        case .takeover: "需要你接管"
-        case .verification: "等待验收确认"
         }
     }
 }
