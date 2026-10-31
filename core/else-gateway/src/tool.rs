@@ -7,11 +7,15 @@
 use std::path::{Component, Path, PathBuf};
 
 use else_attention::AttentionKernel;
-use else_ledger::Ledger;
+use else_ledger::{Ledger, Projection};
 use else_protocol::attention::{AttentionKind, AttentionRequest, DecisionOption, ExpectedLoss};
+use else_protocol::capability::{
+    CapabilityAdapter, CapabilityKind, CapabilityManifest, CapabilityRegistration,
+};
 use else_protocol::effect::{EffectConclusion, SideEffectKind, ToolCall, ToolOutcome, ToolStatus};
 use else_protocol::event::{Actor, EventPayload};
 use else_protocol::ids::AttentionId;
+use else_protocol::ids::CapabilityId;
 use else_protocol::intent::IntentState;
 use serde_json::{json, Value};
 
@@ -21,6 +25,59 @@ use crate::{ensure_not_fenced, ExecContext, GatewayError, Result};
 pub struct ToolGateway<'a> {
     ledger: &'a Ledger,
     workspace: PathBuf,
+}
+
+#[derive(Default)]
+struct CapabilityProjection {
+    capabilities: std::collections::BTreeMap<CapabilityId, CapabilityRegistration>,
+}
+
+impl Projection for CapabilityProjection {
+    fn apply(&mut self, event: &else_ledger::StoredEvent) {
+        if let EventPayload::CapabilityRegistered { capability } = &event.envelope.payload {
+            self.capabilities
+                .insert(capability.manifest.id.clone(), capability.clone());
+        }
+    }
+}
+
+pub fn builtin_capabilities() -> Vec<CapabilityRegistration> {
+    [
+        (
+            "fs.read",
+            "读取 Workspace 文件",
+            SideEffectKind::ReadOnly,
+            false,
+        ),
+        (
+            "fs.write",
+            "写入 Workspace 文件",
+            SideEffectKind::Reversible,
+            true,
+        ),
+        (
+            "shell",
+            "在 Sandbox 中执行 Shell",
+            SideEffectKind::Unknown,
+            true,
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(id, description, effect, idempotency_required)| CapabilityRegistration {
+            manifest: CapabilityManifest {
+                id: CapabilityId::from(id),
+                name: id.into(),
+                description: description.into(),
+                kind: CapabilityKind::BuiltinTool,
+                effect,
+                idempotency_required,
+                input_schema: json!({"type":"object"}),
+            },
+            adapter: CapabilityAdapter::Builtin,
+        },
+    )
+    .collect()
 }
 
 impl<'a> ToolGateway<'a> {
@@ -33,8 +90,13 @@ impl<'a> ToolGateway<'a> {
     }
 
     /// 执行一次工具调用：围栏 → 幂等 → 落账 → 授权 → 执行 → 围栏 → 落账。
-    pub fn execute(&self, ctx: &ExecContext, call: ToolCall) -> Result<ToolOutcome> {
+    pub fn execute(&self, ctx: &ExecContext, mut call: ToolCall) -> Result<ToolOutcome> {
         ensure_not_fenced(self.ledger, ctx)?;
+        let capability = self
+            .find_capability(&call.tool)
+            .ok_or_else(|| GatewayError::UnknownTool(call.tool.clone()))?;
+        // 副作用等级只能由 Capability Manifest 决定，调用方不能自报 ReadOnly。
+        call.effect = capability.manifest.effect;
         // 幂等：相同 idempotency_key 已完成的调用不重复执行（防重试/晚到回调）。
         if let Some(outcome) = self.find_completed(ctx, &call.idempotency_key)? {
             return Ok(outcome);
@@ -50,8 +112,19 @@ impl<'a> ToolGateway<'a> {
 
         self.check_authority(ctx, &call)?;
         ensure_not_fenced(self.ledger, ctx)?;
-        let outcome = self.run_tool(&call);
+        let outcome = self.run_tool(&call, &capability);
         self.complete(ctx, call.id, outcome)
+    }
+
+    pub fn effect_for(&self, tool: &str) -> Option<SideEffectKind> {
+        self.find_capability(tool)
+            .map(|capability| capability.manifest.effect)
+    }
+
+    pub fn list_capabilities(&self) -> Vec<CapabilityRegistration> {
+        let mut capabilities = builtin_capabilities();
+        capabilities.extend(self.registered_capabilities());
+        capabilities
     }
 
     /// 工具完成回调落账。Abort 后的晚到回调在这里被围栏，不能覆盖收尾结论。
@@ -200,14 +273,27 @@ impl<'a> ToolGateway<'a> {
     }
 
     /// 实际执行。工具失败是正常结果（Failed outcome），不是系统错误。
-    fn run_tool(&self, call: &ToolCall) -> ToolOutcome {
-        let result = match call.tool.as_str() {
-            "fs.read" => self.fs_read(&call.input),
-            "fs.write" => self.fs_write(&call.input),
-            "shell" => self.shell(&call.input),
-            other => {
-                return failed(json!({ "error": format!("unknown tool: {other}") }));
-            }
+    fn run_tool(&self, call: &ToolCall, capability: &CapabilityRegistration) -> ToolOutcome {
+        let result = match &capability.adapter {
+            CapabilityAdapter::Builtin => match call.tool.as_str() {
+                "fs.read" => self.fs_read(&call.input),
+                "fs.write" => self.fs_write(&call.input),
+                "shell" => self.shell(&call.input),
+                other => {
+                    return failed(json!({ "error": format!("unknown builtin: {other}") }));
+                }
+            },
+            CapabilityAdapter::Skill(skill) => Ok((
+                json!({
+                    "skill": capability.manifest.name,
+                    "instructions": skill.instructions,
+                    "resources": skill.resources,
+                    "capability_ids": skill.capability_ids,
+                    "authority_granted": false,
+                }),
+                EffectConclusion::NoEffect,
+            )),
+            CapabilityAdapter::Mcp(binding) => self.mcp_tool(binding, &call.input),
         };
         match result {
             Ok((output, effect)) => ToolOutcome {
@@ -216,6 +302,67 @@ impl<'a> ToolGateway<'a> {
                 effect,
             },
             Err(output) => failed(output),
+        }
+    }
+
+    fn find_capability(&self, id_or_name: &str) -> Option<CapabilityRegistration> {
+        self.list_capabilities().into_iter().find(|capability| {
+            capability.manifest.id.to_string() == id_or_name
+                || capability.manifest.name == id_or_name
+        })
+    }
+
+    fn registered_capabilities(&self) -> Vec<CapabilityRegistration> {
+        let mut registry = CapabilityProjection::default();
+        let _ = self.ledger.replay(&mut registry);
+        registry.capabilities.into_values().collect()
+    }
+
+    fn mcp_tool(
+        &self,
+        binding: &else_protocol::capability::McpToolBinding,
+        input: &Value,
+    ) -> std::result::Result<(Value, EffectConclusion), Value> {
+        let requests = format!(
+            "{}\n{}\n{}\n",
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "else", "version": "0.1.0"}
+                }
+            }),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": binding.tool_name, "arguments": input}
+            })
+        );
+        let sandbox =
+            else_environment::Sandbox::new(else_environment::SandboxProfile::new(&self.workspace))
+                .map_err(|error| json!({"error": error.to_string()}))?;
+        let output = sandbox
+            .run_shell_with_input(&binding.command, &requests)
+            .map_err(|error| json!({"error": error.to_string()}))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let response = stdout.lines().find_map(|line| {
+            let value: Value = serde_json::from_str(line).ok()?;
+            (value["id"] == 2).then_some(value)
+        });
+        match response {
+            Some(value) if value.get("error").is_none() => {
+                Ok((value["result"].clone(), EffectConclusion::Applied))
+            }
+            Some(value) => Err(json!({"error": value["error"].clone()})),
+            None => Err(json!({
+                "error": "MCP server produced no tools/call response",
+                "stderr": String::from_utf8_lossy(&output.stderr),
+            })),
         }
     }
 

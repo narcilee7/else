@@ -5,6 +5,7 @@
 
 pub mod artifact;
 pub mod attention;
+pub mod capability;
 pub mod effect;
 pub mod egress;
 pub mod event;

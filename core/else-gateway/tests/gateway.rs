@@ -177,7 +177,8 @@ fn shell_is_executed_by_native_sandbox() {
     }
     let ledger = Ledger::open_in_memory().unwrap();
     let gateway = ToolGateway::new(&ledger, workspace.clone());
-    let ctx = ctx(&IntentId::new());
+    let mut ctx = ctx(&IntentId::new());
+    ctx.spec.authority.max_autonomous_effect = SideEffectKind::Unknown;
     grant_lease(&ledger, &ctx);
 
     let outcome = gateway

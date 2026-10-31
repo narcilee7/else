@@ -284,6 +284,82 @@ fn route(
             }));
             return Ok((202, json_string(&current)?));
         }
+        if segments.len() == 4 && segments[3] == "capabilities" {
+            match request.method() {
+                Method::Get => {
+                    return Ok((200, json_string(&state.handle.capabilities(&intent_id)?)?));
+                }
+                Method::Post => {
+                    let capability: else_protocol::capability::CapabilityRegistration =
+                        serde_json::from_str(body).map_err(json_error)?;
+                    state
+                        .handle
+                        .register_capability(&intent_id, capability.clone())?;
+                    return Ok((200, json_string(&capability)?));
+                }
+                _ => {}
+            }
+        }
+        if segments.len() == 4 && segments[3] == "bindings" {
+            match request.method() {
+                Method::Get => {
+                    return Ok((200, json_string(&state.handle.agent_bindings(&intent_id)?)?));
+                }
+                Method::Post => {
+                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    let value: Value = serde_json::from_str(body).map_err(json_error)?;
+                    let scope_id = value["scope_id"]
+                        .as_str()
+                        .map(else_protocol::ids::ScopeId::from)
+                        .or_else(|| {
+                            state
+                                .handle
+                                .projection(&intent_id)
+                                .ok()
+                                .and_then(|projection| projection.root_scope_id)
+                        })
+                        .ok_or_else(|| DaemonError::InvalidRequest("missing scope_id".into()))?;
+                    let binding = state.handle.bind_agent(
+                        &intent_id,
+                        else_protocol::ids::AgentId::from(value["agent_id"].as_str().ok_or_else(
+                            || DaemonError::InvalidRequest("missing agent_id".into()),
+                        )?),
+                        value["name"].as_str().unwrap_or("agent"),
+                        scope_id,
+                        value["run_id"]
+                            .as_str()
+                            .map(else_protocol::ids::RunId::from),
+                        serde_json::from_value(value["outbound"].clone()).map_err(json_error)?,
+                        value["capability_ids"]
+                            .as_array()
+                            .map(|ids| {
+                                ids.iter()
+                                    .filter_map(Value::as_str)
+                                    .map(else_protocol::ids::CapabilityId::from)
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        value["ttl_seconds"].as_i64().unwrap_or(3600),
+                    )?;
+                    return Ok((200, json_string(&binding)?));
+                }
+                _ => {}
+            }
+        }
+        if segments.len() == 6
+            && segments[3] == "bindings"
+            && segments[5] == "revoke"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
+            state.handle.revoke_binding(
+                &intent_id,
+                &else_protocol::ids::AgentBindingId::from(segments[4]),
+                value["reason"].as_str().unwrap_or("surface revoke"),
+            )?;
+            return Ok((200, json!({"ok": true}).to_string()));
+        }
         if segments.len() == 6
             && segments[3] == "decisions"
             && segments[5] == "resolve"
@@ -620,6 +696,40 @@ mod tests {
         let (status, list) = request(&daemon, "GET", "/v1/intents", "", None, None);
         assert_eq!(status, 200);
         assert_eq!(serde_json::from_str::<Vec<Value>>(&list).unwrap().len(), 1);
+
+        let capabilities_path = format!("/v1/intents/{intent_id}/capabilities");
+        let (status, capabilities) = request(&daemon, "GET", &capabilities_path, "", None, None);
+        assert_eq!(status, 200);
+        assert!(capabilities.contains("fs.write"));
+
+        let bindings_path = format!("/v1/intents/{intent_id}/bindings");
+        let binding_body = serde_json::json!({
+            "agent_id": "agent-1",
+            "name": "daemon-agent",
+            "outbound": {
+                "kind": "local_process",
+                "value": {"command": "agent"}
+            },
+            "capability_ids": ["fs.write"],
+            "ttl_seconds": 60
+        })
+        .to_string();
+        let (status, binding) = request(
+            &daemon,
+            "POST",
+            &bindings_path,
+            &binding_body,
+            Some("bind-1"),
+            Some(revision),
+        );
+        assert_eq!(status, 200, "{binding}");
+        assert!(binding.contains("inbound_session"));
+        let (status, bindings) = request(&daemon, "GET", &bindings_path, "", None, None);
+        assert_eq!(status, 200);
+        assert_eq!(
+            serde_json::from_str::<Vec<Value>>(&bindings).unwrap().len(),
+            1
+        );
 
         let run_path = format!("/v1/intents/{intent_id}/run");
         let (status, run) = request(

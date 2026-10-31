@@ -67,3 +67,9 @@ define_id!(
     "一个结构化计划版本；重规划生成新版本并可引用前序版本。"
 );
 define_id!(PlanStepId, "结构化计划中的可持久引用步骤。");
+define_id!(
+    CapabilityId,
+    "可经 Tool Gateway 调用的 Tool / MCP Tool / Skill。"
+);
+define_id!(AgentId, "外部或本地 Agent 的稳定身份。");
+define_id!(AgentBindingId, "Agent 与一次 Intent/Scope/Run 的双向绑定。");

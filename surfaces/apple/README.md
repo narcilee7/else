@@ -51,6 +51,9 @@ open .build/Else.app --args --demo
 | `POST` | `/v1/intents/{intent_id}/abort` | `IntentSnapshot` |
 | `GET` | `/v1/operations/{operation_id}` | `Operation` |
 | `GET` | `/v1/events?cursor=42` | `[Event]` |
+| `GET/POST` | `/v1/intents/{intent_id}/capabilities` | `[Capability]` / `Capability` |
+| `GET/POST` | `/v1/intents/{intent_id}/bindings` | `[AgentBinding]` / `AgentBinding` |
+| `POST` | `/v1/intents/{intent_id}/bindings/{binding_id}/revoke` | `{"ok": true}` |
 
 `IntentSnapshot` 是 UI 投影，不是 Runtime 权威状态：
 

@@ -204,6 +204,21 @@ impl Sandbox {
         Ok(self.base_command(shell_command, &[])?.output()?)
     }
 
+    /// 一次性协议调用：写入 stdin 后收集 stdout/stderr。
+    pub fn run_shell_with_input(&self, shell_command: &str, input: &str) -> Result<Output> {
+        use std::io::Write;
+        let mut child = self
+            .base_command(shell_command, &[])?
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(input.as_bytes())?;
+        }
+        Ok(child.wait_with_output()?)
+    }
+
     /// 在沙箱内启动长生命周期进程（Harness）：stdout/stderr 接管给调用方流式读取。
     /// `env` 是按任务显式注入的凭据白名单；沙箱默认清空环境，不继承宿主变量。
     /// 取消语义为 kill：进程死亡即沙箱销毁，没有需要单独回收的环境状态。

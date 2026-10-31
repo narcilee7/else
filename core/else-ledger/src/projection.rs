@@ -7,6 +7,7 @@ use else_protocol::artifact::{Artifact, Checkpoint};
 use else_protocol::attention::{
     AttentionRequest, AttentionWindow, AttentionWindowKind, Decision, Ruling,
 };
+use else_protocol::capability::{AgentBinding, CapabilityRegistration};
 use else_protocol::event::{Actor, EventPayload, ScopeState};
 use else_protocol::failure::ScopeFailure;
 use else_protocol::ids::{ArtifactId, AttentionId, AttentionWindowId, LeaseId, ScopeId, TimerId};
@@ -98,6 +99,8 @@ pub struct IntentProjection {
     pub plan_order: Vec<else_protocol::ids::PlanId>,
     pub current_plan_id: Option<else_protocol::ids::PlanId>,
     pub plan_impacts: Vec<PlanImpact>,
+    pub capabilities: BTreeMap<else_protocol::ids::CapabilityId, CapabilityRegistration>,
+    pub agent_bindings: BTreeMap<else_protocol::ids::AgentBindingId, AgentBinding>,
     pub artifacts: Vec<Artifact>,
     pub artifact_scopes: BTreeMap<ArtifactId, ScopeId>,
     pub checkpoints: Vec<Checkpoint>,
@@ -181,6 +184,19 @@ impl Projection for IntentProjection {
                             step.status = PlanStepStatus::NeedsReplan;
                         }
                     }
+                }
+            }
+            EventPayload::CapabilityRegistered { capability } => {
+                self.capabilities
+                    .insert(capability.manifest.id.clone(), capability.clone());
+            }
+            EventPayload::AgentBindingCreated { binding } => {
+                self.agent_bindings
+                    .insert(binding.id.clone(), binding.clone());
+            }
+            EventPayload::AgentBindingRevoked { binding_id, .. } => {
+                if let Some(binding) = self.agent_bindings.get_mut(binding_id) {
+                    binding.active = false;
                 }
             }
             EventPayload::AttentionRequested { request } => {

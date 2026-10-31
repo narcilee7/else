@@ -5,6 +5,7 @@
 
 mod abort;
 mod attention;
+mod capability;
 mod context;
 mod dependency;
 mod dispatch;

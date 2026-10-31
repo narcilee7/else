@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use else_gateway::{ExecContext, GatewayError, ToolGateway};
 use else_ledger::Ledger;
-use else_protocol::effect::{SideEffectKind, ToolCall};
+use else_protocol::effect::ToolCall;
 use else_protocol::ids::ToolCallId;
 
 use crate::Result;
@@ -115,21 +115,10 @@ fn handle_request(
         respond(&mut stream, 400, &json_error("missing tool"));
         return;
     };
-    let Some(effect) = tool_effect(tool) else {
-        respond(&mut stream, 400, &json_error("unknown tool"));
-        return;
-    };
     let idempotency_key = request["idempotency_key"]
         .as_str()
         .map(str::to_string)
         .unwrap_or_else(|| format!("gateway-{}", uuid::Uuid::new_v4()));
-    let call = ToolCall {
-        id: ToolCallId::new(),
-        tool: tool.into(),
-        effect,
-        input: request["input"].clone(),
-        idempotency_key,
-    };
     let ledger = match Ledger::open(db_path) {
         Ok(ledger) => ledger,
         Err(error) => {
@@ -138,6 +127,17 @@ fn handle_request(
         }
     };
     let tools = ToolGateway::new(&ledger, workspace.to_path_buf());
+    let Some(effect) = tools.effect_for(tool) else {
+        respond(&mut stream, 400, &json_error("unknown capability"));
+        return;
+    };
+    let call = ToolCall {
+        id: ToolCallId::new(),
+        tool: tool.into(),
+        effect,
+        input: request["input"].clone(),
+        idempotency_key,
+    };
     match tools.execute(ctx, call) {
         Ok(outcome) => respond(
             &mut stream,
@@ -159,15 +159,6 @@ fn handle_request(
             403,
             &serde_json::json!({ "ok": false, "error": error.to_string() }).to_string(),
         ),
-    }
-}
-
-fn tool_effect(tool: &str) -> Option<SideEffectKind> {
-    match tool {
-        "fs.read" => Some(SideEffectKind::ReadOnly),
-        "fs.write" => Some(SideEffectKind::Reversible),
-        "shell" => Some(SideEffectKind::Unknown),
-        _ => None,
     }
 }
 

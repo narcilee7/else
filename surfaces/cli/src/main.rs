@@ -175,7 +175,7 @@ enum Command {
     },
     /// 通过 Runtime Tool Gateway 执行受控工具（Opaque Harness 内部使用）
     ToolCall {
-        #[arg(long, value_parser = ["fs.read", "fs.write", "shell"])]
+        #[arg(long)]
         tool: String,
         #[arg(long)]
         input: String,

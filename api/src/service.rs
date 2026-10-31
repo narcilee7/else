@@ -8,7 +8,10 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use else_ledger::{IntentProjection, StoredEvent};
 use else_protocol::attention::{AttentionRequest, DecisionChoice};
-use else_protocol::ids::{AttentionId, IntentId, ScopeId, TimerId};
+use else_protocol::capability::{AgentBinding, AgentTransport, CapabilityRegistration};
+use else_protocol::ids::{
+    AgentBindingId, AgentId, AttentionId, CapabilityId, IntentId, RunId, ScopeId, TimerId,
+};
 use else_protocol::intent::IntentSpec;
 use else_protocol::plan::Plan;
 
@@ -33,6 +36,36 @@ enum Command {
     Events {
         intent_id: IntentId,
         reply: Reply<Vec<StoredEvent>>,
+    },
+    Capabilities {
+        intent_id: IntentId,
+        reply: Reply<Vec<CapabilityRegistration>>,
+    },
+    Bindings {
+        intent_id: IntentId,
+        reply: Reply<Vec<AgentBinding>>,
+    },
+    RegisterCapability {
+        intent_id: IntentId,
+        capability: CapabilityRegistration,
+        reply: Reply<()>,
+    },
+    BindAgent {
+        intent_id: IntentId,
+        agent_id: AgentId,
+        name: String,
+        scope_id: ScopeId,
+        run_id: Option<RunId>,
+        outbound: AgentTransport,
+        capability_ids: Vec<CapabilityId>,
+        ttl_seconds: i64,
+        reply: Reply<AgentBinding>,
+    },
+    RevokeBinding {
+        intent_id: IntentId,
+        binding_id: AgentBindingId,
+        reason: String,
+        reply: Reply<()>,
     },
     RecordExternalEvent {
         intent_id: IntentId,
@@ -112,6 +145,71 @@ impl RuntimeHandle {
     pub fn events(&self, intent_id: &IntentId) -> Result<Vec<StoredEvent>> {
         self.request(|reply| Command::Events {
             intent_id: intent_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn capabilities(&self, intent_id: &IntentId) -> Result<Vec<CapabilityRegistration>> {
+        self.request(|reply| Command::Capabilities {
+            intent_id: intent_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn agent_bindings(&self, intent_id: &IntentId) -> Result<Vec<AgentBinding>> {
+        self.request(|reply| Command::Bindings {
+            intent_id: intent_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn register_capability(
+        &self,
+        intent_id: &IntentId,
+        capability: CapabilityRegistration,
+    ) -> Result<()> {
+        self.request(|reply| Command::RegisterCapability {
+            intent_id: intent_id.clone(),
+            capability,
+            reply,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn bind_agent(
+        &self,
+        intent_id: &IntentId,
+        agent_id: AgentId,
+        name: &str,
+        scope_id: ScopeId,
+        run_id: Option<RunId>,
+        outbound: AgentTransport,
+        capability_ids: Vec<CapabilityId>,
+        ttl_seconds: i64,
+    ) -> Result<AgentBinding> {
+        self.request(|reply| Command::BindAgent {
+            intent_id: intent_id.clone(),
+            agent_id,
+            name: name.into(),
+            scope_id,
+            run_id,
+            outbound,
+            capability_ids,
+            ttl_seconds,
+            reply,
+        })
+    }
+
+    pub fn revoke_binding(
+        &self,
+        intent_id: &IntentId,
+        binding_id: &AgentBindingId,
+        reason: &str,
+    ) -> Result<()> {
+        self.request(|reply| Command::RevokeBinding {
+            intent_id: intent_id.clone(),
+            binding_id: binding_id.clone(),
+            reason: reason.into(),
             reply,
         })
     }
@@ -298,6 +396,49 @@ fn handle_command(runtime: &Runtime, command: Command) {
         }
         Command::Events { intent_id, reply } => {
             let _ = reply.send(runtime.events(&intent_id));
+        }
+        Command::Capabilities { intent_id, reply } => {
+            let _ = reply.send(runtime.capabilities(&intent_id));
+        }
+        Command::Bindings { intent_id, reply } => {
+            let _ = reply.send(runtime.agent_bindings(&intent_id));
+        }
+        Command::RegisterCapability {
+            intent_id,
+            capability,
+            reply,
+        } => {
+            let _ = reply.send(runtime.register_capability(&intent_id, capability));
+        }
+        Command::BindAgent {
+            intent_id,
+            agent_id,
+            name,
+            scope_id,
+            run_id,
+            outbound,
+            capability_ids,
+            ttl_seconds,
+            reply,
+        } => {
+            let _ = reply.send(runtime.bind_agent(
+                &intent_id,
+                agent_id,
+                &name,
+                scope_id,
+                run_id,
+                outbound,
+                capability_ids,
+                ttl_seconds,
+            ));
+        }
+        Command::RevokeBinding {
+            intent_id,
+            binding_id,
+            reason,
+            reply,
+        } => {
+            let _ = reply.send(runtime.revoke_agent_binding(&intent_id, &binding_id, &reason));
         }
         Command::RecordExternalEvent {
             intent_id,

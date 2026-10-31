@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::artifact::{Artifact, Checkpoint};
 use crate::attention::{AttentionRequest, AttentionWindow, Decision, Ruling};
+use crate::capability::{AgentBinding, CapabilityRegistration};
 use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
 use crate::egress::EgressDecision;
 use crate::failure::ScopeFailure;
@@ -140,6 +141,16 @@ pub enum EventPayload {
     /// 外部事实对当前计划步骤与 Scope 的确定性影响分析。
     PlanImpactAnalyzed {
         impact: PlanImpact,
+    },
+    CapabilityRegistered {
+        capability: CapabilityRegistration,
+    },
+    AgentBindingCreated {
+        binding: AgentBinding,
+    },
+    AgentBindingRevoked {
+        binding_id: AgentBindingId,
+        reason: String,
     },
 
     RunStarted {
