@@ -4,8 +4,9 @@ use else_harness::adapter::{
     shell_quote, BridgeEvent, HarnessPrep, LineParser, PrepareFn, ProcessHarness,
 };
 use else_ledger::IntentProjection;
-use else_protocol::capability::AgentTransport;
+use else_protocol::capability::{AgentBindingEvent, AgentBindingState, AgentTransport};
 use else_protocol::effect::SideEffectKind;
+use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::harness::{
     CancelSupport, HarnessCapabilities, ToolEffectVisibility, UsageSupport,
 };
@@ -132,7 +133,10 @@ impl Runtime {
                     &[],
                 )
             }
-            AgentTransport::RemoteHttp { endpoint } => {
+            AgentTransport::RemoteHttp {
+                endpoint,
+                callback_url,
+            } => {
                 let host = endpoint
                     .strip_prefix("https://")
                     .and_then(|rest| rest.split('/').next())
@@ -151,6 +155,7 @@ impl Runtime {
                             "task": prompt,
                             "inbound_session": session,
                             "capability_ids": allowed,
+                            "callback_url": callback_url,
                         })
                         .to_string();
                         Ok(HarnessPrep {
@@ -194,5 +199,64 @@ impl Runtime {
             &harness,
             Some(capabilities),
         )
+    }
+
+    pub fn record_agent_binding_event(
+        &self,
+        intent_id: &IntentId,
+        binding_id: &AgentBindingId,
+        session: &str,
+        event: AgentBindingEvent,
+    ) -> Result<IntentProjection> {
+        let projection = self.projection(intent_id)?;
+        let binding = projection
+            .agent_bindings
+            .get(binding_id)
+            .ok_or_else(|| ApiError::NotFound(format!("binding {binding_id}")))?;
+        if !binding.active
+            || binding.state == AgentBindingState::Closed
+            || binding.inbound_session != session
+        {
+            return Err(ApiError::Conflict("binding session is not active".into()));
+        }
+        let revision = projection.spec.as_ref().map_or(1, |spec| spec.revision);
+        self.ledger.append(&EventEnvelope::new(
+            intent_id.clone(),
+            binding.scope_id.clone(),
+            binding.generation,
+            revision,
+            Actor::External,
+            EventPayload::AgentBindingEventReceived {
+                binding_id: binding_id.clone(),
+                event,
+            },
+        ))?;
+        self.projection(intent_id)
+    }
+
+    pub fn transition_agent_binding(
+        &self,
+        intent_id: &IntentId,
+        binding_id: &AgentBindingId,
+        state: AgentBindingState,
+    ) -> Result<()> {
+        let projection = self.projection(intent_id)?;
+        let binding = projection
+            .agent_bindings
+            .get(binding_id)
+            .ok_or_else(|| ApiError::NotFound(format!("binding {binding_id}")))?;
+        let revision = projection.spec.as_ref().map_or(1, |spec| spec.revision);
+        self.ledger.append(&EventEnvelope::new(
+            intent_id.clone(),
+            binding.scope_id.clone(),
+            binding.generation,
+            revision,
+            Actor::User,
+            EventPayload::AgentBindingStateChanged {
+                binding_id: binding_id.clone(),
+                state,
+            },
+        ))?;
+        Ok(())
     }
 }

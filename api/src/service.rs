@@ -8,7 +8,9 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use else_ledger::{IntentProjection, StoredEvent};
 use else_protocol::attention::{AttentionRequest, DecisionChoice};
-use else_protocol::capability::{AgentBinding, AgentTransport, CapabilityRegistration};
+use else_protocol::capability::{
+    AgentBinding, AgentBindingEvent, AgentBindingState, AgentTransport, CapabilityRegistration,
+};
 use else_protocol::ids::{
     AgentBindingId, AgentId, AttentionId, CapabilityId, IntentId, RunId, ScopeId, TimerId,
 };
@@ -77,6 +79,19 @@ enum Command {
         intent_id: IntentId,
         binding_id: AgentBindingId,
         reply: Reply<IntentProjection>,
+    },
+    RecordBindingEvent {
+        intent_id: IntentId,
+        binding_id: AgentBindingId,
+        session: String,
+        event: AgentBindingEvent,
+        reply: Reply<IntentProjection>,
+    },
+    TransitionBinding {
+        intent_id: IntentId,
+        binding_id: AgentBindingId,
+        state: AgentBindingState,
+        reply: Reply<()>,
     },
     RecordExternalEvent {
         intent_id: IntentId,
@@ -251,6 +266,36 @@ impl RuntimeHandle {
         })
     }
 
+    pub fn record_agent_binding_event(
+        &self,
+        intent_id: &IntentId,
+        binding_id: &AgentBindingId,
+        session: &str,
+        event: AgentBindingEvent,
+    ) -> Result<IntentProjection> {
+        self.request(|reply| Command::RecordBindingEvent {
+            intent_id: intent_id.clone(),
+            binding_id: binding_id.clone(),
+            session: session.into(),
+            event,
+            reply,
+        })
+    }
+
+    pub fn transition_agent_binding(
+        &self,
+        intent_id: &IntentId,
+        binding_id: &AgentBindingId,
+        state: AgentBindingState,
+    ) -> Result<()> {
+        self.request(|reply| Command::TransitionBinding {
+            intent_id: intent_id.clone(),
+            binding_id: binding_id.clone(),
+            state,
+            reply,
+        })
+    }
+
     pub fn record_external_event(
         &self,
         intent_id: &IntentId,
@@ -370,6 +415,7 @@ pub struct RuntimeService {
 impl RuntimeService {
     pub fn start(dir: &Path) -> Result<Self> {
         let runtime = Runtime::open(dir)?;
+        let _ = runtime.restore_mcp_sessions();
         let (sender, receiver) = mpsc::channel();
         let worker = thread::spawn(move || worker_loop(runtime, receiver));
         Ok(Self {
@@ -492,6 +538,28 @@ fn handle_command(runtime: &Runtime, command: Command) {
         } => {
             let _ = reply.send(runtime.dispatch_agent_binding(&intent_id, &binding_id));
         }
+        Command::RecordBindingEvent {
+            intent_id,
+            binding_id,
+            session,
+            event,
+            reply,
+        } => {
+            let _ = reply.send(runtime.record_agent_binding_event(
+                &intent_id,
+                &binding_id,
+                &session,
+                event,
+            ));
+        }
+        Command::TransitionBinding {
+            intent_id,
+            binding_id,
+            state,
+            reply,
+        } => {
+            let _ = reply.send(runtime.transition_agent_binding(&intent_id, &binding_id, state));
+        }
         Command::RecordExternalEvent {
             intent_id,
             source,
@@ -566,6 +634,7 @@ fn handle_command(runtime: &Runtime, command: Command) {
 }
 
 fn reconcile_all(runtime: &Runtime) -> Option<DateTime<Utc>> {
+    let _ = runtime.refresh_dirty_mcp_servers();
     let Ok(intents) = runtime.list_intents() else {
         return Some(Utc::now() + chrono::Duration::seconds(2));
     };

@@ -9,7 +9,10 @@ use uuid::Uuid;
 
 use crate::artifact::{Artifact, Checkpoint};
 use crate::attention::{AttentionRequest, AttentionWindow, Decision, Ruling};
-use crate::capability::{AgentBinding, CapabilityRegistration};
+use crate::capability::{
+    AgentBinding, AgentBindingEvent, AgentBindingState, CapabilityRegistration,
+    McpServerRegistration,
+};
 use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
 use crate::egress::EgressDecision;
 use crate::failure::ScopeFailure;
@@ -150,6 +153,28 @@ pub enum EventPayload {
     },
     AgentBindingRevoked {
         binding_id: AgentBindingId,
+        reason: String,
+    },
+    AgentBindingStateChanged {
+        binding_id: AgentBindingId,
+        state: AgentBindingState,
+    },
+    AgentBindingEventReceived {
+        binding_id: AgentBindingId,
+        event: AgentBindingEvent,
+    },
+    McpServerRegistered {
+        server: McpServerRegistration,
+    },
+    McpToolsChanged {
+        server_id: McpServerId,
+    },
+    McpToolsRefreshed {
+        server_id: McpServerId,
+        capability_ids: Vec<CapabilityId>,
+    },
+    CapabilityRevoked {
+        capability_id: CapabilityId,
         reason: String,
     },
 

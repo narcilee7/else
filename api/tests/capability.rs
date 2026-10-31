@@ -148,6 +148,10 @@ done
         else_protocol::effect::SideEffectKind::Irreversible
     );
     assert_eq!(runtime.capabilities(&spec.id).unwrap().len(), 5);
+    drop(runtime);
+    else_gateway::mcp_session::shutdown_all();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    runtime.restore_mcp_sessions().unwrap();
 }
 
 #[test]

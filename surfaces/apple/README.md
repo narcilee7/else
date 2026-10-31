@@ -54,6 +54,11 @@ open .build/Else.app --args --demo
 | `GET/POST` | `/v1/intents/{intent_id}/capabilities` | `[Capability]` / `Capability` |
 | `GET/POST` | `/v1/intents/{intent_id}/bindings` | `[AgentBinding]` / `AgentBinding` |
 | `POST` | `/v1/intents/{intent_id}/bindings/{binding_id}/revoke` | `{"ok": true}` |
+| `POST` | `/v1/intents/{intent_id}/bindings/{binding_id}/dispatch` | `IntentSnapshot` |
+| `POST` | `/v1/intents/{intent_id}/bindings/{binding_id}/state` | `{"ok": true}` |
+| `GET` | `/v1/intents/{intent_id}/bindings/{binding_id}/events?cursor=42` | `[BindingEvent]` |
+| `GET` | `/v1/intents/{intent_id}/bindings/{binding_id}/events/stream` | SSE `text/event-stream` |
+| `POST` | `/v1/binding-events` | Agent callback using binding session Bearer |
 
 `IntentSnapshot` 是 UI 投影，不是 Runtime 权威状态：
 

@@ -6,7 +6,9 @@ use else_protocol::capability::{
 };
 use else_protocol::effect::{SideEffectKind, ToolCall};
 use else_protocol::event::{Actor, EventPayload};
-use else_protocol::ids::{CapabilityId, IntentId, LeaseId, RunId, ScopeId, ToolCallId};
+use else_protocol::ids::{
+    CapabilityId, IntentId, LeaseId, McpServerId, RunId, ScopeId, ToolCallId,
+};
 use else_protocol::intent::{AttentionPolicy, Authority, IntentSpec};
 use else_protocol::resource::{ResourceClass, ResourceLease};
 
@@ -71,7 +73,8 @@ fn skill_and_mcp_tools_share_gateway_execution() {
         r#"while IFS= read -r line; do
 case "$line" in
   *'"id":1'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}' ;;
-  *'"id":2'*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"mcp-ok"}]}}' ;;
+  *'"id":2'*) printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}'
+              printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"mcp-ok"}]}}' ;;
 esac
 done
 "#,
@@ -104,6 +107,7 @@ done
             input_schema: serde_json::json!({"type":"object"}),
         },
         adapter: CapabilityAdapter::Mcp(McpToolBinding {
+            server_id: Some(McpServerId::new()),
             command: "sh mcp.sh".into(),
             tool_name: "read".into(),
         }),
@@ -146,4 +150,9 @@ done
         .as_str()
         .unwrap()
         .contains("mcp-ok"));
+    assert!(ledger
+        .read_intent(&ctx.spec.id)
+        .unwrap()
+        .iter()
+        .any(|event| { matches!(event.envelope.payload, EventPayload::McpToolsChanged { .. }) }));
 }

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::effect::SideEffectKind;
-use crate::ids::{AgentBindingId, AgentId, CapabilityId, RunId, ScopeId};
+use crate::ids::{AgentBindingId, AgentId, CapabilityId, McpServerId, RunId, ScopeId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,6 +39,8 @@ pub struct SkillManifest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpToolBinding {
+    #[serde(default)]
+    pub server_id: Option<McpServerId>,
     /// MCP Server 启动命令；调用时在 Sandbox 内执行。
     pub command: String,
     pub tool_name: String,
@@ -59,6 +61,15 @@ pub struct CapabilityRegistration {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpServerRegistration {
+    pub id: McpServerId,
+    pub name: String,
+    pub command: String,
+    pub refresh_interval_seconds: u64,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum AgentTransport {
     LocalProcess {
@@ -71,7 +82,18 @@ pub enum AgentTransport {
     },
     RemoteHttp {
         endpoint: String,
+        #[serde(default)]
+        callback_url: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentBindingState {
+    Active,
+    Draining,
+    Closed,
+    Expired,
 }
 
 /// Runtime→Agent 的出站 transport 与 Agent→Runtime 的入站 session 同时存在，
@@ -89,4 +111,40 @@ pub struct AgentBinding {
     pub capability_ids: Vec<CapabilityId>,
     pub expires_at: DateTime<Utc>,
     pub active: bool,
+    #[serde(default = "default_binding_state")]
+    pub state: AgentBindingState,
+}
+
+fn default_binding_state() -> AgentBindingState {
+    AgentBindingState::Active
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum AgentBindingEvent {
+    Output {
+        text: String,
+    },
+    Heartbeat,
+    Artifact {
+        locator: String,
+        note: String,
+    },
+    Usage {
+        model: String,
+        usage: crate::resource::ModelUsage,
+    },
+    Completed {
+        summary: String,
+    },
+    Failed {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentEventEnvelope {
+    pub binding_id: AgentBindingId,
+    pub seq: u64,
+    pub event: AgentBindingEvent,
 }

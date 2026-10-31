@@ -7,7 +7,9 @@ use else_protocol::artifact::{Artifact, Checkpoint};
 use else_protocol::attention::{
     AttentionRequest, AttentionWindow, AttentionWindowKind, Decision, Ruling,
 };
-use else_protocol::capability::{AgentBinding, CapabilityRegistration};
+use else_protocol::capability::{
+    AgentBinding, AgentBindingEvent, CapabilityRegistration, McpServerRegistration,
+};
 use else_protocol::event::{Actor, EventPayload, ScopeState};
 use else_protocol::failure::ScopeFailure;
 use else_protocol::ids::{ArtifactId, AttentionId, AttentionWindowId, LeaseId, ScopeId, TimerId};
@@ -101,6 +103,10 @@ pub struct IntentProjection {
     pub plan_impacts: Vec<PlanImpact>,
     pub capabilities: BTreeMap<else_protocol::ids::CapabilityId, CapabilityRegistration>,
     pub agent_bindings: BTreeMap<else_protocol::ids::AgentBindingId, AgentBinding>,
+    pub agent_binding_events:
+        BTreeMap<else_protocol::ids::AgentBindingId, Vec<(u64, AgentBindingEvent)>>,
+    pub mcp_servers: BTreeMap<else_protocol::ids::McpServerId, McpServerRegistration>,
+    pub dirty_mcp_servers: std::collections::BTreeSet<else_protocol::ids::McpServerId>,
     pub artifacts: Vec<Artifact>,
     pub artifact_scopes: BTreeMap<ArtifactId, ScopeId>,
     pub checkpoints: Vec<Checkpoint>,
@@ -197,7 +203,49 @@ impl Projection for IntentProjection {
             EventPayload::AgentBindingRevoked { binding_id, .. } => {
                 if let Some(binding) = self.agent_bindings.get_mut(binding_id) {
                     binding.active = false;
+                    binding.state = else_protocol::capability::AgentBindingState::Closed;
                 }
+            }
+            EventPayload::AgentBindingStateChanged { binding_id, state } => {
+                if let Some(binding) = self.agent_bindings.get_mut(binding_id) {
+                    binding.state = *state;
+                    binding.active = matches!(
+                        state,
+                        else_protocol::capability::AgentBindingState::Active
+                            | else_protocol::capability::AgentBindingState::Draining
+                    );
+                }
+            }
+            EventPayload::AgentBindingEventReceived {
+                binding_id,
+                event: binding_event,
+            } => {
+                self.agent_binding_events
+                    .entry(binding_id.clone())
+                    .or_default()
+                    .push((event.seq, binding_event.clone()));
+            }
+            EventPayload::McpServerRegistered { server } => {
+                self.mcp_servers.insert(server.id.clone(), server.clone());
+            }
+            EventPayload::McpToolsChanged { server_id } => {
+                self.dirty_mcp_servers.insert(server_id.clone());
+            }
+            EventPayload::McpToolsRefreshed {
+                server_id,
+                capability_ids,
+            } => {
+                self.dirty_mcp_servers.remove(server_id);
+                self.capabilities.retain(|_, capability| {
+                    !matches!(
+                        &capability.adapter,
+                        else_protocol::capability::CapabilityAdapter::Mcp(binding)
+                            if binding.server_id.as_ref() == Some(server_id)
+                    ) || capability_ids.contains(&capability.manifest.id)
+                });
+            }
+            EventPayload::CapabilityRevoked { capability_id, .. } => {
+                self.capabilities.remove(capability_id);
             }
             EventPayload::AttentionRequested { request } => {
                 self.open_requests

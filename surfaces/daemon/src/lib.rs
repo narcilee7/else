@@ -2,11 +2,13 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use std::time::Instant;
 
 use chrono::Utc;
 use else_api::{ApiError, RuntimeHandle, RuntimeService};
@@ -173,6 +175,42 @@ fn handle_http(mut request: Request, state: &AppState) {
         respond_json(request, 200, &json!({ "ok": true, "version": "0.1.0" }));
         return;
     }
+    if path == "/v1/binding-events" {
+        let mut body = String::new();
+        if request.as_reader().read_to_string(&mut body).is_err() {
+            respond_json(request, 400, &json!({"error":"invalid body"}));
+            return;
+        }
+        let token = header(&request, "Authorization")
+            .and_then(|value| value.strip_prefix("Bearer ").map(str::to_string))
+            .unwrap_or_default();
+        let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+        let intent_id =
+            else_protocol::ids::IntentId::from(value["intent_id"].as_str().unwrap_or_default());
+        let binding_id = else_protocol::ids::AgentBindingId::from(
+            value["binding_id"].as_str().unwrap_or_default(),
+        );
+        let event: else_protocol::capability::AgentBindingEvent =
+            match serde_json::from_value(value["event"].clone()) {
+                Ok(event) => event,
+                Err(error) => {
+                    respond_json(request, 400, &json!({"error":error.to_string()}));
+                    return;
+                }
+            };
+        match state
+            .handle
+            .record_agent_binding_event(&intent_id, &binding_id, &token, event)
+        {
+            Ok(projection) => {
+                respond_json(request, 200, &json!({"ok":true,"cursor":projection.cursor}));
+            }
+            Err(error) => {
+                respond_json(request, 403, &json!({"error":error.to_string()}));
+            }
+        }
+        return;
+    }
     if !authorized(&request, &state.token) {
         respond_json(request, 401, &json!({ "error": "unauthorized" }));
         return;
@@ -180,6 +218,34 @@ fn handle_http(mut request: Request, state: &AppState) {
     let mut body = String::new();
     if request.method() != &Method::Get && request.as_reader().read_to_string(&mut body).is_err() {
         respond_json(request, 400, &json!({ "error": "invalid body" }));
+        return;
+    }
+    let path_segments: Vec<_> = path.trim_matches('/').split('/').collect();
+    if path_segments.len() == 7
+        && path_segments[0] == "v1"
+        && path_segments[1] == "intents"
+        && path_segments[3] == "bindings"
+        && path_segments[5] == "events"
+        && path_segments[6] == "stream"
+        && request.method() == &Method::Get
+    {
+        let intent_id = else_protocol::ids::IntentId::from(path_segments[2]);
+        let binding_id = else_protocol::ids::AgentBindingId::from(path_segments[4]);
+        let cursor = query_value(request.url(), "cursor")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let reader = BindingEventStream::new(state.handle.clone(), intent_id, binding_id, cursor);
+        let response = Response::new(
+            StatusCode(200),
+            vec![
+                Header::from_bytes("Content-Type", "text/event-stream").expect("static header"),
+                Header::from_bytes("Cache-Control", "no-cache").expect("static header"),
+            ],
+            reader,
+            None,
+            None,
+        );
+        let _ = request.respond(response);
         return;
     }
     let idempotency_key = header(&request, "Idempotency-Key");
@@ -205,8 +271,7 @@ fn handle_http(mut request: Request, state: &AppState) {
         }
     }
 
-    let segments: Vec<_> = path.trim_matches('/').split('/').collect();
-    let result = route(&request, state, &segments, &body);
+    let result = route(&request, state, &path_segments, &body);
     match result {
         Ok((status, response_body)) => {
             if let Some(key) = idempotency_key {
@@ -393,6 +458,43 @@ fn route(
                 &else_protocol::ids::AgentBindingId::from(segments[4]),
             )?;
             return Ok((200, json_string(&snapshot(&projection))?));
+        }
+        if segments.len() == 6
+            && segments[3] == "bindings"
+            && segments[5] == "events"
+            && request.method() == &Method::Get
+        {
+            let cursor = query_value(request.url(), "cursor")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            let binding_id = else_protocol::ids::AgentBindingId::from(segments[4]);
+            let events = state
+                .handle
+                .projection(&intent_id)?
+                .agent_binding_events
+                .get(&binding_id)
+                .into_iter()
+                .flatten()
+                .filter(|(seq, _)| *seq > cursor)
+                .map(|(seq, event)| json!({"seq":seq,"event":event}))
+                .collect::<Vec<_>>();
+            return Ok((200, json_string(&events)?));
+        }
+        if segments.len() == 6
+            && segments[3] == "bindings"
+            && segments[5] == "state"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).map_err(json_error)?;
+            let state_value: else_protocol::capability::AgentBindingState =
+                serde_json::from_value(value["state"].clone()).map_err(json_error)?;
+            state.handle.transition_agent_binding(
+                &intent_id,
+                &else_protocol::ids::AgentBindingId::from(segments[4]),
+                state_value,
+            )?;
+            return Ok((200, json!({"ok":true}).to_string()));
         }
         if segments.len() == 6
             && segments[3] == "decisions"
@@ -609,6 +711,74 @@ fn json_error(error: serde_json::Error) -> DaemonError {
     DaemonError::InvalidRequest(error.to_string())
 }
 
+struct BindingEventStream {
+    handle: RuntimeHandle,
+    intent_id: else_protocol::ids::IntentId,
+    binding_id: else_protocol::ids::AgentBindingId,
+    cursor: u64,
+    buffer: Vec<u8>,
+    position: usize,
+    deadline: Instant,
+}
+
+impl BindingEventStream {
+    fn new(
+        handle: RuntimeHandle,
+        intent_id: else_protocol::ids::IntentId,
+        binding_id: else_protocol::ids::AgentBindingId,
+        cursor: u64,
+    ) -> Self {
+        Self {
+            handle,
+            intent_id,
+            binding_id,
+            cursor,
+            buffer: Vec::new(),
+            position: 0,
+            deadline: Instant::now() + Duration::from_secs(60),
+        }
+    }
+}
+
+impl Read for BindingEventStream {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            if self.position < self.buffer.len() {
+                let available = &self.buffer[self.position..];
+                let count = available.len().min(output.len());
+                output[..count].copy_from_slice(&available[..count]);
+                self.position += count;
+                return Ok(count);
+            }
+            if Instant::now() >= self.deadline {
+                return Ok(0);
+            }
+            self.buffer.clear();
+            self.position = 0;
+            if let Ok(projection) = self.handle.projection(&self.intent_id) {
+                if let Some(events) = projection.agent_binding_events.get(&self.binding_id) {
+                    let cursor = self.cursor;
+                    for (seq, event) in events.iter().filter(|(seq, _)| *seq > cursor) {
+                        self.cursor = *seq;
+                        let payload = serde_json::to_string(&json!({
+                            "seq":seq,
+                            "event":event
+                        }))
+                        .unwrap_or_else(|_| "{}".into());
+                        self.buffer.extend_from_slice(b"data: ");
+                        self.buffer.extend_from_slice(payload.as_bytes());
+                        self.buffer.extend_from_slice(b"\n\n");
+                    }
+                    if !self.buffer.is_empty() {
+                        continue;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+}
+
 fn write_token(dir: &Path, token: &str) -> Result<()> {
     let path = dir.join("daemon-token");
     let mut options = OpenOptions::new();
@@ -694,6 +864,30 @@ mod tests {
         (status, body)
     }
 
+    fn request_with_token(daemon: &Daemon, token: &str, path: &str, body: &str) -> (u16, String) {
+        let authority = daemon.url.trim_start_matches("http://");
+        let mut stream = TcpStream::connect(authority).unwrap();
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        let status = response
+            .split_whitespace()
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap();
+        let body = response
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .unwrap_or_default()
+            .to_string();
+        (status, body)
+    }
+
     #[test]
     fn daemon_exposes_authenticated_intent_api_and_idempotency() {
         let dir = tempfile::tempdir().unwrap();
@@ -758,6 +952,23 @@ mod tests {
         );
         assert_eq!(status, 200, "{binding}");
         assert!(binding.contains("inbound_session"));
+        let binding_value: Value = serde_json::from_str(&binding).unwrap();
+        let binding_id = binding_value["id"].as_str().unwrap();
+        let inbound_session = binding_value["inbound_session"].as_str().unwrap();
+        let event_body = serde_json::json!({
+            "intent_id": intent_id,
+            "binding_id": binding_id,
+            "event": {"type": "output", "data": {"text": "remote callback"}}
+        })
+        .to_string();
+        let (status, callback) =
+            request_with_token(&daemon, inbound_session, "/v1/binding-events", &event_body);
+        assert_eq!(status, 200, "{callback}");
+        let binding_events_path = format!("/v1/intents/{intent_id}/bindings/{binding_id}/events");
+        let (status, binding_events) =
+            request(&daemon, "GET", &binding_events_path, "", None, None);
+        assert_eq!(status, 200);
+        assert!(binding_events.contains("remote callback"));
         let (status, bindings) = request(&daemon, "GET", &bindings_path, "", None, None);
         assert_eq!(status, 200);
         assert_eq!(

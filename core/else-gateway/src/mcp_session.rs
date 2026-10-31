@@ -15,6 +15,7 @@ struct McpSession {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
+    notifications: Vec<Value>,
 }
 
 impl McpSession {
@@ -43,6 +44,7 @@ impl McpSession {
             stdin,
             stdout: BufReader::new(stdout),
             next_id: 1,
+            notifications: Vec::new(),
         };
         session
             .request(
@@ -86,6 +88,13 @@ impl McpSession {
             let Ok(value) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
+            if value["method"]
+                .as_str()
+                .is_some_and(|method| method.starts_with("notifications/"))
+            {
+                self.notifications.push(value);
+                continue;
+            }
             if value["id"] == id {
                 if value.get("error").is_some() {
                     return Err(value["error"].to_string());
@@ -93,6 +102,30 @@ impl McpSession {
                 return Ok(value["result"].clone());
             }
         }
+    }
+}
+
+pub fn take_list_changed(workspace: &Path, command: &str) -> bool {
+    let sessions = SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (workspace.to_path_buf(), command.to_string());
+    let mut sessions = sessions.lock().unwrap_or_else(|poison| poison.into_inner());
+    let Some(session) = sessions.get_mut(&key) else {
+        return false;
+    };
+    let before = session.notifications.len();
+    session.notifications.retain(|notification| {
+        notification["method"].as_str() != Some("notifications/tools/list_changed")
+    });
+    session.notifications.len() != before
+}
+
+/// 显式关闭全部长驻 MCP session；Runtime 重开后可依据持久注册重建。
+pub fn shutdown_all() {
+    if let Some(sessions) = SESSIONS.get() {
+        sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
     }
 }
 

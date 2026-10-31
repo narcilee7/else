@@ -113,6 +113,19 @@ impl<'a> ToolGateway<'a> {
         self.check_authority(ctx, &call)?;
         ensure_not_fenced(self.ledger, ctx)?;
         let outcome = self.run_tool(&call, &capability);
+        if let CapabilityAdapter::Mcp(binding) = &capability.adapter {
+            if let Some(server_id) = &binding.server_id {
+                if crate::mcp_session::take_list_changed(&self.workspace, &binding.command) {
+                    ctx.record(
+                        self.ledger,
+                        Actor::System,
+                        EventPayload::McpToolsChanged {
+                            server_id: server_id.clone(),
+                        },
+                    )?;
+                }
+            }
+        }
         self.complete(ctx, call.id, outcome)
     }
 
