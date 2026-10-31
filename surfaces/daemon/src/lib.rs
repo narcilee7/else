@@ -346,6 +346,28 @@ fn route(
                 _ => {}
             }
         }
+        if segments.len() == 5
+            && segments[3] == "mcp"
+            && segments[4] == "discover"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).map_err(json_error)?;
+            let server_name = value["server_name"]
+                .as_str()
+                .ok_or_else(|| DaemonError::InvalidRequest("missing server_name".into()))?;
+            let command = value["command"]
+                .as_str()
+                .ok_or_else(|| DaemonError::InvalidRequest("missing command".into()))?;
+            return Ok((
+                200,
+                json_string(
+                    &state
+                        .handle
+                        .discover_mcp_tools(&intent_id, server_name, command)?,
+                )?,
+            ));
+        }
         if segments.len() == 6
             && segments[3] == "bindings"
             && segments[5] == "revoke"
@@ -359,6 +381,18 @@ fn route(
                 value["reason"].as_str().unwrap_or("surface revoke"),
             )?;
             return Ok((200, json!({"ok": true}).to_string()));
+        }
+        if segments.len() == 6
+            && segments[3] == "bindings"
+            && segments[5] == "dispatch"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let projection = state.handle.dispatch_agent_binding(
+                &intent_id,
+                &else_protocol::ids::AgentBindingId::from(segments[4]),
+            )?;
+            return Ok((200, json_string(&snapshot(&projection))?));
         }
         if segments.len() == 6
             && segments[3] == "decisions"

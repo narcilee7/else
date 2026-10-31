@@ -5,6 +5,7 @@
 
 mod abort;
 mod attention;
+mod binding;
 mod capability;
 mod context;
 mod dependency;
@@ -203,7 +204,7 @@ impl Runtime {
         let Some((ctx, snapshot)) = self.prepare_root_run(intent_id, true)? else {
             return self.projection(intent_id);
         };
-        let tool_gateway = self.start_tool_gateway(&ctx.spec, &ctx, &self.workspace)?;
+        let tool_gateway = self.start_tool_gateway(&ctx.spec, &ctx, &self.workspace, None)?;
         let tool_gateway_endpoint = tool_gateway.as_ref().map(|gateway| {
             let endpoint = gateway.endpoint();
             else_harness::adapter::ToolGatewayEndpoint {

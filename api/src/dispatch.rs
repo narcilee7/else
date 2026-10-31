@@ -8,7 +8,7 @@ use else_gateway::{ExecContext, GatewayError};
 use else_harness::adapter::{HarnessAdapter, HarnessRequest};
 use else_ledger::IntentProjection;
 use else_protocol::event::{Actor, EventPayload, ScopeState};
-use else_protocol::ids::{IntentId, RunId, ScopeId};
+use else_protocol::ids::{CapabilityId, IntentId, RunId, ScopeId};
 use else_protocol::memory::SnapshotAudience;
 
 use crate::scope::scope_spec;
@@ -49,6 +49,16 @@ impl Runtime {
         intent_id: &IntentId,
         scope_id: &ScopeId,
         adapter: &dyn HarnessAdapter,
+    ) -> Result<IntentProjection> {
+        self.dispatch_scope_adapter_with_capabilities(intent_id, scope_id, adapter, None)
+    }
+
+    pub(crate) fn dispatch_scope_adapter_with_capabilities(
+        &self,
+        intent_id: &IntentId,
+        scope_id: &ScopeId,
+        adapter: &dyn HarnessAdapter,
+        allowed_capabilities: Option<Vec<CapabilityId>>,
     ) -> Result<IntentProjection> {
         let projection = self.projection(intent_id)?;
         let scope = projection
@@ -102,7 +112,8 @@ impl Runtime {
             generation,
             snapshot_id: Some(snapshot.id.clone()),
         };
-        let tool_gateway = self.start_tool_gateway(&ctx.spec, &ctx, &scope_workspace)?;
+        let tool_gateway =
+            self.start_tool_gateway(&ctx.spec, &ctx, &scope_workspace, allowed_capabilities)?;
         let tool_gateway_endpoint = tool_gateway.as_ref().map(|gateway| {
             let endpoint = gateway.endpoint();
             else_harness::adapter::ToolGatewayEndpoint {

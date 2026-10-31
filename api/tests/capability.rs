@@ -3,6 +3,7 @@
 use else_api::Runtime;
 use else_protocol::capability::{AgentTransport, CapabilityKind};
 use else_protocol::ids::AgentId;
+use else_protocol::intent::OpaqueHarnessPolicy;
 
 #[test]
 fn skill_registration_and_agent_binding_are_replayable() {
@@ -61,4 +62,89 @@ fn skill_registration_and_agent_binding_are_replayable() {
     let projection = reopened.projection(&spec.id).unwrap();
     assert!(projection.capabilities.contains_key(&skill.manifest.id));
     assert!(!projection.agent_bindings[&binding.id].active);
+}
+
+#[test]
+fn local_process_binding_dispatches_outbound_agent_and_verifies_result() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("Bound agent outcome", None).unwrap();
+    runtime
+        .configure_opaque_harness(
+            &spec.id,
+            OpaqueHarnessPolicy {
+                enabled: true,
+                allow_native_provider_network: false,
+                use_tool_gateway: true,
+                max_observed_effect: else_protocol::effect::SideEffectKind::Reversible,
+            },
+        )
+        .unwrap();
+    std::fs::write(
+        dir.path().join("workspace/agent.sh"),
+        "printf '%s\\n' '{\"type\":\"output\",\"text\":\"bound-agent-output\"}'\nprintf '%s\\n' '{\"type\":\"completed\",\"summary\":\"done\"}'\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("workspace/plan.md"), "bound result").unwrap();
+    let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
+    let binding = runtime
+        .bind_agent(
+            &spec.id,
+            AgentId::new(),
+            "local-agent",
+            root,
+            None,
+            AgentTransport::LocalProcess {
+                command: "sh agent.sh".into(),
+            },
+            vec![],
+            60,
+        )
+        .unwrap();
+    let projection = runtime
+        .dispatch_agent_binding(&spec.id, &binding.id)
+        .unwrap();
+    assert_eq!(
+        projection.state,
+        Some(else_protocol::intent::IntentState::Completed)
+    );
+    assert!(runtime
+        .events(&spec.id)
+        .unwrap()
+        .iter()
+        .any(|event| matches!(
+            &event.envelope.payload,
+            else_protocol::event::EventPayload::HarnessOutput { text }
+                if text == "bound-agent-output"
+        )));
+}
+
+#[test]
+fn mcp_discovery_registers_tools_with_manifest_effects() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("MCP discovery", None).unwrap();
+    std::fs::write(
+        dir.path().join("workspace/mcp.sh"),
+        r#"while IFS= read -r line; do
+case "$line" in
+  *'"id":2'*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"search","description":"search docs","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}},{"name":"send","description":"send message","inputSchema":{"type":"object"},"annotations":{"destructiveHint":true}}]}}' ;;
+esac
+done
+"#,
+    )
+    .unwrap();
+    let discovered = runtime
+        .discover_mcp_tools(&spec.id, "docs", "sh mcp.sh")
+        .unwrap();
+    assert_eq!(discovered.len(), 2);
+    assert_eq!(
+        discovered[0].manifest.effect,
+        else_protocol::effect::SideEffectKind::ReadOnly
+    );
+    assert_eq!(
+        discovered[1].manifest.effect,
+        else_protocol::effect::SideEffectKind::Irreversible
+    );
+    assert_eq!(runtime.capabilities(&spec.id).unwrap().len(), 5);
 }

@@ -14,6 +14,75 @@ use else_protocol::ids::{AgentBindingId, AgentId, CapabilityId, IntentId, RunId,
 use crate::{ApiError, Result, Runtime};
 
 impl Runtime {
+    pub fn discover_mcp_tools(
+        &self,
+        intent_id: &IntentId,
+        server_name: &str,
+        command: &str,
+    ) -> Result<Vec<CapabilityRegistration>> {
+        let requests = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "else", "version": "0.1.0"}
+                }
+            }),
+            serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+        );
+        let sandbox =
+            else_environment::Sandbox::new(else_environment::SandboxProfile::new(&self.workspace))
+                .map_err(|error| ApiError::NotFound(error.to_string()))?;
+        let output = sandbox
+            .run_shell_with_input(command, &requests)
+            .map_err(|error| ApiError::NotFound(error.to_string()))?;
+        let result = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|value| value["id"] == 2)
+            .ok_or_else(|| ApiError::NotFound("MCP tools/list response".into()))?;
+        let tools = result["result"]["tools"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut registrations = Vec::new();
+        for tool in tools {
+            let Some(tool_name) = tool["name"].as_str() else {
+                continue;
+            };
+            let effect = if tool["annotations"]["readOnlyHint"].as_bool() == Some(true) {
+                SideEffectKind::ReadOnly
+            } else if tool["annotations"]["destructiveHint"].as_bool() == Some(true) {
+                SideEffectKind::Irreversible
+            } else {
+                SideEffectKind::Unknown
+            };
+            let registration = CapabilityRegistration {
+                manifest: CapabilityManifest {
+                    id: CapabilityId::from(format!("mcp/{server_name}/{tool_name}")),
+                    name: format!("{server_name}:{tool_name}"),
+                    description: tool["description"].as_str().unwrap_or("MCP tool").into(),
+                    kind: CapabilityKind::McpTool,
+                    effect,
+                    idempotency_required: effect != SideEffectKind::ReadOnly,
+                    input_schema: tool["inputSchema"].clone(),
+                },
+                adapter: CapabilityAdapter::Mcp(McpToolBinding {
+                    command: command.into(),
+                    tool_name: tool_name.into(),
+                }),
+            };
+            self.register_capability(intent_id, registration.clone())?;
+            registrations.push(registration);
+        }
+        Ok(registrations)
+    }
+
     pub fn capabilities(&self, intent_id: &IntentId) -> Result<Vec<CapabilityRegistration>> {
         let projection = self.projection(intent_id)?;
         let mut capabilities = else_gateway::tool::builtin_capabilities();

@@ -50,6 +50,12 @@ enum Command {
         capability: CapabilityRegistration,
         reply: Reply<()>,
     },
+    DiscoverMcp {
+        intent_id: IntentId,
+        server_name: String,
+        command: String,
+        reply: Reply<Vec<CapabilityRegistration>>,
+    },
     BindAgent {
         intent_id: IntentId,
         agent_id: AgentId,
@@ -66,6 +72,11 @@ enum Command {
         binding_id: AgentBindingId,
         reason: String,
         reply: Reply<()>,
+    },
+    DispatchBinding {
+        intent_id: IntentId,
+        binding_id: AgentBindingId,
+        reply: Reply<IntentProjection>,
     },
     RecordExternalEvent {
         intent_id: IntentId,
@@ -175,6 +186,20 @@ impl RuntimeHandle {
         })
     }
 
+    pub fn discover_mcp_tools(
+        &self,
+        intent_id: &IntentId,
+        server_name: &str,
+        command: &str,
+    ) -> Result<Vec<CapabilityRegistration>> {
+        self.request(|reply| Command::DiscoverMcp {
+            intent_id: intent_id.clone(),
+            server_name: server_name.into(),
+            command: command.into(),
+            reply,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn bind_agent(
         &self,
@@ -210,6 +235,18 @@ impl RuntimeHandle {
             intent_id: intent_id.clone(),
             binding_id: binding_id.clone(),
             reason: reason.into(),
+            reply,
+        })
+    }
+
+    pub fn dispatch_agent_binding(
+        &self,
+        intent_id: &IntentId,
+        binding_id: &AgentBindingId,
+    ) -> Result<IntentProjection> {
+        self.request(|reply| Command::DispatchBinding {
+            intent_id: intent_id.clone(),
+            binding_id: binding_id.clone(),
             reply,
         })
     }
@@ -410,6 +447,14 @@ fn handle_command(runtime: &Runtime, command: Command) {
         } => {
             let _ = reply.send(runtime.register_capability(&intent_id, capability));
         }
+        Command::DiscoverMcp {
+            intent_id,
+            server_name,
+            command,
+            reply,
+        } => {
+            let _ = reply.send(runtime.discover_mcp_tools(&intent_id, &server_name, &command));
+        }
         Command::BindAgent {
             intent_id,
             agent_id,
@@ -439,6 +484,13 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.revoke_agent_binding(&intent_id, &binding_id, &reason));
+        }
+        Command::DispatchBinding {
+            intent_id,
+            binding_id,
+            reply,
+        } => {
+            let _ = reply.send(runtime.dispatch_agent_binding(&intent_id, &binding_id));
         }
         Command::RecordExternalEvent {
             intent_id,

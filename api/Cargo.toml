@@ -11,6 +11,7 @@ else-context = { path = "../core/else-context" }
 else-attention = { path = "../core/else-attention" }
 else-gateway = { path = "../core/else-gateway" }
 else-harness = { path = "../core/else-harness" }
+else-environment = { path = "../core/else-environment" }
 else-workspace = { path = "../core/else-workspace" }
 chrono.workspace = true
 serde_json.workspace = true
@@ -20,4 +21,3 @@ uuid.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 serde_json.workspace = true
-else-environment = { path = "../core/else-environment" }

@@ -11,7 +11,7 @@ use std::time::Duration;
 use else_gateway::{ExecContext, GatewayError, ToolGateway};
 use else_ledger::Ledger;
 use else_protocol::effect::ToolCall;
-use else_protocol::ids::ToolCallId;
+use else_protocol::ids::{CapabilityId, ToolCallId};
 
 use crate::Result;
 
@@ -29,7 +29,12 @@ pub(crate) struct ToolGatewayServer {
 }
 
 impl ToolGatewayServer {
-    pub(crate) fn start(ctx: ExecContext, db_path: PathBuf, workspace: PathBuf) -> Result<Self> {
+    pub(crate) fn start(
+        ctx: ExecContext,
+        db_path: PathBuf,
+        workspace: PathBuf,
+        allowed_capabilities: Option<Vec<CapabilityId>>,
+    ) -> Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
@@ -38,6 +43,7 @@ impl ToolGatewayServer {
         let thread_stop = stop.clone();
         let serial = Arc::new(Mutex::new(()));
         let worker_token = token.clone();
+        let allowed_capabilities = allowed_capabilities.map(Arc::new);
         let worker = thread::spawn(move || {
             while !thread_stop.load(Ordering::SeqCst) {
                 match listener.accept() {
@@ -46,10 +52,18 @@ impl ToolGatewayServer {
                         let db_path = db_path.clone();
                         let workspace = workspace.clone();
                         let token = worker_token.clone();
+                        let allowed_capabilities = allowed_capabilities.clone();
                         let serial = serial.clone();
                         thread::spawn(move || {
                             let _guard = serial.lock().unwrap_or_else(|poison| poison.into_inner());
-                            handle_request(stream, &ctx, &db_path, &workspace, &token);
+                            handle_request(
+                                stream,
+                                &ctx,
+                                &db_path,
+                                &workspace,
+                                &token,
+                                allowed_capabilities.as_deref().map(Vec::as_slice),
+                            );
                         });
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -94,6 +108,7 @@ fn handle_request(
     db_path: &Path,
     workspace: &Path,
     token: &str,
+    allowed_capabilities: Option<&[CapabilityId]>,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let Some((headers, body)) = read_http_request(&mut stream) else {
@@ -127,6 +142,21 @@ fn handle_request(
         }
     };
     let tools = ToolGateway::new(&ledger, workspace.to_path_buf());
+    let capability = tools.list_capabilities().into_iter().find(|capability| {
+        capability.manifest.id.to_string() == tool || capability.manifest.name == tool
+    });
+    let Some(capability) = capability else {
+        respond(&mut stream, 400, &json_error("unknown capability"));
+        return;
+    };
+    if allowed_capabilities.is_some_and(|allowed| !allowed.contains(&capability.manifest.id)) {
+        respond(
+            &mut stream,
+            403,
+            &json_error("capability is outside AgentBinding subset"),
+        );
+        return;
+    }
     let Some(effect) = tools.effect_for(tool) else {
         respond(&mut stream, 400, &json_error("unknown capability"));
         return;

@@ -5,6 +5,7 @@ use else_harness::adapter::HarnessAdapter;
 use else_harness::egress::EgressProxy;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::harness::{HarnessNetworkAccess, ToolEffectVisibility};
+use else_protocol::ids::CapabilityId;
 use else_protocol::ids::IntentId;
 use else_protocol::intent::{IntentSpec, OpaqueHarnessPolicy};
 
@@ -135,6 +136,7 @@ impl Runtime {
         spec: &IntentSpec,
         ctx: &else_gateway::ExecContext,
         workspace: &std::path::Path,
+        allowed_capabilities: Option<Vec<CapabilityId>>,
     ) -> Result<Option<ToolGatewayServer>> {
         if !spec.opaque_harness_policy.use_tool_gateway {
             return Ok(None);
@@ -144,6 +146,12 @@ impl Runtime {
             .parent()
             .ok_or_else(|| ApiError::NotFound("runtime database path".into()))?
             .join("else.db");
-        ToolGatewayServer::start(ctx.clone(), db_path, workspace.to_path_buf()).map(Some)
+        ToolGatewayServer::start(
+            ctx.clone(),
+            db_path,
+            workspace.to_path_buf(),
+            allowed_capabilities,
+        )
+        .map(Some)
     }
 }
