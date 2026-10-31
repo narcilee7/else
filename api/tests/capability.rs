@@ -3,6 +3,7 @@
 use else_api::Runtime;
 use else_protocol::capability::{AgentTransport, CapabilityKind};
 use else_protocol::ids::AgentId;
+#[cfg(target_os = "macos")]
 use else_protocol::intent::OpaqueHarnessPolicy;
 
 #[test]
@@ -65,6 +66,7 @@ fn skill_registration_and_agent_binding_are_replayable() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn local_process_binding_dispatches_outbound_agent_and_verifies_result() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
@@ -155,6 +157,7 @@ done
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn mcp_stdio_binding_dispatches_task_through_selected_tool() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();

@@ -62,6 +62,7 @@ fn opaque_harness(network: else_environment::NetworkPolicy) -> ProcessHarness<Js
     }
 }
 
+#[cfg(target_os = "macos")]
 fn network_probe_harness() -> ProcessHarness<JsonParser> {
     let mut harness = opaque_harness(else_environment::NetworkPolicy::AllowOutbound);
     harness.name = "opaque-network-probe";
@@ -81,6 +82,7 @@ fn network_probe_harness() -> ProcessHarness<JsonParser> {
     harness
 }
 
+#[cfg(target_os = "macos")]
 fn tool_gateway_harness() -> ProcessHarness<JsonParser> {
     let mut harness = opaque_harness(else_environment::NetworkPolicy::Deny);
     harness.name = "opaque-tool-gateway";
@@ -185,6 +187,7 @@ fn observed_effect_above_profile_aborts_the_harness() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn native_provider_network_requires_a_separate_explicit_opt_in() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
@@ -215,6 +218,7 @@ fn native_provider_network_requires_a_separate_explicit_opt_in() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn egress_proxy_denies_unlisted_host_and_records_decision() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
@@ -244,6 +248,7 @@ fn egress_proxy_denies_unlisted_host_and_records_decision() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn tool_gateway_forces_workspace_writes_and_records_authorized_events() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
