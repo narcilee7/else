@@ -61,9 +61,17 @@ pub struct CapabilityRegistration {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum AgentTransport {
-    LocalProcess { command: String },
-    McpStdio { command: String },
-    RemoteHttp { endpoint: String },
+    LocalProcess {
+        command: String,
+    },
+    McpStdio {
+        command: String,
+        #[serde(default)]
+        tool_name: Option<String>,
+    },
+    RemoteHttp {
+        endpoint: String,
+    },
 }
 
 /// Runtime→Agent 的出站 transport 与 Agent→Runtime 的入站 session 同时存在，

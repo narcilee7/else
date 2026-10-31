@@ -148,3 +148,55 @@ done
     );
     assert_eq!(runtime.capabilities(&spec.id).unwrap().len(), 5);
 }
+
+#[test]
+fn mcp_stdio_binding_dispatches_task_through_selected_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("MCP binding outcome", None).unwrap();
+    runtime
+        .configure_opaque_harness(
+            &spec.id,
+            OpaqueHarnessPolicy {
+                enabled: true,
+                allow_native_provider_network: false,
+                use_tool_gateway: true,
+                max_observed_effect: else_protocol::effect::SideEffectKind::Reversible,
+            },
+        )
+        .unwrap();
+    std::fs::write(
+        dir.path().join("workspace/mcp-agent.sh"),
+        r#"while IFS= read -r line; do
+case "$line" in
+  *'"id":2'*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":"agent accepted task"}}' ;;
+esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("workspace/plan.md"), "mcp result").unwrap();
+    let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
+    let binding = runtime
+        .bind_agent(
+            &spec.id,
+            AgentId::new(),
+            "mcp-agent",
+            root,
+            None,
+            AgentTransport::McpStdio {
+                command: "sh mcp-agent.sh".into(),
+                tool_name: Some("run".into()),
+            },
+            vec![],
+            60,
+        )
+        .unwrap();
+    let projection = runtime
+        .dispatch_agent_binding(&spec.id, &binding.id)
+        .unwrap();
+    assert_eq!(
+        projection.state,
+        Some(else_protocol::intent::IntentState::Completed)
+    );
+}

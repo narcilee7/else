@@ -1,6 +1,8 @@
 //! Outbound Agent dispatch over a persisted AgentBinding.
 
-use else_harness::adapter::{shell_quote, BridgeEvent, HarnessPrep, LineParser, ProcessHarness};
+use else_harness::adapter::{
+    shell_quote, BridgeEvent, HarnessPrep, LineParser, PrepareFn, ProcessHarness,
+};
 use else_ledger::IntentProjection;
 use else_protocol::capability::AgentTransport;
 use else_protocol::effect::SideEffectKind;
@@ -76,15 +78,117 @@ impl Runtime {
                 "binding {binding_id} is inactive"
             )));
         }
-        let AgentTransport::LocalProcess { command } = &binding.outbound else {
-            return Err(ApiError::NotFound(
-                "only LocalProcess outbound transport is executable".into(),
-            ));
-        };
-        let command = command.clone();
         let capabilities = binding.capability_ids.clone();
         let prompt_capabilities = capabilities.clone();
         let binding_session = binding.inbound_session.clone();
+        let (prepare, network, egress_allowlist): (
+            PrepareFn,
+            else_environment::NetworkPolicy,
+            &'static [&'static str],
+        ) = match binding.outbound.clone() {
+            AgentTransport::LocalProcess { command } => {
+                let session = binding_session.clone();
+                let allowed = prompt_capabilities.clone();
+                (
+                    Box::new(move |_workspace, _private, prompt| {
+                        let dispatch = format!(
+                            "{prompt}\n\n# Agent Binding\nsession={session}\ncapabilities={allowed:?}"
+                        );
+                        Ok(HarnessPrep {
+                            command: format!("{} {}", command, shell_quote(&dispatch)),
+                            env: vec![],
+                            read_paths: vec![],
+                            write_paths: vec![],
+                            cleanup_paths: vec![],
+                        })
+                    }),
+                    else_environment::NetworkPolicy::Deny,
+                    &[],
+                )
+            }
+            AgentTransport::McpStdio { command, tool_name } => {
+                let tool_name = tool_name.ok_or_else(|| {
+                    ApiError::NotFound("McpStdio binding requires tool_name".into())
+                })?;
+                let session = binding_session.clone();
+                (
+                    Box::new(move |_workspace, _private, prompt| {
+                        let requests = format!(
+                            "{}\n{}\n{}\n",
+                            serde_json::json!({
+                                "jsonrpc":"2.0","id":1,"method":"initialize",
+                                "params":{
+                                    "protocolVersion":"2025-03-26",
+                                    "capabilities":{},
+                                    "clientInfo":{"name":"else-binding","version":"0.1.0"}
+                                }
+                            }),
+                            serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+                            serde_json::json!({
+                                "jsonrpc":"2.0","id":2,"method":"tools/call",
+                                "params":{
+                                    "name":tool_name,
+                                    "arguments":{"task":prompt,"session":session}
+                                }
+                            }),
+                        );
+                        Ok(HarnessPrep {
+                            command: format!(
+                                "printf '%s' {} | {} && printf '%s\\n' '{{\"type\":\"completed\",\"summary\":\"mcp binding done\"}}'",
+                                shell_quote(&requests),
+                                command
+                            ),
+                            env: vec![],
+                            read_paths: vec![],
+                            write_paths: vec![],
+                            cleanup_paths: vec![],
+                        })
+                    }),
+                    else_environment::NetworkPolicy::Deny,
+                    &[],
+                )
+            }
+            AgentTransport::RemoteHttp { endpoint } => {
+                let host = endpoint
+                    .strip_prefix("https://")
+                    .and_then(|rest| rest.split('/').next())
+                    .and_then(|authority| authority.split(':').next())
+                    .ok_or_else(|| {
+                        ApiError::NotFound("RemoteHttp binding requires an https endpoint".into())
+                    })?;
+                let static_host: &'static str = Box::leak(host.to_string().into_boxed_str());
+                let allowlist: &'static [&'static str] =
+                    Box::leak(vec![static_host].into_boxed_slice());
+                let session = binding_session.clone();
+                let allowed = prompt_capabilities.clone();
+                (
+                    Box::new(move |_workspace, _private, prompt| {
+                        let body = serde_json::json!({
+                            "task": prompt,
+                            "inbound_session": session,
+                            "capability_ids": allowed,
+                        })
+                        .to_string();
+                        Ok(HarnessPrep {
+                            command: format!(
+                                "curl -sS --fail --max-time 900 -X POST \
+                                 -H 'Content-Type: application/json' \
+                                 -H {} --data {} {}",
+                                shell_quote(&format!("Authorization: Bearer {session}")),
+                                shell_quote(&body),
+                                shell_quote(&endpoint)
+                            ),
+                            env: vec![],
+                            read_paths: vec![],
+                            write_paths: vec![],
+                            cleanup_paths: vec![],
+                        })
+                    }),
+                    else_environment::NetworkPolicy::AllowOutbound,
+                    allowlist,
+                )
+            }
+        };
         let harness = ProcessHarness {
             name: "bound-agent",
             capabilities: HarnessCapabilities {
@@ -94,21 +198,10 @@ impl Runtime {
                 tool_effects: ToolEffectVisibility::Opaque,
                 interactive_input: false,
             },
-            network: else_environment::NetworkPolicy::Deny,
-            egress_allowlist: &[],
+            network,
+            egress_allowlist,
             timeout: Some(std::time::Duration::from_secs(15 * 60)),
-            prepare: Box::new(move |_workspace, _private, prompt| {
-                let dispatch = format!(
-                    "{prompt}\n\n# Agent Binding\nsession={binding_session}\ncapabilities={prompt_capabilities:?}"
-                );
-                Ok(HarnessPrep {
-                    command: format!("{} {}", command, shell_quote(&dispatch)),
-                    env: vec![],
-                    read_paths: vec![],
-                    write_paths: vec![],
-                    cleanup_paths: vec![],
-                })
-            }),
+            prepare,
             parser: BindingParser,
         };
         self.dispatch_scope_adapter_with_capabilities(
