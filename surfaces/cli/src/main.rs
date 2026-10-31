@@ -203,6 +203,25 @@ enum Command {
         intent_id: String,
         /// 本地 JSON/GraphQL 响应或 HTTPS URL
         source: String,
+        /// 从环境变量读取 API Token；秘密不进入命令行历史
+        #[arg(long)]
+        token_env: Option<String>,
+        /// 可选 OAuth refresh token 的环境变量
+        #[arg(long)]
+        refresh_token_env: Option<String>,
+        #[arg(long)]
+        token_url: Option<String>,
+        #[arg(long)]
+        client_id: Option<String>,
+        #[arg(long)]
+        client_secret_env: Option<String>,
+        #[arg(long)]
+        expires_at: Option<String>,
+        #[arg(long = "scope")]
+        credential_scopes: Vec<String>,
+        /// 后台同步间隔（秒）
+        #[arg(long, default_value_t = 300)]
+        sync_interval: u64,
         #[arg(long, default_value = "linear")]
         name: String,
     },
@@ -213,6 +232,22 @@ enum Command {
         adapter: String,
         /// 本地文件或 HTTPS URL
         source: String,
+        #[arg(long)]
+        token_env: Option<String>,
+        #[arg(long)]
+        refresh_token_env: Option<String>,
+        #[arg(long)]
+        token_url: Option<String>,
+        #[arg(long)]
+        client_id: Option<String>,
+        #[arg(long)]
+        client_secret_env: Option<String>,
+        #[arg(long)]
+        expires_at: Option<String>,
+        #[arg(long = "scope")]
+        credential_scopes: Vec<String>,
+        #[arg(long, default_value_t = 300)]
+        sync_interval: u64,
         #[arg(long, default_value = "connector")]
         name: String,
     },
@@ -230,6 +265,11 @@ enum Command {
     },
     /// 查看已注册连接器
     Connectors { intent_id: String },
+    /// 撤销 Connector 私有凭据；后续同步失败关闭
+    ConnectorCredentialRevoke {
+        intent_id: String,
+        connector_id: String,
+    },
     /// 列出 Runtime 已注册的 Connector Adapter 与能力
     ConnectorAdapters,
     /// 查看标准化 World Signal 及失效状态
@@ -800,13 +840,39 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         Command::Linear {
             intent_id,
             source,
+            token_env,
+            refresh_token_env,
+            token_url,
+            client_id,
+            client_secret_env,
+            expires_at,
+            credential_scopes,
+            sync_interval,
             name,
         } => {
             let intent_id = IntentId::from(intent_id);
-            let connector = runtime.register_linear_connector(&intent_id, &name, &source)?;
+            let credential = build_connector_credential(
+                &runtime,
+                "linear.graphql",
+                token_env,
+                refresh_token_env,
+                token_url,
+                client_id,
+                client_secret_env,
+                expires_at,
+                credential_scopes,
+            )?;
+            let connector = runtime.register_connector_adapter_with_credential(
+                &intent_id,
+                &name,
+                &source,
+                "linear.graphql",
+                credential,
+                sync_interval,
+            )?;
             let result = runtime.sync_connector(&intent_id, &connector.id)?;
             println!(
-                "connector: {} observed={} inserted={} skipped={} candidates={} auto_accepted={} cursor={} webhook_session={}",
+                "connector: {} observed={} inserted={} skipped={} candidates={} auto_accepted={} cursor={} webhook_session={} credential={}",
                 connector.id,
                 result.observed,
                 result.inserted,
@@ -814,21 +880,47 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 result.candidates_proposed,
                 result.auto_accepted,
                 result.cursor.as_deref().unwrap_or("none"),
-                connector.webhook_session.as_deref().unwrap_or("none")
+                connector.webhook_session.as_deref().unwrap_or("none"),
+                connector.credential.is_some()
             );
         }
         Command::Connector {
             intent_id,
             adapter,
             source,
+            token_env,
+            refresh_token_env,
+            token_url,
+            client_id,
+            client_secret_env,
+            expires_at,
+            credential_scopes,
+            sync_interval,
             name,
         } => {
             let intent_id = IntentId::from(intent_id);
-            let connector =
-                runtime.register_connector_adapter(&intent_id, &name, &source, &adapter)?;
+            let credential = build_connector_credential(
+                &runtime,
+                &adapter,
+                token_env,
+                refresh_token_env,
+                token_url,
+                client_id,
+                client_secret_env,
+                expires_at,
+                credential_scopes,
+            )?;
+            let connector = runtime.register_connector_adapter_with_credential(
+                &intent_id,
+                &name,
+                &source,
+                &adapter,
+                credential,
+                sync_interval,
+            )?;
             let result = runtime.sync_connector(&intent_id, &connector.id)?;
             println!(
-                "connector: {} adapter={} observed={} inserted={} skipped={} candidates={} auto_accepted={} cursor={}",
+                "connector: {} adapter={} observed={} inserted={} skipped={} candidates={} auto_accepted={} cursor={} credential={}",
                 connector.id,
                 connector.adapter,
                 result.observed,
@@ -836,7 +928,8 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 result.skipped,
                 result.candidates_proposed,
                 result.auto_accepted,
-                result.cursor.as_deref().unwrap_or("none")
+                result.cursor.as_deref().unwrap_or("none"),
+                connector.credential.is_some()
             );
         }
         Command::ConnectorPolicy {
@@ -870,21 +963,52 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             );
         }
         Command::Connectors { intent_id } => {
-            let projection = runtime.projection(&IntentId::from(intent_id))?;
+            let intent_id = IntentId::from(intent_id);
+            let projection = runtime.projection(&intent_id)?;
             for connector in projection.connectors.values() {
+                let health = runtime.connector_health(&intent_id, &connector.id)?;
                 println!(
-                    "{} {:?} enabled={} health={:?} provider={} sync={:?} read={:?} write={:?} source={}",
+                    "{} {:?} enabled={} health={:?} failures={} last_success={} next_sync={} credential={} scopes={:?} provider={} sync={:?} read={:?} write={:?} source={}",
                     connector.id,
                     connector.adapter,
                     connector.enabled,
-                    connector.manifest.health,
+                    health.health,
+                    health.consecutive_failures,
+                    health
+                        .last_success_at
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_else(|| "never".into()),
+                    health.next_sync_at.to_rfc3339(),
+                    health.credential_configured,
+                    health.credential_scopes,
                     connector.manifest.provider,
                     connector.manifest.sync_modes,
                     connector.manifest.read_capabilities,
                     connector.manifest.write_capabilities,
                     connector.source
                 );
+                if let Some(error) = health.last_error {
+                    println!("  last_error={error}");
+                }
             }
+        }
+        Command::ConnectorCredentialRevoke {
+            intent_id,
+            connector_id,
+        } => {
+            let credential = runtime.revoke_connector_credential(
+                &IntentId::from(intent_id),
+                &else_protocol::ids::ConnectorId::from(connector_id),
+            )?;
+            println!(
+                "credential revoked: {} auth={:?} revoked_at={}",
+                credential.reference,
+                credential.auth_mode,
+                credential
+                    .revoked_at
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_default()
+            );
         }
         Command::ConnectorAdapters => {
             for manifest in runtime.connector_manifests() {
@@ -1204,6 +1328,111 @@ fn parse_intent_origin(origin: &str) -> else_protocol::connector::IntentOriginKi
         "system_recovery" => IntentOriginKind::SystemRecovery,
         _ => IntentOriginKind::InferredNeed,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_connector_credential(
+    runtime: &Runtime,
+    adapter_id: &str,
+    token_env: Option<String>,
+    refresh_token_env: Option<String>,
+    token_url: Option<String>,
+    client_id: Option<String>,
+    client_secret_env: Option<String>,
+    expires_at: Option<String>,
+    credential_scopes: Vec<String>,
+) -> else_api::Result<Option<else_protocol::connector::ConnectorCredential>> {
+    use else_protocol::connector::{ConnectorAuthMode, ConnectorCredential, OAuthRefreshConfig};
+
+    let manifest = runtime
+        .connector_manifests()
+        .into_iter()
+        .find(|manifest| manifest.adapter == adapter_id)
+        .ok_or_else(|| else_api::ApiError::NotFound(format!("connector adapter {adapter_id}")))?;
+    let Some(token_env) = token_env else {
+        if refresh_token_env.is_some()
+            || token_url.is_some()
+            || client_id.is_some()
+            || client_secret_env.is_some()
+            || expires_at.is_some()
+            || !credential_scopes.is_empty()
+        {
+            return Err(else_api::ApiError::Conflict(
+                "--token-env is required when credential options are supplied".into(),
+            ));
+        }
+        return Ok(None);
+    };
+    if manifest.auth_mode == ConnectorAuthMode::None {
+        return Err(else_api::ApiError::Conflict(format!(
+            "connector adapter {adapter_id} does not accept credentials"
+        )));
+    }
+    let access_token = std::env::var(&token_env).map_err(|_| {
+        else_api::ApiError::Conflict(format!("environment variable {token_env} is not set"))
+    })?;
+    if access_token.trim().is_empty() {
+        return Err(else_api::ApiError::Conflict(format!(
+            "environment variable {token_env} is empty"
+        )));
+    }
+    let scopes = if credential_scopes.is_empty() {
+        manifest.scopes
+    } else {
+        credential_scopes
+    };
+    let expires_at = expires_at
+        .map(|value| {
+            chrono::DateTime::parse_from_rfc3339(&value)
+                .map(|value| value.with_timezone(&chrono::Utc))
+                .map_err(|error| {
+                    else_api::ApiError::Conflict(format!("--expires-at must be RFC3339: {error}"))
+                })
+        })
+        .transpose()?;
+    let refresh_token = refresh_token_env
+        .as_deref()
+        .map(|name| {
+            std::env::var(name).map_err(|_| {
+                else_api::ApiError::Conflict(format!("environment variable {name} is not set"))
+            })
+        })
+        .transpose()?;
+    let refresh = match (token_url, client_id) {
+        (Some(token_url), Some(client_id)) => Some(OAuthRefreshConfig {
+            token_url,
+            client_id,
+            client_secret: client_secret_env
+                .as_deref()
+                .map(|name| {
+                    std::env::var(name).map_err(|_| {
+                        else_api::ApiError::Conflict(format!(
+                            "environment variable {name} is not set"
+                        ))
+                    })
+                })
+                .transpose()?,
+        }),
+        (None, None) => None,
+        _ => {
+            return Err(else_api::ApiError::Conflict(
+                "--token-url and --client-id must be supplied together".into(),
+            ))
+        }
+    };
+    if refresh_token.is_some() && refresh.is_none() {
+        return Err(else_api::ApiError::Conflict(
+            "OAuth refresh requires --token-url and --client-id".into(),
+        ));
+    }
+    Ok(Some(ConnectorCredential {
+        access_token,
+        refresh_token,
+        token_type: "bearer".into(),
+        scopes,
+        expires_at,
+        refresh,
+    }))
 }
 
 fn run_tool_call(tool: &str, input: &str, idempotency_key: Option<&str>) -> else_api::Result<()> {

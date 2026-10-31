@@ -14,8 +14,9 @@ use crate::capability::{
     McpServerRegistration,
 };
 use crate::connector::{
-    ConnectorRegistration, ExternalFact, IntentAcceptedBy, IntentCandidate, IntentCandidateState,
-    SignalInterpretation, SyncCursor, WorldSignal,
+    ConnectorCredentialMetadata, ConnectorRegistration, ConnectorSyncStatus, ExternalFact,
+    IntentAcceptedBy, IntentCandidate, IntentCandidateState, SignalInterpretation, SyncCursor,
+    WorldSignal,
 };
 use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
 use crate::egress::EgressDecision;
@@ -184,6 +185,13 @@ pub enum EventPayload {
     },
     ConnectorRegistered {
         connector: ConnectorRegistration,
+    },
+    ConnectorCredentialUpdated {
+        connector_id: ConnectorId,
+        credential: ConnectorCredentialMetadata,
+    },
+    ConnectorSyncStatusChanged {
+        status: ConnectorSyncStatus,
     },
     ExternalFactIngested {
         fact: ExternalFact,

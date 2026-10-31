@@ -50,6 +50,10 @@ pub enum ApiError {
     IntentNotFound(IntentId),
     #[error("workspace: {0}")]
     Workspace(#[from] else_workspace::WorkspaceError),
+    #[error("credential: {0}")]
+    Credential(#[from] else_secrets::SecretError),
+    #[error("connector: {0}")]
+    Connector(#[from] else_connector::ConnectorError),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("conflict: {0}")]
@@ -75,6 +79,7 @@ pub struct Runtime {
     default_budget: else_protocol::resource::ResourceBudget,
     connector_adapters: else_connector::AdapterRegistry,
     signal_interpreter: else_connector::SignalInterpreter,
+    credential_store: else_secrets::CredentialStore,
 }
 
 pub(crate) struct IntentDraft {
@@ -106,6 +111,22 @@ impl Runtime {
         connector_adapters: else_connector::AdapterRegistry,
         signal_interpreter: else_connector::SignalInterpreter,
     ) -> Result<Self> {
+        let credential_store = else_secrets::CredentialStore::open(dir)?;
+        Self::open_with_connector_runtime_and_store(
+            dir,
+            connector_adapters,
+            signal_interpreter,
+            credential_store,
+        )
+    }
+
+    /// 测试与部署组合根可显式选择凭据后端，避免依赖进程级环境变量。
+    pub fn open_with_connector_runtime_and_store(
+        dir: &Path,
+        connector_adapters: else_connector::AdapterRegistry,
+        signal_interpreter: else_connector::SignalInterpreter,
+        credential_store: else_secrets::CredentialStore,
+    ) -> Result<Self> {
         let workspace = dir.join("workspace");
         std::fs::create_dir_all(&workspace)?;
         let harness_private = dir.join("harness-private");
@@ -119,6 +140,7 @@ impl Runtime {
             default_budget: resources::budget_from_env(),
             connector_adapters,
             signal_interpreter,
+            credential_store,
         };
         // 上次进程可能死在 Abort 的任意事件边界；重开后先完成安全收敛。
         runtime.recover_aborts()?;

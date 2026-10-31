@@ -226,6 +226,8 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::McpToolsRefreshed { .. } => "mcp_tools_refreshed",
         P::CapabilityRevoked { .. } => "capability_revoked",
         P::ConnectorRegistered { .. } => "connector_registered",
+        P::ConnectorCredentialUpdated { .. } => "connector_credential_updated",
+        P::ConnectorSyncStatusChanged { .. } => "connector_sync_status_changed",
         P::ConnectorSyncCheckpointed { .. } => "connector_sync_checkpointed",
         P::WorldItemResolved { .. } => "world_item_resolved",
         P::ExternalFactIngested { .. } => "external_fact_ingested",

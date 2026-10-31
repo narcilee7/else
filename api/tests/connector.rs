@@ -721,6 +721,7 @@ impl ConnectorAdapter for FixtureAdapter {
         _source: &str,
         _cursor: Option<&SyncCursor>,
         now: DateTime<Utc>,
+        _credential: Option<&else_protocol::connector::ConnectorCredential>,
     ) -> else_connector::Result<ConnectorPullPage> {
         Ok(ConnectorPullPage {
             stream_id: self.pull_stream_id().into(),

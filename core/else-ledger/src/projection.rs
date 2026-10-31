@@ -11,8 +11,8 @@ use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, CapabilityRegistration, McpServerRegistration,
 };
 use else_protocol::connector::{
-    ConnectorRegistration, IntentCandidate, SignalInterpretation, SignalStatus, SyncCursor,
-    WorldSignal,
+    ConnectorRegistration, ConnectorSyncStatus, IntentCandidate, SignalInterpretation,
+    SignalStatus, SyncCursor, WorldSignal,
 };
 use else_protocol::event::{Actor, EventPayload, ScopeState};
 use else_protocol::failure::ScopeFailure;
@@ -113,6 +113,7 @@ pub struct IntentProjection {
     pub mcp_servers: BTreeMap<else_protocol::ids::McpServerId, McpServerRegistration>,
     pub dirty_mcp_servers: std::collections::BTreeSet<else_protocol::ids::McpServerId>,
     pub connectors: BTreeMap<else_protocol::ids::ConnectorId, ConnectorRegistration>,
+    pub connector_sync_status: BTreeMap<else_protocol::ids::ConnectorId, ConnectorSyncStatus>,
     pub connector_cursors: BTreeMap<(else_protocol::ids::ConnectorId, String), SyncCursor>,
     pub external_fact_keys: std::collections::BTreeSet<String>,
     pub world_signals: BTreeMap<else_protocol::ids::WorldSignalId, WorldSignal>,
@@ -267,6 +268,18 @@ impl Projection for IntentProjection {
             EventPayload::ConnectorRegistered { connector } => {
                 self.connectors
                     .insert(connector.id.clone(), connector.clone());
+            }
+            EventPayload::ConnectorCredentialUpdated {
+                connector_id,
+                credential,
+            } => {
+                if let Some(connector) = self.connectors.get_mut(connector_id) {
+                    connector.credential = Some(credential.clone());
+                }
+            }
+            EventPayload::ConnectorSyncStatusChanged { status } => {
+                self.connector_sync_status
+                    .insert(status.connector_id.clone(), status.clone());
             }
             EventPayload::ConnectorSyncCheckpointed { cursor } => {
                 self.connector_cursors.insert(

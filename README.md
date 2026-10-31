@@ -34,7 +34,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 137 Rust tests and 9 Swift tests passing on macOS.
+**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 145 Rust tests and 9 Swift tests passing on macOS.
 
 - **Kernel (MVP-0)**: durable root Scope identity, explicit Scope dependencies, artifact lineage across child workspaces, fair multi-Scope reconciliation ordered by creation and last execution, replayable external waits and ExternalEvent/Timer wakes that feed the next Context Snapshot, continuous `drive` loops, and a resident single-thread Runtime supervisor; event-sourced ledger on SQLite, Checkpoint → Fork → Rerun → Compare, Abort + Generation Fencing, Subagent delegation tree, Admission + Lease + Accounting, deny-by-default OS sandboxes (macOS Seatbelt verified on real hardware; Linux bubblewrap policy unit-tested, awaiting Linux CI).
 - **Context & Memory (MVP-1)**: Intent Resolution with revisions, three-tier memory (Working / Episodic / Semantic) with scoped promotion rules, Context Compiler producing minimal read-only snapshots per Planner / Executor / Verifier. Memory is never a source of authority.
@@ -50,6 +50,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 - **Unified capabilities and bindings**: Builtin tools, MCP tools, and Skills share one Gateway contract; MCP tools can be discovered from `tools/list`, while LocalProcess, McpStdio, and HTTPS RemoteHttp Agent bindings dispatch outbound work through the existing verifier and resource lifecycle.
 - **Binding lifecycle closure**: MCP sessions support `list_changed` refresh and persisted restart recovery; Agent bindings expose explicit lifecycle states, RemoteHttp callbacks, and SSE event streams.
 - **Personal world signal foundation**: an Adapter Registry isolates Calendar, Linear, and Notion provider details behind neutral Observations; a separate Interpreter derives ActionItem / Commitment / WaitingExternal interpretations before Resolver sees them. Notion Pages enter Document Context while Database Rows reuse the WorkItem pipeline. Connectors retain manifests, persistent cursors, tombstones, and session-scoped webhooks.
+- **Live connector foundation**: OAuth/API credentials live in macOS Keychain or a 0600 private runtime store, never the Event Ledger. Scoped credentials refresh before expiry, can be revoked, and feed a resident scheduler with persistent health, exponential backoff, and `Retry-After` handling.
 - **Personal World**: commitments, waiting-external items, actions, overdue work, and risks are aggregated from replayable interpretations. Users can resolve items without pretending the external provider changed, and a cross-Intent brief summarizes open loops.
 - **Project World**: provider-neutral correlation hints group Linear, Notion, and Calendar items by normalized project key across intents, with open / waiting / overdue counts and the nearest deadline.
 
@@ -71,10 +72,12 @@ else attention <intent-id>               # windows, batch rate, missed critical 
 else plan <intent-id>                    # current plan, evidence, and fact impacts
 else calendar <intent-id> --source ./calendar.ics
 else linear <intent-id> --source ./linear.json
+else linear <intent-id> --source https://api.linear.app/graphql --token-env LINEAR_API_TOKEN
 else connector-adapters
 else connector <intent-id> notion.api ./notion.json
 else connector-policy <intent-id> --auto-accept --allow-origin commitment --min-confidence 80
 else connectors <intent-id>
+else connector-credential-revoke <intent-id> <connector-id>
 else signals <intent-id>
 else signal-feed --provider linear --cursor 0
 else resolve-signals <intent-id>
@@ -107,7 +110,7 @@ else compare <intent-id> <scope-a> <scope-b>
 - **Tool Gateway routing depends on the Harness following the task contract.** Native write attempts are denied by the read-only parent sandbox, but the Runtime does not yet synthesize native provider tool-call messages into a full interactive protocol.
 - **Loopback HTTP is the shared surface boundary.** `/v1/health` is public on loopback; every Runtime endpoint requires the token from `daemon-token` or `ELSE_RUNTIME_TOKEN`.
 - **RemoteHttp is a protocol, not a vendor adapter.** It uses HTTPS + NDJSON/callback and SSE for Runtime-side consumption. MCP stdio sessions are recreated rather than migrated across machines.
-- **Connectors remain read-only.** Calendar, Linear, and Notion Signals have versions, source, validity, tombstones, manifests, and persisted cursors, but provider credentials are not yet Keychain-managed and contacts / richer entity merging are not modeled. Personal / Project World aggregate cross-provider items and support explicit user resolution; Resolver output remains Candidate-only unless a user accepts it or enables a narrow low-risk policy.
+- **Connectors remain read-only.** Calendar, Linear, and Notion Signals have versions, source, validity, tombstones, manifests, persisted cursors, Keychain-backed credentials, and a resident scheduler. Provider pagination / backfill, webhook hydration, contacts, and richer entity merging are not yet modeled. Personal / Project World aggregate cross-provider items and support explicit user resolution; Resolver output remains Candidate-only unless a user accepts it or enables a narrow low-risk policy.
 - **Nested sandboxes are disabled inside harnesses** (e.g. `sandbox_mode="danger-full-access"` for codex) because Seatbelt cannot nest; else's own sandbox profile is the isolation boundary.
 - **Abort Succeeded means execution converged safely, not that the world was rolled back.** Irreversible effects stay irreversible and are recorded as such.
 - **Misinterrupt rate is a lower bound.** It only counts Interrupt requests a user explicitly dismisses; system cancellations and rejected options are not assumed to be false alarms.

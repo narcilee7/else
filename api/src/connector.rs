@@ -2,10 +2,11 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use else_protocol::connector::{
+    ConnectorAuthMode, ConnectorCredential, ConnectorCredentialMetadata, ConnectorHealthReport,
     ConnectorManifest, ConnectorObservation, ConnectorPolicy, ConnectorRegistration,
-    ConnectorSyncResult, ExternalEntityRef, IntentAcceptedBy, IntentCandidate,
+    ConnectorSyncResult, ConnectorSyncStatus, ExternalEntityRef, IntentAcceptedBy, IntentCandidate,
     IntentCandidateRecord, IntentCandidateState, IntentOrigin, IntentOriginKind, ObjectKind,
     ObservationChange, SignalInterpretation, SignalMeaning, SignalStatus, SyncCursor, WorldSignal,
     WorldSignalRecord,
@@ -25,7 +26,14 @@ impl Runtime {
         name: &str,
         source: &str,
     ) -> Result<ConnectorRegistration> {
-        self.register_connector_adapter(intent_id, name, source, "calendar.ics")
+        self.register_connector_adapter_with_credential(
+            intent_id,
+            name,
+            source,
+            "calendar.ics",
+            None,
+            300,
+        )
     }
 
     pub fn register_linear_connector(
@@ -34,7 +42,14 @@ impl Runtime {
         name: &str,
         source: &str,
     ) -> Result<ConnectorRegistration> {
-        self.register_connector_adapter(intent_id, name, source, "linear.graphql")
+        self.register_connector_adapter_with_credential(
+            intent_id,
+            name,
+            source,
+            "linear.graphql",
+            None,
+            300,
+        )
     }
 
     pub fn register_connector_adapter(
@@ -44,12 +59,53 @@ impl Runtime {
         source: &str,
         adapter_id: &str,
     ) -> Result<ConnectorRegistration> {
+        self.register_connector_adapter_with_credential(
+            intent_id, name, source, adapter_id, None, 300,
+        )
+    }
+
+    pub fn register_connector_adapter_with_credential(
+        &self,
+        intent_id: &IntentId,
+        name: &str,
+        source: &str,
+        adapter_id: &str,
+        credential: Option<ConnectorCredential>,
+        sync_interval_seconds: u64,
+    ) -> Result<ConnectorRegistration> {
         validate_connector_source(source)?;
+        if sync_interval_seconds < 15 {
+            return Err(ApiError::Conflict(
+                "connector sync_interval_seconds must be at least 15".into(),
+            ));
+        }
         let adapter = self
             .connector_adapters
             .get(adapter_id)
             .ok_or_else(|| ApiError::NotFound(format!("connector adapter {adapter_id}")))?;
         let manifest = adapter.manifest();
+        let credential_metadata = if let Some(credential) = credential {
+            if manifest.auth_mode == ConnectorAuthMode::None {
+                return Err(ApiError::Conflict(format!(
+                    "connector adapter {adapter_id} does not accept credentials"
+                )));
+            }
+            credential
+                .validate_scopes(&manifest.scopes)
+                .map_err(ApiError::Conflict)?;
+            let reference = uuid::Uuid::new_v4().to_string();
+            self.credential_store.put(&reference, &credential)?;
+            Some(ConnectorCredentialMetadata {
+                reference,
+                auth_mode: manifest.auth_mode,
+                scopes: credential.scopes.clone(),
+                expires_at: credential.expires_at,
+                configured_at: Utc::now(),
+                revoked_at: None,
+            })
+        } else {
+            None
+        };
         let webhook_session = adapter
             .webhook_stream_id()
             .map(|_| uuid::Uuid::new_v4().to_string());
@@ -61,9 +117,12 @@ impl Runtime {
             enabled: true,
             manifest,
             webhook_session,
+            sync_interval_seconds,
+            registered_at: Some(Utc::now()),
+            credential: credential_metadata,
         };
         let (root, generation, revision) = self.kernel_context(intent_id)?;
-        self.ledger.append(&EventEnvelope::new(
+        let appended = self.ledger.append(&EventEnvelope::new(
             intent_id.clone(),
             root,
             generation,
@@ -72,7 +131,17 @@ impl Runtime {
             EventPayload::ConnectorRegistered {
                 connector: connector.clone(),
             },
-        ))?;
+        ));
+        if appended.is_err() {
+            if let Some(reference) = connector
+                .credential
+                .as_ref()
+                .map(|credential| credential.reference.as_str())
+            {
+                let _ = self.credential_store.delete(reference);
+            }
+        }
+        appended?;
         Ok(connector)
     }
 
@@ -80,10 +149,339 @@ impl Runtime {
         self.connector_adapters.manifests()
     }
 
+    pub fn attach_connector_credential(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+        credential: ConnectorCredential,
+    ) -> Result<ConnectorCredentialMetadata> {
+        let projection = self.projection(intent_id)?;
+        let connector = projection
+            .connectors
+            .get(connector_id)
+            .cloned()
+            .ok_or_else(|| ApiError::NotFound(format!("connector {connector_id}")))?;
+        if connector.manifest.auth_mode == ConnectorAuthMode::None {
+            return Err(ApiError::Conflict(format!(
+                "connector {connector_id} does not accept credentials"
+            )));
+        }
+        credential
+            .validate_scopes(&connector.manifest.scopes)
+            .map_err(ApiError::Conflict)?;
+        let reference = uuid::Uuid::new_v4().to_string();
+        self.credential_store.put(&reference, &credential)?;
+        let metadata = ConnectorCredentialMetadata {
+            reference: reference.clone(),
+            auth_mode: connector.manifest.auth_mode,
+            scopes: credential.scopes,
+            expires_at: credential.expires_at,
+            configured_at: Utc::now(),
+            revoked_at: None,
+        };
+        let (root, generation, revision) = self.kernel_context(intent_id)?;
+        let appended = self.ledger.append(&EventEnvelope::new(
+            intent_id.clone(),
+            root,
+            generation,
+            revision,
+            Actor::User,
+            EventPayload::ConnectorCredentialUpdated {
+                connector_id: connector_id.clone(),
+                credential: metadata.clone(),
+            },
+        ));
+        if let Err(error) = appended {
+            let _ = self.credential_store.delete(&reference);
+            return Err(error.into());
+        }
+        if let Some(previous) = connector.credential {
+            let _ = self.credential_store.delete(&previous.reference);
+        }
+        Ok(metadata)
+    }
+
+    pub fn revoke_connector_credential(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+    ) -> Result<ConnectorCredentialMetadata> {
+        let projection = self.projection(intent_id)?;
+        let connector = projection
+            .connectors
+            .get(connector_id)
+            .cloned()
+            .ok_or_else(|| ApiError::NotFound(format!("connector {connector_id}")))?;
+        let mut credential = connector
+            .credential
+            .ok_or_else(|| ApiError::NotFound(format!("connector {connector_id} credential")))?;
+        self.credential_store.delete(&credential.reference)?;
+        credential.revoked_at = Some(Utc::now());
+        let (root, generation, revision) = self.kernel_context(intent_id)?;
+        self.ledger.append(&EventEnvelope::new(
+            intent_id.clone(),
+            root,
+            generation,
+            revision,
+            Actor::User,
+            EventPayload::ConnectorCredentialUpdated {
+                connector_id: connector_id.clone(),
+                credential: credential.clone(),
+            },
+        ))?;
+        Ok(credential)
+    }
+
+    pub fn connector_health(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+    ) -> Result<ConnectorHealthReport> {
+        let projection = self.projection(intent_id)?;
+        let connector = projection
+            .connectors
+            .get(connector_id)
+            .cloned()
+            .ok_or_else(|| ApiError::NotFound(format!("connector {connector_id}")))?;
+        let fallback_next = connector
+            .registered_at
+            .unwrap_or_else(|| Utc::now() - Duration::seconds(1));
+        let status = projection
+            .connector_sync_status
+            .get(connector_id)
+            .cloned()
+            .unwrap_or(ConnectorSyncStatus {
+                connector_id: connector_id.clone(),
+                last_attempt_at: None,
+                last_success_at: None,
+                consecutive_failures: 0,
+                last_error: None,
+                next_sync_at: fallback_next,
+            });
+        let credential = connector
+            .credential
+            .as_ref()
+            .filter(|credential| credential.revoked_at.is_none());
+        let credential_required = connector.manifest.auth_mode != ConnectorAuthMode::None
+            && connector.source.starts_with("https://");
+        let credential_configured = credential.is_some();
+        let mut health = status.health();
+        let mut last_error = status.last_error;
+        if credential_required && !credential_configured {
+            health = else_protocol::connector::ConnectorHealth::Error;
+            last_error = Some("missing or revoked connector credential".into());
+        }
+        Ok(ConnectorHealthReport {
+            connector_id: connector.id,
+            provider: connector.manifest.provider,
+            health,
+            credential_configured,
+            credential_scopes: credential
+                .map(|credential| credential.scopes.clone())
+                .unwrap_or_default(),
+            credential_expires_at: credential.and_then(|credential| credential.expires_at),
+            last_attempt_at: status.last_attempt_at,
+            last_success_at: status.last_success_at,
+            consecutive_failures: status.consecutive_failures,
+            last_error,
+            next_sync_at: status.next_sync_at,
+            checked_at: Utc::now(),
+        })
+    }
+
+    /// 常驻 Runtime 在每次 reconcile 前调用。返回下一次 Connector 调度时间，
+    /// 由 supervisor 与 Attention Timer / MCP refresh 合并计算最早唤醒点。
+    pub fn sync_due_connectors(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let mut due = Vec::new();
+        if let Ok(intents) = self.list_intents() {
+            for spec in intents {
+                let Ok(projection) = self.projection(&spec.id) else {
+                    continue;
+                };
+                for connector in projection.connectors.values() {
+                    if !connector.enabled {
+                        continue;
+                    }
+                    let next_sync_at = projection
+                        .connector_sync_status
+                        .get(&connector.id)
+                        .map(|status| status.next_sync_at)
+                        .or(connector.registered_at)
+                        .unwrap_or(now);
+                    if next_sync_at <= now {
+                        due.push((spec.id.clone(), connector.id.clone()));
+                    }
+                }
+            }
+        }
+        for (intent_id, connector_id) in due {
+            let _ = self.sync_connector(&intent_id, &connector_id);
+        }
+        self.next_connector_sync_at()
+    }
+
+    pub fn next_connector_sync_at(&self) -> Option<DateTime<Utc>> {
+        let mut next = None;
+        for spec in self.list_intents().ok()? {
+            let projection = self.projection(&spec.id).ok()?;
+            for connector in projection
+                .connectors
+                .values()
+                .filter(|connector| connector.enabled)
+            {
+                let due_at = projection
+                    .connector_sync_status
+                    .get(&connector.id)
+                    .map(|status| status.next_sync_at)
+                    .or(connector.registered_at);
+                if let Some(due_at) = due_at {
+                    next = Some(next.map_or(due_at, |current: DateTime<Utc>| current.min(due_at)));
+                }
+            }
+        }
+        next
+    }
+
     pub fn sync_connector(
         &self,
         intent_id: &IntentId,
         connector_id: &ConnectorId,
+    ) -> Result<ConnectorSyncResult> {
+        let started_at = Utc::now();
+        let result = self.sync_connector_inner(intent_id, connector_id, started_at);
+        match &result {
+            Ok(_) => {
+                let _ = self.record_connector_sync_success(intent_id, connector_id, started_at);
+            }
+            Err(error) => {
+                let retry_after_seconds = match error {
+                    ApiError::Connector(else_connector::ConnectorError::RateLimited {
+                        retry_after_seconds,
+                    }) => Some(*retry_after_seconds),
+                    _ => None,
+                };
+                let _ = self.record_connector_sync_failure(
+                    intent_id,
+                    connector_id,
+                    started_at,
+                    &error.to_string(),
+                    retry_after_seconds,
+                );
+            }
+        }
+        result
+    }
+
+    fn connector_credential(
+        &self,
+        connector: &ConnectorRegistration,
+    ) -> Result<Option<ConnectorCredential>> {
+        let Some(metadata) = &connector.credential else {
+            if connector.manifest.auth_mode != ConnectorAuthMode::None
+                && connector.source.starts_with("https://")
+            {
+                return Err(ApiError::Unauthorized(format!(
+                    "connector {} requires {} credentials",
+                    connector.id,
+                    match connector.manifest.auth_mode {
+                        ConnectorAuthMode::ApiToken => "API token",
+                        ConnectorAuthMode::OAuth => "OAuth",
+                        ConnectorAuthMode::None => "no",
+                    }
+                )));
+            }
+            return Ok(None);
+        };
+        if metadata.revoked_at.is_some() {
+            return Err(ApiError::Unauthorized(format!(
+                "connector {} credential is revoked",
+                connector.id
+            )));
+        }
+        self.credential_store
+            .resolve(&metadata.reference, &connector.manifest.scopes)
+            .map(Some)
+            .map_err(ApiError::from)
+    }
+
+    fn record_connector_sync_success(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+        started_at: DateTime<Utc>,
+    ) -> Result<()> {
+        let projection = self.projection(intent_id)?;
+        let connector = projection
+            .connectors
+            .get(connector_id)
+            .ok_or_else(|| ApiError::NotFound(format!("connector {connector_id}")))?;
+        let now = Utc::now();
+        let status = ConnectorSyncStatus {
+            connector_id: connector_id.clone(),
+            last_attempt_at: Some(started_at),
+            last_success_at: Some(now),
+            consecutive_failures: 0,
+            last_error: None,
+            next_sync_at: now + Duration::seconds(connector.sync_interval_seconds as i64),
+        };
+        self.append_connector_sync_status(intent_id, status)
+    }
+
+    fn record_connector_sync_failure(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+        started_at: DateTime<Utc>,
+        error: &str,
+        retry_after_seconds: Option<u64>,
+    ) -> Result<()> {
+        let projection = self.projection(intent_id)?;
+        if !projection.connectors.contains_key(connector_id) {
+            return Err(ApiError::NotFound(format!("connector {connector_id}")));
+        }
+        let previous = projection.connector_sync_status.get(connector_id);
+        let failures = previous
+            .map(|status| status.consecutive_failures)
+            .unwrap_or(0)
+            .saturating_add(1);
+        let backoff = retry_after_seconds.unwrap_or_else(|| {
+            let exponent = failures.saturating_sub(1).min(7);
+            30_u64.saturating_mul(1_u64 << exponent).min(3600)
+        });
+        let now = Utc::now();
+        let status = ConnectorSyncStatus {
+            connector_id: connector_id.clone(),
+            last_attempt_at: Some(started_at),
+            last_success_at: previous.and_then(|status| status.last_success_at),
+            consecutive_failures: failures,
+            last_error: Some(error.into()),
+            next_sync_at: now + Duration::seconds(backoff as i64),
+        };
+        self.append_connector_sync_status(intent_id, status)
+    }
+
+    fn append_connector_sync_status(
+        &self,
+        intent_id: &IntentId,
+        status: ConnectorSyncStatus,
+    ) -> Result<()> {
+        let (root, generation, revision) = self.kernel_context(intent_id)?;
+        self.ledger.append(&EventEnvelope::new(
+            intent_id.clone(),
+            root,
+            generation,
+            revision,
+            Actor::System,
+            EventPayload::ConnectorSyncStatusChanged { status },
+        ))?;
+        Ok(())
+    }
+
+    fn sync_connector_inner(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+        started_at: DateTime<Utc>,
     ) -> Result<ConnectorSyncResult> {
         let projection = self.projection(intent_id)?;
         let connector = projection
@@ -106,14 +504,16 @@ impl Runtime {
         let previous_cursor = projection
             .connector_cursors
             .get(&(connector.id.clone(), pull_stream_id.into()));
+        let credential = self.connector_credential(&connector)?;
         let page = adapter
             .pull(
                 connector.id.clone(),
                 &connector.source,
                 previous_cursor,
-                Utc::now(),
+                started_at,
+                credential.as_ref(),
             )
-            .map_err(|error| ApiError::NotFound(error.to_string()))?;
+            .map_err(ApiError::from)?;
         if page.stream_id != pull_stream_id {
             return Err(ApiError::Conflict(format!(
                 "adapter {} returned stream {} instead of {pull_stream_id}",
@@ -205,6 +605,33 @@ impl Runtime {
 
     /// Webhook 复用同一 Normalize、去重、Candidate 与 Cursor 路径。
     pub fn ingest_connector_webhook(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+        session_token: &str,
+        payload: Value,
+    ) -> Result<ConnectorSyncResult> {
+        let started_at = Utc::now();
+        let result =
+            self.ingest_connector_webhook_inner(intent_id, connector_id, session_token, payload);
+        match &result {
+            Ok(_) => {
+                let _ = self.record_connector_sync_success(intent_id, connector_id, started_at);
+            }
+            Err(error) => {
+                let _ = self.record_connector_sync_failure(
+                    intent_id,
+                    connector_id,
+                    started_at,
+                    &error.to_string(),
+                    None,
+                );
+            }
+        }
+        result
+    }
+
+    fn ingest_connector_webhook_inner(
         &self,
         intent_id: &IntentId,
         connector_id: &ConnectorId,

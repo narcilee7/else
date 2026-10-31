@@ -8,9 +8,10 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use else_protocol::connector::{
-    ConnectorAuthMode, ConnectorHealth, ConnectorManifest, ConnectorObservation, ConnectorPullPage,
-    ConnectorSyncMode, CorrelationHint, CorrelationKind, ObjectKind, ObservationChange,
-    SignalInterpretation, SignalMeaning, SignalStatus, SignalType, SyncCursor, WorldSignal,
+    ConnectorAuthMode, ConnectorCredential, ConnectorHealth, ConnectorManifest,
+    ConnectorObservation, ConnectorPullPage, ConnectorSyncMode, CorrelationHint, CorrelationKind,
+    ObjectKind, ObservationChange, SignalInterpretation, SignalMeaning, SignalStatus, SignalType,
+    SyncCursor, WorldSignal,
 };
 use else_protocol::ids::ConnectorId;
 use ical::IcalParser;
@@ -32,6 +33,8 @@ pub enum ConnectorError {
     UnknownAdapter(String),
     #[error("connector adapter does not accept webhooks: {0}")]
     WebhookUnsupported(String),
+    #[error("rate limited by provider; retry after {retry_after_seconds} seconds")]
+    RateLimited { retry_after_seconds: u64 },
 }
 
 pub type Result<T> = std::result::Result<T, ConnectorError>;
@@ -47,6 +50,7 @@ pub trait ConnectorAdapter: Send + Sync {
         source: &str,
         cursor: Option<&SyncCursor>,
         now: DateTime<Utc>,
+        credential: Option<&ConnectorCredential>,
     ) -> Result<ConnectorPullPage>;
     fn webhook_stream_id(&self) -> Option<&'static str> {
         None
@@ -130,6 +134,7 @@ impl ConnectorAdapter for CalendarAdapter {
         source: &str,
         _cursor: Option<&SyncCursor>,
         now: DateTime<Utc>,
+        _credential: Option<&ConnectorCredential>,
     ) -> Result<ConnectorPullPage> {
         pull_calendar(
             connector_id,
@@ -155,7 +160,7 @@ impl ConnectorAdapter for LinearAdapter {
         ConnectorManifest {
             adapter: self.id().into(),
             provider: "linear".into(),
-            auth_mode: ConnectorAuthMode::None,
+            auth_mode: ConnectorAuthMode::ApiToken,
             scopes: vec!["issues:read".into()],
             read_capabilities: vec![
                 "linear.issue.read".into(),
@@ -180,8 +185,9 @@ impl ConnectorAdapter for LinearAdapter {
         source: &str,
         _cursor: Option<&SyncCursor>,
         _now: DateTime<Utc>,
+        credential: Option<&ConnectorCredential>,
     ) -> Result<ConnectorPullPage> {
-        pull_linear(connector_id, source)
+        pull_linear(connector_id, source, credential)
     }
 
     fn webhook_stream_id(&self) -> Option<&'static str> {
@@ -233,8 +239,9 @@ impl ConnectorAdapter for NotionAdapter {
         source: &str,
         _cursor: Option<&SyncCursor>,
         _now: DateTime<Utc>,
+        credential: Option<&ConnectorCredential>,
     ) -> Result<ConnectorPullPage> {
-        pull_notion(connector_id, source)
+        pull_notion(connector_id, source, credential)
     }
 }
 
@@ -244,7 +251,7 @@ pub fn pull_calendar(
     window_start: DateTime<Utc>,
     window_end: DateTime<Utc>,
 ) -> Result<ConnectorPullPage> {
-    let content = load_source(source)?;
+    let content = load_source(source, None, &[])?;
     let cursor = format!("calendar:{:016x}", stable_hash(&content));
     let observations = normalize_calendar(&connector_id, &content, window_start, window_end)?;
     Ok(ConnectorPullPage {
@@ -334,8 +341,12 @@ fn normalize_calendar(
     Ok(observations)
 }
 
-pub fn pull_linear(connector_id: ConnectorId, source: &str) -> Result<ConnectorPullPage> {
-    let content = load_source(source)?;
+pub fn pull_linear(
+    connector_id: ConnectorId,
+    source: &str,
+    credential: Option<&ConnectorCredential>,
+) -> Result<ConnectorPullPage> {
+    let content = load_source(source, credential, &[])?;
     let payload: Value = serde_json::from_str(&content)
         .map_err(|error| ConnectorError::Linear(error.to_string()))?;
     Ok(ConnectorPullPage {
@@ -346,8 +357,12 @@ pub fn pull_linear(connector_id: ConnectorId, source: &str) -> Result<ConnectorP
     })
 }
 
-pub fn pull_notion(connector_id: ConnectorId, source: &str) -> Result<ConnectorPullPage> {
-    let content = load_source(source)?;
+pub fn pull_notion(
+    connector_id: ConnectorId,
+    source: &str,
+    credential: Option<&ConnectorCredential>,
+) -> Result<ConnectorPullPage> {
+    let content = load_source(source, credential, &[("Notion-Version", "2022-06-28")])?;
     let payload: Value = serde_json::from_str(&content)
         .map_err(|error| ConnectorError::Notion(error.to_string()))?;
     Ok(ConnectorPullPage {
@@ -1097,11 +1112,33 @@ fn string_array_at(value: &Value, path: &[&str]) -> Vec<String> {
         .collect()
 }
 
-fn load_source(source: &str) -> Result<String> {
+fn load_source(
+    source: &str,
+    credential: Option<&ConnectorCredential>,
+    headers: &[(&str, &str)],
+) -> Result<String> {
     if source.starts_with("https://") {
-        Ok(ureq::get(source)
+        let mut request = ureq::get(source).set("Accept", "application/json");
+        if let Some(credential) = credential {
+            request = request.set(
+                "Authorization",
+                &format!(
+                    "{} {}",
+                    if credential.token_type.eq_ignore_ascii_case("bearer") {
+                        "Bearer"
+                    } else {
+                        &credential.token_type
+                    },
+                    credential.access_token
+                ),
+            );
+        }
+        for (name, value) in headers {
+            request = request.set(name, value);
+        }
+        Ok(request
             .call()
-            .map_err(|error| ConnectorError::Http(error.to_string()))?
+            .map_err(map_http_error)?
             .into_string()
             .map_err(|error| ConnectorError::Http(error.to_string()))?)
     } else {
@@ -1110,6 +1147,18 @@ fn load_source(source: &str) -> Result<String> {
         let mut content = String::new();
         file.read_to_string(&mut content)?;
         Ok(content)
+    }
+}
+
+fn map_http_error(error: ureq::Error) -> ConnectorError {
+    match error {
+        ureq::Error::Status(429, response) => ConnectorError::RateLimited {
+            retry_after_seconds: response
+                .header("Retry-After")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(30),
+        },
+        other => ConnectorError::Http(other.to_string()),
     }
 }
 

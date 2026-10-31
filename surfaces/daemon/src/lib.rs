@@ -502,9 +502,23 @@ fn route(
                         .as_str()
                         .or_else(|| value["kind"].as_str())
                         .unwrap_or("calendar.ics");
-                    let connector = state
-                        .handle
-                        .register_connector_adapter(&intent_id, name, source, adapter)?;
+                    let credential = value
+                        .get("credential")
+                        .filter(|credential| !credential.is_null())
+                        .cloned()
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(json_error)?;
+                    let sync_interval_seconds =
+                        value["sync_interval_seconds"].as_u64().unwrap_or(300);
+                    let connector = state.handle.register_connector_adapter_with_credential(
+                        &intent_id,
+                        name,
+                        source,
+                        adapter,
+                        credential,
+                        sync_interval_seconds,
+                    )?;
                     return Ok((200, json_string(&connector)?));
                 }
                 _ => {}
@@ -627,24 +641,32 @@ fn route(
             && request.method() == &Method::Get
         {
             let connector_id = else_protocol::ids::ConnectorId::from(segments[4]);
-            let connector = state
-                .handle
-                .projection(&intent_id)?
-                .connectors
-                .get(&connector_id)
-                .cloned()
-                .ok_or_else(|| {
-                    DaemonError::Api(ApiError::NotFound(format!("connector {connector_id}")))
-                })?;
-            return Ok((
-                200,
-                json_string(&json!({
-                    "connector_id": connector.id,
-                    "provider": connector.manifest.provider,
-                    "health": connector.manifest.health,
-                    "checked_at": Utc::now().to_rfc3339()
-                }))?,
-            ));
+            let health = state.handle.connector_health(&intent_id, &connector_id)?;
+            return Ok((200, json_string(&health)?));
+        }
+        if segments.len() == 6 && segments[3] == "connectors" && segments[5] == "credential" {
+            let connector_id = else_protocol::ids::ConnectorId::from(segments[4]);
+            match request.method() {
+                Method::Post => {
+                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    let credential: else_protocol::connector::ConnectorCredential =
+                        serde_json::from_str(body).map_err(json_error)?;
+                    let metadata = state.handle.attach_connector_credential(
+                        &intent_id,
+                        &connector_id,
+                        credential,
+                    )?;
+                    return Ok((200, json_string(&metadata)?));
+                }
+                Method::Delete => {
+                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    let metadata = state
+                        .handle
+                        .revoke_connector_credential(&intent_id, &connector_id)?;
+                    return Ok((200, json_string(&metadata)?));
+                }
+                _ => {}
+            }
         }
         if segments.len() == 6
             && segments[3] == "connectors"

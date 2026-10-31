@@ -540,6 +540,7 @@ dependencies = [
  "else-harness",
  "else-ledger",
  "else-protocol",
+ "else-secrets",
  "else-workspace",
  "serde_json",
  "tempfile",
@@ -669,6 +670,20 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "else-secrets"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "else-protocol",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "ureq",
 ]
 
 [[package]]

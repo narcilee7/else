@@ -33,6 +33,124 @@ pub enum ConnectorHealth {
     Error,
 }
 
+/// 凭据只存在于 Keychain 或 Runtime 私有凭据区。Ledger 仅记录本结构的
+/// 非敏感元数据；字段名保持独立，避免把凭据误嵌进 Connector 事件。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectorCredentialMetadata {
+    pub reference: String,
+    pub auth_mode: ConnectorAuthMode,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub configured_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// OAuth refresh 所需配置会与 access/refresh token 一起写入私有凭据区。
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OAuthRefreshConfig {
+    pub token_url: String,
+    pub client_id: String,
+    pub client_secret: Option<String>,
+}
+
+impl std::fmt::Debug for OAuthRefreshConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OAuthRefreshConfig")
+            .field("token_url", &self.token_url)
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
+/// Adapter 在执行 pull 时临时取得的凭据。该结构不得写入 Event Ledger。
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectorCredential {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    #[serde(default = "default_token_type")]
+    pub token_type: String,
+    pub scopes: Vec<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub refresh: Option<OAuthRefreshConfig>,
+}
+
+impl std::fmt::Debug for ConnectorCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConnectorCredential")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("token_type", &self.token_type)
+            .field("scopes", &self.scopes)
+            .field("expires_at", &self.expires_at)
+            .field("refresh", &self.refresh)
+            .finish()
+    }
+}
+
+impl ConnectorCredential {
+    pub fn validate_scopes(&self, required: &[String]) -> std::result::Result<(), String> {
+        let missing = required
+            .iter()
+            .filter(|scope| !self.scopes.contains(scope))
+            .cloned()
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "credential is missing required scopes: {}",
+                missing.join(", ")
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectorSyncStatus {
+    pub connector_id: ConnectorId,
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    pub last_success_at: Option<DateTime<Utc>>,
+    pub consecutive_failures: u32,
+    pub last_error: Option<String>,
+    pub next_sync_at: DateTime<Utc>,
+}
+
+impl ConnectorSyncStatus {
+    pub fn health(&self) -> ConnectorHealth {
+        match self.consecutive_failures {
+            0 => ConnectorHealth::Healthy,
+            1..=2 => ConnectorHealth::Degraded,
+            _ => ConnectorHealth::Error,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectorHealthReport {
+    pub connector_id: ConnectorId,
+    pub provider: String,
+    pub health: ConnectorHealth,
+    pub credential_configured: bool,
+    pub credential_scopes: Vec<String>,
+    pub credential_expires_at: Option<DateTime<Utc>>,
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    pub last_success_at: Option<DateTime<Utc>>,
+    pub consecutive_failures: u32,
+    pub last_error: Option<String>,
+    pub next_sync_at: DateTime<Utc>,
+    pub checked_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectorManifest {
     #[serde(default)]
@@ -67,6 +185,14 @@ pub struct ConnectorRegistration {
     /// Provider Webhook 使用的独立 Session Token，不暴露 daemon 管理 Token。
     #[serde(default)]
     pub webhook_session: Option<String>,
+    /// 建议同步间隔；调度状态由 ConnectorSyncStatus 事件持久化。
+    #[serde(default = "default_sync_interval_seconds")]
+    pub sync_interval_seconds: u64,
+    #[serde(default)]
+    pub registered_at: Option<DateTime<Utc>>,
+    /// 秘密本体不在 Ledger；这里仅保存引用、Scope 与过期时间。
+    #[serde(default)]
+    pub credential: Option<ConnectorCredentialMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -378,4 +504,12 @@ fn default_sensitivity() -> String {
 
 fn default_source_trust() -> String {
     "provider_read_only".into()
+}
+
+fn default_token_type() -> String {
+    "bearer".into()
+}
+
+fn default_sync_interval_seconds() -> u64 {
+    300
 }

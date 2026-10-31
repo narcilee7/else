@@ -12,7 +12,8 @@ use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, AgentBindingState, AgentTransport, CapabilityRegistration,
 };
 use else_protocol::connector::{
-    ConnectorManifest, ConnectorPolicy, ConnectorRegistration, ConnectorSyncResult, IntentCandidate,
+    ConnectorCredential, ConnectorCredentialMetadata, ConnectorHealthReport, ConnectorManifest,
+    ConnectorPolicy, ConnectorRegistration, ConnectorSyncResult, IntentCandidate,
 };
 use else_protocol::ids::{
     AgentBindingId, AgentId, AttentionId, CapabilityId, ConnectorId, IntentCandidateId, IntentId,
@@ -114,7 +115,25 @@ enum Command {
         name: String,
         source: String,
         adapter: String,
+        credential: Option<ConnectorCredential>,
+        sync_interval_seconds: u64,
         reply: Reply<ConnectorRegistration>,
+    },
+    AttachConnectorCredential {
+        intent_id: IntentId,
+        connector_id: ConnectorId,
+        credential: ConnectorCredential,
+        reply: Reply<ConnectorCredentialMetadata>,
+    },
+    RevokeConnectorCredential {
+        intent_id: IntentId,
+        connector_id: ConnectorId,
+        reply: Reply<ConnectorCredentialMetadata>,
+    },
+    ConnectorHealth {
+        intent_id: IntentId,
+        connector_id: ConnectorId,
+        reply: Reply<ConnectorHealthReport>,
     },
     ConnectorAdapters {
         reply: Reply<Vec<ConnectorManifest>>,
@@ -419,11 +438,63 @@ impl RuntimeHandle {
         source: &str,
         adapter: &str,
     ) -> Result<ConnectorRegistration> {
+        self.register_connector_adapter_with_credential(intent_id, name, source, adapter, None, 300)
+    }
+
+    pub fn register_connector_adapter_with_credential(
+        &self,
+        intent_id: &IntentId,
+        name: &str,
+        source: &str,
+        adapter: &str,
+        credential: Option<ConnectorCredential>,
+        sync_interval_seconds: u64,
+    ) -> Result<ConnectorRegistration> {
         self.request(|reply| Command::RegisterConnectorAdapter {
             intent_id: intent_id.clone(),
             name: name.into(),
             source: source.into(),
             adapter: adapter.into(),
+            credential,
+            sync_interval_seconds,
+            reply,
+        })
+    }
+
+    pub fn attach_connector_credential(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+        credential: ConnectorCredential,
+    ) -> Result<ConnectorCredentialMetadata> {
+        self.request(|reply| Command::AttachConnectorCredential {
+            intent_id: intent_id.clone(),
+            connector_id: connector_id.clone(),
+            credential,
+            reply,
+        })
+    }
+
+    pub fn revoke_connector_credential(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+    ) -> Result<ConnectorCredentialMetadata> {
+        self.request(|reply| Command::RevokeConnectorCredential {
+            intent_id: intent_id.clone(),
+            connector_id: connector_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn connector_health(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+    ) -> Result<ConnectorHealthReport> {
+        self.request(|reply| Command::ConnectorHealth {
+            intent_id: intent_id.clone(),
+            connector_id: connector_id.clone(),
             reply,
         })
     }
@@ -855,10 +926,44 @@ fn handle_command(runtime: &Runtime, command: Command) {
             name,
             source,
             adapter,
+            credential,
+            sync_interval_seconds,
             reply,
         } => {
-            let _ = reply
-                .send(runtime.register_connector_adapter(&intent_id, &name, &source, &adapter));
+            let _ = reply.send(runtime.register_connector_adapter_with_credential(
+                &intent_id,
+                &name,
+                &source,
+                &adapter,
+                credential,
+                sync_interval_seconds,
+            ));
+        }
+        Command::AttachConnectorCredential {
+            intent_id,
+            connector_id,
+            credential,
+            reply,
+        } => {
+            let _ = reply.send(runtime.attach_connector_credential(
+                &intent_id,
+                &connector_id,
+                credential,
+            ));
+        }
+        Command::RevokeConnectorCredential {
+            intent_id,
+            connector_id,
+            reply,
+        } => {
+            let _ = reply.send(runtime.revoke_connector_credential(&intent_id, &connector_id));
+        }
+        Command::ConnectorHealth {
+            intent_id,
+            connector_id,
+            reply,
+        } => {
+            let _ = reply.send(runtime.connector_health(&intent_id, &connector_id));
         }
         Command::ConnectorAdapters { reply } => {
             let _ = reply.send(Ok(runtime.connector_manifests()));
@@ -1022,10 +1127,10 @@ fn handle_command(runtime: &Runtime, command: Command) {
 
 fn reconcile_all(runtime: &Runtime) -> Option<DateTime<Utc>> {
     let _ = runtime.refresh_dirty_mcp_servers();
+    let mut next_wake = runtime.sync_due_connectors(Utc::now());
     let Ok(intents) = runtime.list_intents() else {
         return Some(Utc::now() + chrono::Duration::seconds(2));
     };
-    let mut next_wake = None;
     let mut had_error = false;
     for spec in intents {
         let Ok(projection) = runtime.projection(&spec.id) else {

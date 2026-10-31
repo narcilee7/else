@@ -5,6 +5,7 @@ members = [
     "core/else-ledger",
     "core/else-context",
     "core/else-connector",
+    "core/else-secrets",
     "core/else-attention",
     "core/else-gateway",
     "core/else-harness",
