@@ -744,6 +744,7 @@ impl ConnectorAdapter for FixtureAdapter {
                 evidence_ref: None,
                 sensitivity: "internal".into(),
                 source_trust: "test".into(),
+                correlations: vec![],
             }],
         })
     }

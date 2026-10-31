@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::connector::{ExternalEntityRef, ObjectKind};
+use crate::connector::{CorrelationHint, ExternalEntityRef, ObjectKind};
 use crate::ids::{ConnectorId, IntentId, WorldItemId, WorldSignalId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +45,8 @@ pub struct WorldItem {
     pub deadline: Option<DateTime<Utc>>,
     pub signal_ids: Vec<WorldSignalId>,
     pub connector_ids: Vec<ConnectorId>,
+    #[serde(default)]
+    pub projects: Vec<CorrelationHint>,
     pub first_observed_at: DateTime<Utc>,
     pub last_observed_at: DateTime<Utc>,
 }
@@ -53,6 +55,19 @@ pub struct WorldItem {
 pub struct WorldItemRecord {
     pub intent_id: IntentId,
     pub item: WorldItem,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectWorld {
+    pub key: String,
+    pub title: String,
+    pub items: Vec<WorldItemRecord>,
+    pub intent_ids: Vec<IntentId>,
+    pub connector_ids: Vec<ConnectorId>,
+    pub open_items: u64,
+    pub waiting_external: u64,
+    pub overdue: u64,
+    pub next_deadline: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

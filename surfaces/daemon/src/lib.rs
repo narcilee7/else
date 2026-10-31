@@ -394,6 +394,12 @@ fn route(
         let brief = state.handle.personal_brief()?;
         return Ok((200, json_string(&brief)?));
     }
+    if segments == ["v1", "projects"] && request.method() == &Method::Get {
+        let include_resolved = query_value(request.url(), "include_resolved")
+            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
+        let projects = state.handle.project_worlds(None, include_resolved)?;
+        return Ok((200, json_string(&projects)?));
+    }
     if segments.len() >= 3 && segments[0..2] == ["v1", "intents"] {
         let intent_id = else_protocol::ids::IntentId::from(segments[2]);
         if segments.len() == 3 && request.method() == &Method::Get {
@@ -530,6 +536,14 @@ fn route(
                 .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
             let items = state.handle.world_items(&intent_id, include_resolved)?;
             return Ok((200, json_string(&items)?));
+        }
+        if segments.len() == 4 && segments[3] == "projects" && request.method() == &Method::Get {
+            let include_resolved = query_value(request.url(), "include_resolved")
+                .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
+            let projects = state
+                .handle
+                .project_worlds(Some(&intent_id), include_resolved)?;
+            return Ok((200, json_string(&projects)?));
         }
         if segments.len() == 5
             && segments[3] == "world"
@@ -1558,6 +1572,11 @@ mod tests {
         assert_eq!(status, 200, "{brief}");
         let brief: Value = serde_json::from_str(&brief).unwrap();
         assert!(brief["waiting_external"].as_array().unwrap().is_empty());
+        let projects_path = format!("/v1/intents/{intent_id}/projects");
+        let (status, projects) = request(&daemon, "GET", &projects_path, "", None, None);
+        assert_eq!(status, 200, "{projects}");
+        let (status, projects) = request(&daemon, "GET", "/v1/projects", "", None, None);
+        assert_eq!(status, 200, "{projects}");
         daemon.shutdown();
     }
 }

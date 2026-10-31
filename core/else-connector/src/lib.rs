@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use else_protocol::connector::{
     ConnectorAuthMode, ConnectorHealth, ConnectorManifest, ConnectorObservation, ConnectorPullPage,
-    ConnectorSyncMode, ObjectKind, ObservationChange, SignalInterpretation, SignalMeaning,
-    SignalStatus, SignalType, SyncCursor, WorldSignal,
+    ConnectorSyncMode, CorrelationHint, CorrelationKind, ObjectKind, ObservationChange,
+    SignalInterpretation, SignalMeaning, SignalStatus, SignalType, SyncCursor, WorldSignal,
 };
 use else_protocol::ids::ConnectorId;
 use ical::IcalParser;
@@ -292,6 +292,13 @@ fn normalize_calendar(
                 continue;
             }
             let end = property("DTEND").and_then(|value| parse_datetime(&value));
+            let categories = property("CATEGORIES")
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
             let uid = property("UID").unwrap_or_else(|| format!("{summary}:{start}"));
             let source_version = format!(
                 "{:016x}",
@@ -311,10 +318,14 @@ fn normalize_calendar(
                 object_kind: ObjectKind::CalendarEvent,
                 change: ObservationChange::Upsert,
                 actor: None,
-                attributes: json!({ "title": summary }),
+                attributes: json!({
+                    "title": summary,
+                    "categories": categories,
+                }),
                 evidence_ref: None,
                 sensitivity: "internal".into(),
                 source_trust: "deterministic_read_only".into(),
+                correlations: direct_project_hints(&categories),
             });
         }
     }
@@ -472,6 +483,37 @@ fn normalize_notion_node(
     } else {
         "notion_page"
     };
+    let mut project_labels = property_facts
+        .iter()
+        .filter(|(name, _)| {
+            let name = name.to_ascii_lowercase();
+            name.contains("project")
+                || name.contains("client")
+                || name.contains("customer")
+                || name.contains("workstream")
+        })
+        .flat_map(|(_, fact)| {
+            fact.get("value")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .into_iter()
+                .chain(
+                    fact.get("values")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string),
+                )
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    if project_labels.is_empty() {
+        if let Some(database_id) = &database_id {
+            project_labels.push(format!("Notion Database {database_id}"));
+        }
+    }
+    let correlations = direct_project_hints(&project_labels);
     Ok(Some(ConnectorObservation {
         connector_id: connector_id.clone(),
         entity_id: id.clone(),
@@ -508,6 +550,7 @@ fn normalize_notion_node(
         evidence_ref: string_at(node, &["url"]),
         sensitivity: "internal".into(),
         source_trust: "provider_read_only".into(),
+        correlations,
     }))
 }
 
@@ -690,6 +733,11 @@ fn normalize_linear_issue(
         format!("，被 {} 个事项阻塞", blocked_by.len())
     };
     let summary = format!("Linear {identifier}: {title}（{state}{due_text}{blocked_text}）");
+    let mut correlations = project_hints_from_labels(&labels);
+    if let Some(project) = &project {
+        correlations.extend(direct_project_hints(std::slice::from_ref(project)));
+    }
+    dedupe_project_hints(&mut correlations);
     Ok(Some(ConnectorObservation {
         connector_id: connector_id.clone(),
         entity_id: id.clone(),
@@ -725,6 +773,7 @@ fn normalize_linear_issue(
         evidence_ref: string_at(issue, &["url"]),
         sensitivity: "internal".into(),
         source_trust: "provider_read_only".into(),
+        correlations,
     }))
 }
 
@@ -1062,6 +1111,65 @@ fn load_source(source: &str) -> Result<String> {
         file.read_to_string(&mut content)?;
         Ok(content)
     }
+}
+
+fn direct_project_hints(labels: &[String]) -> Vec<CorrelationHint> {
+    let mut hints = labels
+        .iter()
+        .filter_map(|label| project_hint(label))
+        .collect::<Vec<_>>();
+    dedupe_project_hints(&mut hints);
+    hints
+}
+
+fn project_hints_from_labels(labels: &[String]) -> Vec<CorrelationHint> {
+    let mut hints = labels
+        .iter()
+        .filter_map(|label| {
+            let lower = label.to_ascii_lowercase();
+            ["project:", "project/", "project=", "项目:"]
+                .iter()
+                .find_map(|prefix| {
+                    lower
+                        .starts_with(prefix)
+                        .then(|| project_hint(label[prefix.len()..].trim()))
+                        .flatten()
+                })
+        })
+        .collect::<Vec<_>>();
+    dedupe_project_hints(&mut hints);
+    hints
+}
+
+fn project_hint(label: &str) -> Option<CorrelationHint> {
+    let label = label.trim();
+    if label.is_empty() {
+        return None;
+    }
+    let mut key = String::new();
+    let mut separator = false;
+    for character in label.chars().flat_map(char::to_lowercase) {
+        if character.is_alphanumeric() {
+            key.push(character);
+            separator = false;
+        } else if !separator && !key.is_empty() {
+            key.push('-');
+            separator = true;
+        }
+    }
+    while key.ends_with('-') {
+        key.pop();
+    }
+    (!key.is_empty()).then(|| CorrelationHint {
+        kind: CorrelationKind::Project,
+        key: format!("project:{key}"),
+        label: label.into(),
+    })
+}
+
+fn dedupe_project_hints(hints: &mut Vec<CorrelationHint>) {
+    let mut seen = std::collections::BTreeSet::new();
+    hints.retain(|hint| seen.insert(hint.key.clone()));
 }
 
 fn parse_datetime(value: &str) -> Option<DateTime<Utc>> {

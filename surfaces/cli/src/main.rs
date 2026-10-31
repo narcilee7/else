@@ -251,6 +251,12 @@ enum Command {
     },
     /// 跨 Intent 生成 Personal Brief
     Brief,
+    /// 按规范化 Project Key 查看跨 Provider World
+    Projects {
+        intent_id: Option<String>,
+        #[arg(long)]
+        include_resolved: bool,
+    },
     /// 跨 Intent 按事件水位读取 Signal
     SignalFeed {
         #[arg(long, default_value_t = 0)]
@@ -948,6 +954,34 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             print_world_section("action_items_due_soon", &brief.action_items_due_soon);
             print_world_section("upcoming_calendar", &brief.upcoming_calendar);
             print_world_section("risks", &brief.risks);
+        }
+        Command::Projects {
+            intent_id,
+            include_resolved,
+        } => {
+            let intent_id = intent_id.map(IntentId::from);
+            for project in runtime.project_worlds(intent_id.as_ref(), include_resolved)? {
+                println!(
+                    "{} {} open={} waiting={} overdue={} next_due={} intents={} connectors={}",
+                    project.key,
+                    project.title,
+                    project.open_items,
+                    project.waiting_external,
+                    project.overdue,
+                    project
+                        .next_deadline
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_else(|| "none".into()),
+                    project.intent_ids.len(),
+                    project.connector_ids.len()
+                );
+                for record in &project.items {
+                    println!(
+                        "  intent={} {:?} {:?} {}",
+                        record.intent_id, record.item.kind, record.item.state, record.item.title
+                    );
+                }
+            }
         }
         Command::SignalFeed {
             cursor,

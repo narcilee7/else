@@ -727,6 +727,7 @@ fn world_signal_from_observation(observation: &ConnectorObservation) -> WorldSig
         sensitivity: observation.sensitivity.clone(),
         source_trust: observation.source_trust.clone(),
         status,
+        correlations: observation.correlations.clone(),
     }
 }
 

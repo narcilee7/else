@@ -122,6 +122,8 @@ pub struct ConnectorObservation {
     pub evidence_ref: Option<String>,
     pub sensitivity: String,
     pub source_trust: String,
+    #[serde(default)]
+    pub correlations: Vec<CorrelationHint>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +145,19 @@ pub enum ObservationChange {
     Upsert,
     Delete,
     Supersede,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CorrelationKind {
+    Project,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CorrelationHint {
+    pub kind: CorrelationKind,
+    pub key: String,
+    pub label: String,
 }
 
 /// 仅用于读取 Phase 1/2 历史事件；新 Adapter 不再产出业务语义类型。
@@ -207,6 +222,8 @@ pub struct WorldSignal {
     pub sensitivity: String,
     pub source_trust: String,
     pub status: SignalStatus,
+    #[serde(default)]
+    pub correlations: Vec<CorrelationHint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
