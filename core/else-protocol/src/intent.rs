@@ -7,6 +7,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::connector::IntentOrigin;
 use crate::effect::SideEffectKind;
 use crate::ids::IntentId;
 
@@ -131,6 +132,9 @@ pub struct IntentSpec {
     /// 缺省 None 只召回 Global。
     #[serde(default)]
     pub project: Option<String>,
+    /// 来源血缘；旧事件缺省为未知，新 Intent 创建时显式记录。
+    #[serde(default)]
+    pub origin: Option<IntentOrigin>,
 }
 
 /// IntentState：由 Runtime 根据执行事件持续更新的投影状态。

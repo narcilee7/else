@@ -28,6 +28,7 @@ fn ctx(intent_id: &IntentId, generation: u64) -> ExecContext {
             deadline: None,
             assumptions: vec![],
             project: None,
+            origin: None,
         },
         scope_id: ScopeId::new(),
         run_id: RunId::new(),

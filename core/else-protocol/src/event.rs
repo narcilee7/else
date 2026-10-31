@@ -13,7 +13,9 @@ use crate::capability::{
     AgentBinding, AgentBindingEvent, AgentBindingState, CapabilityRegistration,
     McpServerRegistration,
 };
-use crate::connector::{ConnectorRegistration, ExternalFact};
+use crate::connector::{
+    ConnectorRegistration, ExternalFact, IntentCandidate, IntentCandidateState, WorldSignal,
+};
 use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
 use crate::egress::EgressDecision;
 use crate::failure::ScopeFailure;
@@ -183,6 +185,21 @@ pub enum EventPayload {
     },
     ExternalFactIngested {
         fact: ExternalFact,
+    },
+    WorldSignalIngested {
+        signal: WorldSignal,
+    },
+    WorldSignalStatusChanged {
+        signal_id: WorldSignalId,
+        status: crate::connector::SignalStatus,
+    },
+    IntentCandidateProposed {
+        candidate: IntentCandidate,
+    },
+    IntentCandidateStateChanged {
+        candidate_id: IntentCandidateId,
+        state: IntentCandidateState,
+        intent_id: Option<IntentId>,
     },
 
     RunStarted {
@@ -393,6 +410,7 @@ mod tests {
             deadline: None,
             assumptions: vec![],
             project: None,
+            origin: None,
         }
     }
 
@@ -410,6 +428,36 @@ mod tests {
         let back: EventEnvelope = serde_json::from_str(&json).unwrap();
         assert_eq!(event, back);
         assert_eq!(back.protocol_version, PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn legacy_payloads_decode_without_new_lineage_fields() {
+        let legacy_fact = serde_json::json!({
+            "type": "external_fact_ingested",
+            "data": {
+                "fact": {
+                    "connector_id": "legacy-connector",
+                    "fact_id": "legacy-fact",
+                    "source": "calendar",
+                    "summary": "legacy",
+                    "occurred_at": "2026-10-31T00:00:00Z",
+                    "valid_until": null
+                }
+            }
+        });
+        let payload: EventPayload = serde_json::from_value(legacy_fact).unwrap();
+        match payload {
+            EventPayload::ExternalFactIngested { fact } => {
+                assert!(fact.entity_id.is_empty());
+                assert!(fact.source_version.is_empty());
+            }
+            other => panic!("unexpected payload: {other:?}"),
+        }
+
+        let mut legacy_intent = serde_json::to_value(spec()).unwrap();
+        legacy_intent.as_object_mut().unwrap().remove("origin");
+        let decoded: IntentSpec = serde_json::from_value(legacy_intent).unwrap();
+        assert!(decoded.origin.is_none());
     }
 
     #[test]

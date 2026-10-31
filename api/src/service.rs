@@ -11,10 +11,11 @@ use else_protocol::attention::{AttentionRequest, DecisionChoice};
 use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, AgentBindingState, AgentTransport, CapabilityRegistration,
 };
+use else_protocol::connector::IntentCandidate;
 use else_protocol::connector::{ConnectorRegistration, ConnectorSyncResult};
 use else_protocol::ids::{
-    AgentBindingId, AgentId, AttentionId, CapabilityId, ConnectorId, IntentId, RunId, ScopeId,
-    TimerId,
+    AgentBindingId, AgentId, AttentionId, CapabilityId, ConnectorId, IntentCandidateId, IntentId,
+    RunId, ScopeId, TimerId,
 };
 use else_protocol::intent::IntentSpec;
 use else_protocol::plan::Plan;
@@ -105,6 +106,21 @@ enum Command {
         intent_id: IntentId,
         connector_id: ConnectorId,
         reply: Reply<ConnectorSyncResult>,
+    },
+    ResolveSignals {
+        intent_id: IntentId,
+        reply: Reply<Vec<IntentCandidate>>,
+    },
+    ProposeCandidate {
+        intent_id: IntentId,
+        candidate: IntentCandidate,
+        reply: Reply<IntentCandidate>,
+    },
+    ResolveCandidate {
+        intent_id: IntentId,
+        candidate_id: IntentCandidateId,
+        accept: bool,
+        reply: Reply<Option<IntentSpec>>,
     },
     RecordExternalEvent {
         intent_id: IntentId,
@@ -331,6 +347,39 @@ impl RuntimeHandle {
         self.request(|reply| Command::SyncConnector {
             intent_id: intent_id.clone(),
             connector_id: connector_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn resolve_signals(&self, intent_id: &IntentId) -> Result<Vec<IntentCandidate>> {
+        self.request(|reply| Command::ResolveSignals {
+            intent_id: intent_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn propose_intent_candidate(
+        &self,
+        intent_id: &IntentId,
+        candidate: IntentCandidate,
+    ) -> Result<IntentCandidate> {
+        self.request(|reply| Command::ProposeCandidate {
+            intent_id: intent_id.clone(),
+            candidate,
+            reply,
+        })
+    }
+
+    pub fn resolve_intent_candidate(
+        &self,
+        intent_id: &IntentId,
+        candidate_id: &IntentCandidateId,
+        accept: bool,
+    ) -> Result<Option<IntentSpec>> {
+        self.request(|reply| Command::ResolveCandidate {
+            intent_id: intent_id.clone(),
+            candidate_id: candidate_id.clone(),
+            accept,
             reply,
         })
     }
@@ -613,6 +662,24 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.sync_connector(&intent_id, &connector_id));
+        }
+        Command::ResolveSignals { intent_id, reply } => {
+            let _ = reply.send(runtime.resolve_signals(&intent_id));
+        }
+        Command::ProposeCandidate {
+            intent_id,
+            candidate,
+            reply,
+        } => {
+            let _ = reply.send(runtime.propose_intent_candidate(&intent_id, candidate));
+        }
+        Command::ResolveCandidate {
+            intent_id,
+            candidate_id,
+            accept,
+            reply,
+        } => {
+            let _ = reply.send(runtime.resolve_intent_candidate(&intent_id, &candidate_id, accept));
         }
         Command::RecordExternalEvent {
             intent_id,

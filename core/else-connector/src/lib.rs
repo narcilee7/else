@@ -62,9 +62,15 @@ pub fn read_calendar(
             }
             let end = property("DTEND").and_then(|value| parse_datetime(&value));
             let uid = property("UID").unwrap_or_else(|| format!("{summary}:{start}"));
+            let source_version = format!(
+                "{:016x}",
+                stable_hash(&format!("{summary}\0{start}\0{end:?}"))
+            );
             facts.push(ExternalFact {
                 connector_id: connector_id.clone(),
-                fact_id: format!("calendar:{connector_id}:{uid}:{}", start.timestamp()),
+                entity_id: uid.clone(),
+                source_version: source_version.clone(),
+                fact_id: format!("calendar:{connector_id}:{uid}:{source_version}"),
                 source: "calendar".into(),
                 summary: format!("日程：{summary}（{}）", start.to_rfc3339()),
                 occurred_at: start,
@@ -91,4 +97,13 @@ fn parse_datetime(value: &str) -> Option<DateTime<Utc>> {
         return Some(Utc.from_utc_datetime(&value.and_hms_opt(0, 0, 0)?));
     }
     None
+}
+
+fn stable_hash(value: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }

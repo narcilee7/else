@@ -437,6 +437,71 @@ fn route(
                 _ => {}
             }
         }
+        if segments.len() == 4 && segments[3] == "signals" && request.method() == &Method::Get {
+            let signals = state
+                .handle
+                .projection(&intent_id)?
+                .world_signals
+                .into_values()
+                .collect::<Vec<_>>();
+            return Ok((200, json_string(&signals)?));
+        }
+        if segments.len() == 5
+            && segments[3] == "signals"
+            && segments[4] == "resolve"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let candidates = state.handle.resolve_signals(&intent_id)?;
+            return Ok((200, json_string(&candidates)?));
+        }
+        if segments.len() == 4 && segments[3] == "candidates" {
+            match request.method() {
+                Method::Get => {
+                    let candidates = state
+                        .handle
+                        .projection(&intent_id)?
+                        .intent_candidates
+                        .into_values()
+                        .collect::<Vec<_>>();
+                    return Ok((200, json_string(&candidates)?));
+                }
+                Method::Post => {
+                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    let candidate: else_protocol::connector::IntentCandidate =
+                        serde_json::from_str(body).map_err(json_error)?;
+                    let candidate = state
+                        .handle
+                        .propose_intent_candidate(&intent_id, candidate)?;
+                    return Ok((200, json_string(&candidate)?));
+                }
+                _ => {}
+            }
+        }
+        if segments.len() == 6
+            && segments[3] == "candidates"
+            && matches!(segments[5], "accept" | "reject")
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let candidate_id = else_protocol::ids::IntentCandidateId::from(segments[4]);
+            let intent = state.handle.resolve_intent_candidate(
+                &intent_id,
+                &candidate_id,
+                segments[5] == "accept",
+            )?;
+            let candidate = state
+                .handle
+                .projection(&intent_id)?
+                .intent_candidates
+                .get(&candidate_id)
+                .cloned()
+                .ok_or_else(|| DaemonError::InvalidRequest("candidate disappeared".into()))?;
+            return Ok((
+                200,
+                json_string(&json!({"candidate":candidate,"intent":intent}))?,
+            ));
+        }
         if segments.len() == 6
             && segments[3] == "connectors"
             && segments[5] == "sync"
@@ -680,6 +745,7 @@ fn snapshot(projection: &IntentProjection) -> IntentSnapshot {
                 deadline: None,
                 assumptions: vec![],
                 project: None,
+                origin: None,
             }
         }),
         state: projection.state.unwrap_or(IntentState::Active),
@@ -1074,5 +1140,96 @@ mod tests {
             token: Some("secret".into()),
         });
         assert!(matches!(second, Err(DaemonError::AlreadyRunning(_))));
+    }
+
+    #[test]
+    fn daemon_exposes_signal_and_candidate_lineage_endpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = Daemon::start(DaemonConfig {
+            dir: dir.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            token: Some("signal-token".into()),
+        })
+        .unwrap();
+        let (status, body) = request(
+            &daemon,
+            "POST",
+            "/v1/intents",
+            r#"{"outcome":"候选测试"}"#,
+            Some("signal-create"),
+            None,
+        );
+        assert_eq!(status, 200, "{body}");
+        let snapshot: Value = serde_json::from_str(&body).unwrap();
+        let intent_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
+        let revision = snapshot["spec"]["revision"].as_u64().unwrap();
+
+        let signals_path = format!("/v1/intents/{intent_id}/signals");
+        let (status, signals) = request(&daemon, "GET", &signals_path, "", None, None);
+        assert_eq!(status, 200, "{signals}");
+        assert_eq!(
+            serde_json::from_str::<Vec<Value>>(&signals).unwrap().len(),
+            0
+        );
+
+        let candidates_path = format!("/v1/intents/{intent_id}/candidates");
+        let candidate_body = json!({
+            "id": "candidate-api-1",
+            "origin": "external_request",
+            "proposed_outcome": "整理外部请求",
+            "done_when": [{
+                "description": "确认完成",
+                "verification": {"kind": "manual"}
+            }],
+            "constraints": [],
+            "authority": {
+                "max_autonomous_effect": "read_only",
+                "forbidden": []
+            },
+            "attention_policy": {
+                "allow_interrupt": false,
+                "batch_interval_minutes": 60
+            },
+            "deadline": null,
+            "related_signal_ids": [],
+            "related_intent_id": intent_id,
+            "confidence": 60,
+            "dedupe_key": "daemon-candidate-1",
+            "state": "proposed",
+            "accepted_intent_id": null
+        })
+        .to_string();
+        let (status, candidate) = request(
+            &daemon,
+            "POST",
+            &candidates_path,
+            &candidate_body,
+            Some("signal-propose"),
+            Some(revision),
+        );
+        assert_eq!(status, 200, "{candidate}");
+        assert!(candidate.contains("candidate-api-1"));
+
+        let accept_path = format!("/v1/intents/{intent_id}/candidates/candidate-api-1/accept");
+        let (status, accepted) = request(
+            &daemon,
+            "POST",
+            &accept_path,
+            "",
+            Some("signal-accept"),
+            Some(revision),
+        );
+        assert_eq!(status, 200, "{accepted}");
+        let accepted: Value = serde_json::from_str(&accepted).unwrap();
+        assert_eq!(accepted["candidate"]["state"].as_str(), Some("accepted"));
+        assert_eq!(
+            accepted["intent"]["origin"]["candidate_id"].as_str(),
+            Some("candidate-api-1")
+        );
+        assert_eq!(
+            accepted["intent"]["origin"]["kind"].as_str(),
+            Some("external_request")
+        );
+        daemon.shutdown();
     }
 }

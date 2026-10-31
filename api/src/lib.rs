@@ -33,6 +33,7 @@ use else_gateway::{
 };
 use else_ledger::{IntentProjection, Ledger, Projection, StoredEvent};
 use else_protocol::attention::{AttentionKind, Decision, DecisionChoice};
+use else_protocol::connector::{IntentAcceptedBy, IntentOrigin, IntentOriginKind};
 use else_protocol::effect::SideEffectKind;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::ids::{AttentionId, IntentId, RunId, ScopeId};
@@ -69,6 +70,17 @@ pub struct Runtime {
     store: else_workspace::Store,
     branches: PathBuf,
     default_budget: else_protocol::resource::ResourceBudget,
+}
+
+pub(crate) struct IntentDraft {
+    pub outcome: String,
+    pub project: Option<String>,
+    pub done_when: Vec<else_protocol::intent::Criterion>,
+    pub constraints: Vec<String>,
+    pub authority: Authority,
+    pub attention_policy: AttentionPolicy,
+    pub deadline: Option<chrono::DateTime<chrono::Utc>>,
+    pub origin: Option<IntentOrigin>,
 }
 
 impl Runtime {
@@ -113,11 +125,9 @@ impl Runtime {
         project: Option<String>,
         done_when: Vec<else_protocol::intent::Criterion>,
     ) -> Result<IntentSpec> {
-        let root_scope_id = ScopeId::new();
-        let spec = IntentSpec {
-            id: IntentId::new(),
-            revision: 1,
-            outcome: outcome.to_string(),
+        self.create_intent_from_parts(IntentDraft {
+            outcome: outcome.into(),
+            project,
             done_when,
             constraints: vec![],
             authority: Authority {
@@ -128,13 +138,36 @@ impl Runtime {
                 allow_interrupt: true,
                 batch_interval_minutes: 30,
             },
-            opaque_harness_policy: else_protocol::intent::OpaqueHarnessPolicy::default(),
             deadline: None,
+            origin: Some(IntentOrigin {
+                kind: IntentOriginKind::UserDirect,
+                connector_ids: vec![],
+                signal_ids: vec![],
+                candidate_id: None,
+                accepted_by: IntentAcceptedBy::User,
+                accepted_at: chrono::Utc::now(),
+            }),
+        })
+    }
+
+    pub(crate) fn create_intent_from_parts(&self, draft: IntentDraft) -> Result<IntentSpec> {
+        let root_scope_id = ScopeId::new();
+        let spec = IntentSpec {
+            id: IntentId::new(),
+            revision: 1,
+            outcome: draft.outcome,
+            done_when: draft.done_when,
+            constraints: draft.constraints,
+            authority: draft.authority,
+            attention_policy: draft.attention_policy,
+            opaque_harness_policy: else_protocol::intent::OpaqueHarnessPolicy::default(),
+            deadline: draft.deadline,
             assumptions: vec![else_protocol::intent::Assumption {
                 text: "假设：在当前工作区推进该目标（系统补全，可修正）".into(),
                 confirmed: false,
             }],
-            project,
+            project: draft.project,
+            origin: draft.origin,
         };
         self.ledger.append(&EventEnvelope::new(
             spec.id.clone(),

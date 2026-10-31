@@ -29,6 +29,7 @@ fn ctx(spec_id: &IntentId) -> ExecContext {
             deadline: None,
             assumptions: vec![],
             project: None,
+            origin: None,
         },
         scope_id: ScopeId::new(),
         run_id: RunId::new(),

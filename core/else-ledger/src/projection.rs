@@ -10,7 +10,7 @@ use else_protocol::attention::{
 use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, CapabilityRegistration, McpServerRegistration,
 };
-use else_protocol::connector::ConnectorRegistration;
+use else_protocol::connector::{ConnectorRegistration, IntentCandidate, SignalStatus, WorldSignal};
 use else_protocol::event::{Actor, EventPayload, ScopeState};
 use else_protocol::failure::ScopeFailure;
 use else_protocol::ids::{ArtifactId, AttentionId, AttentionWindowId, LeaseId, ScopeId, TimerId};
@@ -110,6 +110,10 @@ pub struct IntentProjection {
     pub dirty_mcp_servers: std::collections::BTreeSet<else_protocol::ids::McpServerId>,
     pub connectors: BTreeMap<else_protocol::ids::ConnectorId, ConnectorRegistration>,
     pub external_fact_keys: std::collections::BTreeSet<String>,
+    pub world_signals: BTreeMap<else_protocol::ids::WorldSignalId, WorldSignal>,
+    pub signal_dedupe: BTreeMap<String, else_protocol::ids::WorldSignalId>,
+    pub intent_candidates: BTreeMap<else_protocol::ids::IntentCandidateId, IntentCandidate>,
+    pub candidate_dedupe: BTreeMap<String, else_protocol::ids::IntentCandidateId>,
     pub artifacts: Vec<Artifact>,
     pub artifact_scopes: BTreeMap<ArtifactId, ScopeId>,
     pub checkpoints: Vec<Checkpoint>,
@@ -265,6 +269,99 @@ impl Projection for IntentProjection {
                     occurred_at: fact.occurred_at,
                 });
                 self.external_wait_reason = None;
+            }
+            EventPayload::WorldSignalIngested { signal }
+                if !self.signal_dedupe.contains_key(&signal.dedupe_key) =>
+            {
+                let superseded = self
+                    .world_signals
+                    .iter_mut()
+                    .filter(|(_, existing)| {
+                        existing.status == SignalStatus::Active
+                            && same_external_entity(existing, signal)
+                    })
+                    .map(|(id, existing)| {
+                        existing.status = SignalStatus::Superseded;
+                        id.clone()
+                    })
+                    .collect::<Vec<_>>();
+                for id in superseded {
+                    self.external_events
+                        .retain(|event| event.event_id != id.to_string());
+                    for candidate in self.intent_candidates.values_mut() {
+                        if candidate.state
+                            == else_protocol::connector::IntentCandidateState::Proposed
+                            && candidate.related_signal_ids.contains(&id)
+                        {
+                            candidate.state =
+                                else_protocol::connector::IntentCandidateState::Superseded;
+                        }
+                    }
+                }
+                self.signal_dedupe
+                    .insert(signal.dedupe_key.clone(), signal.id.clone());
+                self.world_signals.insert(signal.id.clone(), signal.clone());
+                if signal.status == SignalStatus::Active {
+                    self.external_events.push(ExternalEventProjection {
+                        event_id: signal.id.to_string(),
+                        seq: event.seq,
+                        source: signal.entity_ref.provider.clone(),
+                        summary: signal.summary.clone(),
+                        occurred_at: signal.occurred_at,
+                    });
+                    self.external_wait_reason = None;
+                }
+            }
+            EventPayload::WorldSignalStatusChanged { signal_id, status } => {
+                if let Some(signal) = self.world_signals.get_mut(signal_id) {
+                    signal.status = *status;
+                    if !matches!(status, SignalStatus::Active) {
+                        self.external_events
+                            .retain(|event| event.event_id != signal_id.to_string());
+                        for candidate in self.intent_candidates.values_mut() {
+                            if candidate.state
+                                == else_protocol::connector::IntentCandidateState::Proposed
+                                && candidate.related_signal_ids.contains(signal_id)
+                            {
+                                candidate.state =
+                                    else_protocol::connector::IntentCandidateState::Superseded;
+                            }
+                        }
+                    } else if !self
+                        .external_events
+                        .iter()
+                        .any(|event| event.event_id == signal_id.to_string())
+                    {
+                        self.external_events.push(ExternalEventProjection {
+                            event_id: signal_id.to_string(),
+                            seq: event.seq,
+                            source: signal.entity_ref.provider.clone(),
+                            summary: signal.summary.clone(),
+                            occurred_at: signal.occurred_at,
+                        });
+                        self.external_wait_reason = None;
+                    }
+                }
+            }
+            EventPayload::IntentCandidateProposed { candidate }
+                if !self.candidate_dedupe.contains_key(&candidate.dedupe_key) =>
+            {
+                self.candidate_dedupe
+                    .insert(candidate.dedupe_key.clone(), candidate.id.clone());
+                self.intent_candidates
+                    .insert(candidate.id.clone(), candidate.clone());
+            }
+            EventPayload::IntentCandidateStateChanged {
+                candidate_id,
+                state,
+                intent_id,
+            } => {
+                if let Some(candidate) = self.intent_candidates.get_mut(candidate_id) {
+                    candidate.state = *state;
+                    if intent_id.is_some() {
+                        candidate.accepted_intent_id = intent_id.clone();
+                    }
+                }
             }
             EventPayload::AttentionRequested { request } => {
                 self.open_requests
@@ -591,6 +688,14 @@ impl Projection for IntentProjection {
             _ => {}
         }
     }
+}
+
+fn same_external_entity(left: &WorldSignal, right: &WorldSignal) -> bool {
+    left.entity_ref.provider == right.entity_ref.provider
+        && left.entity_ref.tenant == right.entity_ref.tenant
+        && left.entity_ref.account == right.entity_ref.account
+        && left.entity_ref.entity_kind == right.entity_ref.entity_kind
+        && left.entity_ref.external_id == right.entity_ref.external_id
 }
 
 impl IntentProjection {

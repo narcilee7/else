@@ -34,6 +34,7 @@ fn spec(intent_id: &IntentId) -> IntentSpec {
         deadline: None,
         assumptions: vec![],
         project: None,
+        origin: None,
     }
 }
 

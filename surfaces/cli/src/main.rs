@@ -200,6 +200,43 @@ enum Command {
     },
     /// 查看已注册连接器
     Connectors { intent_id: String },
+    /// 查看标准化 World Signal 及失效状态
+    Signals { intent_id: String },
+    /// 运行确定性 Resolver，根据 Signal 提出 Intent Candidate
+    ResolveSignals { intent_id: String },
+    /// 查看 Intent Candidate
+    Candidates { intent_id: String },
+    /// 手工提出 Intent Candidate；只提案，不自动创建 Intent
+    CandidatePropose {
+        intent_id: String,
+        outcome: String,
+        #[arg(long, default_value = "inferred_need", value_parser = ["user_direct", "external_request", "commitment", "inferred_need", "agent_proposal", "system_recovery"])]
+        origin: String,
+        #[arg(long = "signal")]
+        signals: Vec<String>,
+        #[arg(long = "done-when")]
+        done_when: Vec<String>,
+        #[arg(long = "constraint")]
+        constraints: Vec<String>,
+        #[arg(long, default_value = "read_only", value_parser = ["read_only", "reversible", "compensatable", "irreversible", "unknown"])]
+        max_effect: String,
+        #[arg(long, default_value_t = 50)]
+        confidence: u8,
+        #[arg(long)]
+        deadline: Option<String>,
+        #[arg(long)]
+        dedupe_key: Option<String>,
+    },
+    /// 接受 Candidate，创建带完整来源血缘的 Intent
+    CandidateAccept {
+        intent_id: String,
+        candidate_id: String,
+    },
+    /// 拒绝 Candidate，不创建 Intent
+    CandidateReject {
+        intent_id: String,
+        candidate_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -694,8 +731,176 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 );
             }
         }
+        Command::Signals { intent_id } => {
+            let projection = runtime.projection(&IntentId::from(intent_id))?;
+            for signal in projection.world_signals.values() {
+                println!(
+                    "{} {:?} {:?} occurred={} valid_until={} trust={} summary={}",
+                    signal.id,
+                    signal.signal_type,
+                    signal.status,
+                    signal.occurred_at.to_rfc3339(),
+                    signal
+                        .valid_until
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_else(|| "none".into()),
+                    signal.source_trust,
+                    signal.summary
+                );
+            }
+        }
+        Command::ResolveSignals { intent_id } => {
+            let candidates = runtime.resolve_signals(&IntentId::from(intent_id))?;
+            if candidates.is_empty() {
+                println!("candidates: none");
+            }
+            for candidate in candidates {
+                print_candidate(&candidate);
+            }
+        }
+        Command::Candidates { intent_id } => {
+            let projection = runtime.projection(&IntentId::from(intent_id))?;
+            if projection.intent_candidates.is_empty() {
+                println!("candidates: none");
+            }
+            for candidate in projection.intent_candidates.values() {
+                print_candidate(candidate);
+            }
+        }
+        Command::CandidatePropose {
+            intent_id,
+            outcome,
+            origin,
+            signals,
+            done_when,
+            constraints,
+            max_effect,
+            confidence,
+            deadline,
+            dedupe_key,
+        } => {
+            use else_protocol::connector::{
+                IntentCandidate, IntentCandidateState, IntentOriginKind,
+            };
+            let intent_id = IntentId::from(intent_id);
+            let origin = match origin.as_str() {
+                "user_direct" => IntentOriginKind::UserDirect,
+                "external_request" => IntentOriginKind::ExternalRequest,
+                "commitment" => IntentOriginKind::Commitment,
+                "agent_proposal" => IntentOriginKind::AgentProposal,
+                "system_recovery" => IntentOriginKind::SystemRecovery,
+                _ => IntentOriginKind::InferredNeed,
+            };
+            let related_signal_ids = signals
+                .into_iter()
+                .map(else_protocol::ids::WorldSignalId::from)
+                .collect::<Vec<_>>();
+            let done_when = if done_when.is_empty() {
+                vec![else_protocol::intent::Criterion::manual(format!(
+                    "确认完成：{outcome}"
+                ))]
+            } else {
+                done_when
+                    .into_iter()
+                    .map(else_protocol::intent::Criterion::manual)
+                    .collect()
+            };
+            let deadline = deadline
+                .map(|value| {
+                    chrono::DateTime::parse_from_rfc3339(&value)
+                        .map(|value| value.with_timezone(&chrono::Utc))
+                        .map_err(|error| {
+                            else_api::ApiError::NotFound(format!(
+                                "invalid deadline RFC3339: {error}"
+                            ))
+                        })
+                })
+                .transpose()?;
+            let dedupe_key = dedupe_key.unwrap_or_else(|| {
+                let signals = related_signal_ids
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("manual-candidate:{:016x}", stable_hash(&outcome, &signals))
+            });
+            let candidate = runtime.propose_intent_candidate(
+                &intent_id,
+                IntentCandidate {
+                    id: else_protocol::ids::IntentCandidateId::new(),
+                    origin,
+                    proposed_outcome: outcome,
+                    done_when,
+                    constraints,
+                    authority: else_protocol::intent::Authority {
+                        max_autonomous_effect: parse_effect(&max_effect),
+                        forbidden: vec![],
+                    },
+                    attention_policy: else_protocol::intent::AttentionPolicy {
+                        allow_interrupt: false,
+                        batch_interval_minutes: 60,
+                    },
+                    deadline,
+                    related_signal_ids,
+                    related_intent_id: Some(intent_id.clone()),
+                    confidence,
+                    dedupe_key,
+                    state: IntentCandidateState::Proposed,
+                    accepted_intent_id: None,
+                },
+            )?;
+            print_candidate(&candidate);
+        }
+        Command::CandidateAccept {
+            intent_id,
+            candidate_id,
+        } => {
+            let spec = runtime
+                .resolve_intent_candidate(
+                    &IntentId::from(intent_id),
+                    &else_protocol::ids::IntentCandidateId::from(candidate_id),
+                    true,
+                )?
+                .ok_or_else(|| {
+                    else_api::ApiError::NotFound("candidate acceptance produced no intent".into())
+                })?;
+            println!("intent: {}", spec.id);
+            println!("outcome: {}", spec.outcome);
+            if let Some(origin) = spec.origin {
+                println!(
+                    "origin: {:?} candidate={:?} signals={} connectors={}",
+                    origin.kind,
+                    origin.candidate_id,
+                    origin.signal_ids.len(),
+                    origin.connector_ids.len()
+                );
+            }
+        }
+        Command::CandidateReject {
+            intent_id,
+            candidate_id,
+        } => {
+            runtime.resolve_intent_candidate(
+                &IntentId::from(intent_id),
+                &else_protocol::ids::IntentCandidateId::from(candidate_id),
+                false,
+            )?;
+            println!("rejected");
+        }
     }
     Ok(())
+}
+
+fn print_candidate(candidate: &else_protocol::connector::IntentCandidate) {
+    println!(
+        "{} {:?} {:?} confidence={} signals={} outcome={}",
+        candidate.id,
+        candidate.origin,
+        candidate.state,
+        candidate.confidence,
+        candidate.related_signal_ids.len(),
+        candidate.proposed_outcome
+    );
 }
 
 fn run_tool_call(tool: &str, input: &str, idempotency_key: Option<&str>) -> else_api::Result<()> {
