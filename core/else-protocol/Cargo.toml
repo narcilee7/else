@@ -3,6 +3,13 @@ name = "else-protocol"
 version = "0.1.0"
 edition.workspace = true
 description = "else core protocols: Intent / Event / AttentionRequest / Decision / Checkpoint / Artifact / Lease"
+license = "MIT"
+repository = "https://github.com/narcilee7/else"
+homepage = "https://github.com/narcilee7/else"
+readme = "../../README.md"
+keywords = ["intent", "agent", "protocol", "event-sourcing", "workflow"]
+categories = ["development-tools::cargo-plugins"]
+exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [dependencies]
 serde.workspace = true

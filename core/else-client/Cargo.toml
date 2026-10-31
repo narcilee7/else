@@ -3,9 +3,16 @@ name = "else-client"
 version = "0.1.0"
 edition.workspace = true
 description = "else runtime client: one HTTP transport shared by every surface"
+license = "MIT"
+repository = "https://github.com/narcilee7/else"
+homepage = "https://github.com/narcilee7/else"
+readme = "../../README.md"
+keywords = ["client", "http", "agent"]
+categories = ["api-bindings"]
+exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [dependencies]
-else-protocol = { path = "../else-protocol" }
+else-protocol = { path = "../else-protocol", version = "0.1.0" }
 chrono.workspace = true
 libc.workspace = true
 serde.workspace = true
@@ -15,5 +22,5 @@ ureq.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-else-daemon = { path = "../../surfaces/daemon" }
+else-daemon = { path = "../../surfaces/daemon", version = "0.1.0" }
 tempfile.workspace = true

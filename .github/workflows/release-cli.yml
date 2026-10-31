@@ -1,0 +1,185 @@
+name: Release CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version matching else-cli in Cargo.toml
+        required: true
+        default: 0.1.0
+      publish:
+        description: Create a GitHub Release after building
+        required: true
+        type: boolean
+        default: false
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Test
+        run: cargo test --workspace
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            builder: cargo
+          - runner: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            builder: cross
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            builder: cargo
+          - runner: macos-14
+            target: x86_64-apple-darwin
+            builder: cargo
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Add Rust target
+        run: rustup target add "${{ matrix.target }}"
+      - name: Install cross
+        if: matrix.builder == 'cross'
+        run: cargo install cross --locked
+      - name: Package CLI
+        env:
+          BUILDER: ${{ matrix.builder }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          scripts/package-cli.sh "$version" "${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: else-${{ matrix.target }}
+          path: |
+            dist/else-${{ matrix.target }}.tar.gz
+            dist/else-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  assemble:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: else-*
+          merge-multiple: true
+      - name: Generate aggregate checksums
+        run: |
+          rm -f dist/*.tar.gz.sha256
+          cd dist
+          for archive in *.tar.gz; do sha256sum "$archive"; done | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: else-cli-release
+          path: dist
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    needs: assemble
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: else-cli-release
+          path: dist
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          tag="v${version}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists" >&2
+            exit 1
+          fi
+
+          notes="CLI/TUI release for Linux and macOS. macOS CLI binaries are ad-hoc signed because no Apple credentials are configured. The macOS App is not included."
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            gh release create "$tag" dist/*.tar.gz dist/SHA256SUMS \
+              --title "else $version" \
+              --notes "$notes" \
+              --latest
+          else
+            gh release create "$tag" dist/*.tar.gz dist/SHA256SUMS \
+              --target "$GITHUB_SHA" \
+              --title "else $version" \
+              --notes "$notes" \
+              --latest
+          fi
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: else-cli-release
+          path: dist
+      - name: Sync master
+        run: git pull --rebase origin master
+      - name: Update Homebrew formula
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          python3 scripts/update-homebrew-formula.py "$version" dist
+      - name: Upload formula release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          gh release upload "v${version}" Formula/else.rb --clobber
+      - name: Commit formula
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/else.rb
+          git diff --cached --quiet && exit 0
+          git commit -m "Update Homebrew formula for v${version}"
+          git push origin HEAD:master

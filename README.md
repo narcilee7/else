@@ -53,7 +53,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 - **One contract, many surfaces**: the HTTP wire shapes live in `else-protocol::api` — defined once, consumed by the daemon, the CLI, and the TUI. A shared JSON fixture is read by both the Rust and Swift contract tests, so a shape change breaks both sides at once instead of at runtime.
 - **One runtime, one world**: the CLI and the macOS App now speak the same HTTP API against the same daemon. `else` in a terminal and the App's Daily Brief show the same Brief, because there is only one ledger. The CLI attaches to an already-running daemon when there is one (the App's background one, typically) and otherwise starts a short-lived embedded daemon — either way, exactly one writer.
 - **Terminal product**: `else` with no arguments opens a full-screen terminal interface (ratatui + crossterm) built on the Codex CLI's event-bus architecture: widgets never call the backend, they emit events and the top-level app reacts. Screens are Overview (Daily Brief), Intents, World, Decisions, Connectors, plus an inline intent composer. Piped or redirected, `else` prints the Brief instead of hanging.
-- **Installable product**: `install.sh` / Homebrew / `cargo install`, cross-platform background service registration (`else daemon install` → LaunchAgent on macOS, systemd user unit on Linux), `else doctor` for a one-shot health report, and `else onboard` for first-run setup.
+- **Installable CLI**: `v*` tags build four target-specific CLI tarballs, publish `SHA256SUMS`, and update the Homebrew formula. The macOS App is intentionally excluded from this release line until Developer ID and notarization credentials are available.
 - **Unified capabilities and bindings**: Builtin tools, MCP tools, and Skills share one Gateway contract; MCP tools can be discovered from `tools/list`, while LocalProcess, McpStdio, and HTTPS RemoteHttp Agent bindings dispatch outbound work through the existing verifier and resource lifecycle.
 - **Binding lifecycle closure**: MCP sessions support `list_changed` refresh and persisted restart recovery; Agent bindings expose explicit lifecycle states, RemoteHttp callbacks, and SSE event streams.
 - **Personal world signal foundation**: an Adapter Registry isolates Calendar, Linear, and Notion provider details behind neutral Observations; a separate Interpreter derives ActionItem / Commitment / WaitingExternal interpretations before Resolver sees them. Notion Pages enter Document Context while Database Rows reuse the WorkItem pipeline. Connectors retain manifests, persistent cursors, tombstones, and session-scoped webhooks.
@@ -65,10 +65,17 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 ### Quickstart
 
 ```bash
-# 装好（一条命令：二进制 + runtime 目录 + 后台常驻服务）
-curl -fsSL https://raw.githubusercontent.com/narcilee7/else/main/install.sh | sh
-# 或者：brew install narcilee7/tap/else
-# 或者：cargo install else-cli
+# 当前从源码构建内部版本
+cargo build --release -p else-cli
+./target/release/else --version
+
+# 公众分发通道会在仓库公开且正式 Release 产生后启用：
+# curl -fsSL https://raw.githubusercontent.com/narcilee7/else/master/install.sh | sh
+# brew install narcilee7/tap/else
+# cargo install else-cli
+
+# 发布 CLI/TUI；不包含 macOS App
+gh workflow run release-cli.yml -f version=0.1.0 -f publish=true
 
 else                                      # 打开终端界面（Daily Brief 在第一屏）
 else doctor                               # 这台机器上的 else 现在是什么状态

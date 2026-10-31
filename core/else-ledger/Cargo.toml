@@ -3,9 +3,16 @@ name = "else-ledger"
 version = "0.1.0"
 edition.workspace = true
 description = "else event ledger: append-only SQLite event store with deterministic replay"
+license = "MIT"
+repository = "https://github.com/narcilee7/else"
+homepage = "https://github.com/narcilee7/else"
+readme = "../../README.md"
+keywords = ["event-sourcing", "sqlite", "ledger", "append-only"]
+categories = ["database"]
+exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [dependencies]
-else-protocol = { path = "../else-protocol" }
+else-protocol = { path = "../else-protocol", version = "0.1.0" }
 chrono.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

@@ -1,7 +1,7 @@
 #!/bin/sh
 # else 一键安装。
 #
-#   curl -fsSL https://raw.githubusercontent.com/narcilee7/else/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/narcilee7/else/master/install.sh | sh
 #
 # 装完会：放好 `else` 二进制、准备 runtime 目录、注册后台常驻服务，
 # 然后跑一次 `else doctor` 告诉你现在的状态。
@@ -46,11 +46,22 @@ fi
 
 asset="else-$target.tar.gz"
 url="https://github.com/$REPO/releases/download/v$VERSION/$asset"
+checksums_url="https://github.com/$REPO/releases/download/v$VERSION/SHA256SUMS"
 
 say "下载 else $VERSION（$target）…"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 curl -fsSL "$url" -o "$tmp/$asset" || die "下载失败：$url"
+curl -fsSL "$checksums_url" -o "$tmp/SHA256SUMS" || die "下载校验和失败：$checksums_url"
+
+expected="$(awk -v asset="$asset" '$2 == asset { print $1 }' "$tmp/SHA256SUMS")"
+[ -n "$expected" ] || die "SHA256SUMS 中没有 $asset"
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$tmp/$asset" | awk '{ print $1 }')"
+else
+  actual="$(shasum -a 256 "$tmp/$asset" | awk '{ print $1 }')"
+fi
+[ "$actual" = "$expected" ] || die "$asset 校验失败"
 
 say "解压…"
 tar -xzf "$tmp/$asset" -C "$tmp"
@@ -67,7 +78,7 @@ say "已安装：$INSTALL_DIR/else"
 
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
-  *) warn "$INSTALL_DIR 不在 PATH 里。把它加进 shell 配置：" ;;
+  *) warn "$INSTALL_DIR 不在 PATH 里。把它加进 shell 配置："
      warn "  export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
 

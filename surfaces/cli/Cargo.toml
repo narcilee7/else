@@ -3,19 +3,26 @@ name = "else-cli"
 version = "0.1.0"
 edition.workspace = true
 description = "else CLI: the first thin client of the runtime API"
+license = "MIT"
+repository = "https://github.com/narcilee7/else"
+homepage = "https://github.com/narcilee7/else"
+readme = "../../README.md"
+keywords = ["cli", "tui", "agent"]
+categories = ["command-line-utilities"]
+exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [[bin]]
 name = "else"
 path = "src/main.rs"
 
 [dependencies]
-else-api = { path = "../../api" }
-else-client = { path = "../../core/else-client" }
-else-harness = { path = "../../core/else-harness" }
-else-protocol = { path = "../../core/else-protocol" }
-else-ledger = { path = "../../core/else-ledger" }
-else-context = { path = "../../core/else-context" }
-else-daemon = { path = "../daemon" }
+else-api = { path = "../../api", version = "0.1.0" }
+else-client = { path = "../../core/else-client", version = "0.1.0" }
+else-harness = { path = "../../core/else-harness", version = "0.1.0" }
+else-protocol = { path = "../../core/else-protocol", version = "0.1.0" }
+else-ledger = { path = "../../core/else-ledger", version = "0.1.0" }
+else-context = { path = "../../core/else-context", version = "0.1.0" }
+else-daemon = { path = "../daemon", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
 ratatui.workspace = true
 crossterm.workspace = true

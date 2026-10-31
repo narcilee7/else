@@ -70,11 +70,18 @@ open .build/Else.app
 # 生成包含 release Runtime Helper 的 App
 ./scripts/build-app.sh release
 
-# Developer ID / notarization 发布
+# 生成仅供内部 dogfood 的 ad-hoc zip
+./scripts/package-internal.sh
+
+# Developer ID / notarization 发布；四项凭证全部必需
 CODESIGN_IDENTITY="Developer ID Application: ..." \
 APPLE_ID="..." APPLE_APP_PASSWORD="..." APPLE_TEAM_ID="..." \
 ./scripts/package-release.sh
 ```
+
+`package-internal.sh` 生成带架构名的 `Else-<version>-<arch>-adhoc.zip` 与 SHA-256。
+它不是公开安装包，也不执行公证。`package-release.sh` 会拒绝 `CODESIGN_IDENTITY=-`，
+并从 Developer ID 签名开始强制走 notarization 与 staple。
 
 正式模式默认连接 `http://127.0.0.1:4180`，可通过 `ELSE_RUNTIME_URL` 覆盖。Bearer Token 的解析顺序为：
 

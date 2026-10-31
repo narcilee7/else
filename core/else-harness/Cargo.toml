@@ -3,13 +3,20 @@ name = "else-harness"
 version = "0.1.0"
 edition.workspace = true
 description = "else harness adapters: hosted executors behind a stable control-plane contract"
+license = "MIT"
+repository = "https://github.com/narcilee7/else"
+homepage = "https://github.com/narcilee7/else"
+readme = "../../README.md"
+keywords = ["agent", "harness", "codex"]
+categories = ["development-tools::cargo-plugins"]
+exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [dependencies]
-else-protocol = { path = "../else-protocol" }
-else-ledger = { path = "../else-ledger" }
-else-gateway = { path = "../else-gateway" }
-else-environment = { path = "../else-environment" }
-else-attention = { path = "../else-attention" }
+else-protocol = { path = "../else-protocol", version = "0.1.0" }
+else-ledger = { path = "../else-ledger", version = "0.1.0" }
+else-gateway = { path = "../else-gateway", version = "0.1.0" }
+else-environment = { path = "../else-environment", version = "0.1.0" }
+else-attention = { path = "../else-attention", version = "0.1.0" }
 chrono.workspace = true
 uuid.workspace = true
 serde_json.workspace = true

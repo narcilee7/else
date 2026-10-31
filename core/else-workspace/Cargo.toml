@@ -3,9 +3,16 @@ name = "else-workspace"
 version = "0.1.0"
 edition.workspace = true
 description = "else workspace: content-addressed snapshots of task artifacts (Git is just one backend)"
+license = "MIT"
+repository = "https://github.com/narcilee7/else"
+homepage = "https://github.com/narcilee7/else"
+readme = "../../README.md"
+keywords = ["workspace", "isolation", "filesystem"]
+categories = ["filesystem"]
+exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [dependencies]
-else-protocol = { path = "../else-protocol" }
+else-protocol = { path = "../else-protocol", version = "0.1.0" }
 blake3 = "1"
 walkdir = "2"
 serde.workspace = true

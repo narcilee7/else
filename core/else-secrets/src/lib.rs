@@ -40,6 +40,11 @@ pub enum CredentialBackend {
 pub struct CredentialStore {
     backend: CredentialBackend,
     directory: PathBuf,
+    /// Keychain 的服务名。
+    ///
+    /// 只有 macOS 有 Keychain；其他平台上这个字段根本不存在 ——
+    /// 留着它只会是一个永远读不到的死字段。
+    #[cfg(target_os = "macos")]
     service: String,
 }
 
@@ -77,6 +82,7 @@ impl CredentialStore {
         Ok(Self {
             backend,
             directory,
+            #[cfg(target_os = "macos")]
             service: format!(
                 "else.connector.credentials.{:016x}",
                 stable_hash(&canonical.to_string_lossy())

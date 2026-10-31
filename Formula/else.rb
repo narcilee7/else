@@ -4,7 +4,7 @@ class Else < Formula
   version "0.1.0"
   license "MIT"
 
-  # 发布时由 scripts/release.sh 填入真实的 sha256。
+  # 发布时由 scripts/update-homebrew-formula.py 填入 release 校验和。
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/narcilee7/else/releases/download/v#{version}/else-aarch64-apple-darwin.tar.gz"
