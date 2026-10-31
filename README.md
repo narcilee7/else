@@ -28,6 +28,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 - [ARCHITECTURE](./ARCHITECTURE.md) — system design, invariants, and technology choices: Rust core, event sourcing on SQLite, pluggable artifact backends (CAS / Git), MCP + model gateways, local & cloud environments.（中文）
 - [DESIGN](./DESIGN.md) — visual language, Motion grammar, component rules, accessibility, and the three-surface experience.（中文）
 - [GAPS](./GAPS.md) — prioritized product, kernel, release, and scale-readiness gaps.（中文）
+- [CONNECTORS](./CONNECTORS.md) — World Signal / Intent Candidate / Provider Connector abstraction and rollout plan.（中文）
 - [PROJECT_MANAGE](./PROJECT_MANAGE.md) — implementation rhythm: milestones M0–M4, weekly M0 breakdown, acceptance criteria, scope guards.（中文）
 
 ## Status
