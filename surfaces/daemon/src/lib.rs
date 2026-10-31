@@ -1428,6 +1428,7 @@ mod tests {
         assert_eq!(status, 200, "{adapters}");
         assert!(adapters.contains("calendar.ics"));
         assert!(adapters.contains("linear.graphql"));
+        assert!(adapters.contains("notion.api"));
 
         let payload = json!({
             "id": "issue-webhook",

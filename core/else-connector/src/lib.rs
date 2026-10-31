@@ -26,6 +26,8 @@ pub enum ConnectorError {
     Calendar(String),
     #[error("linear: {0}")]
     Linear(String),
+    #[error("notion: {0}")]
+    Notion(String),
     #[error("unknown connector adapter: {0}")]
     UnknownAdapter(String),
     #[error("connector adapter does not accept webhooks: {0}")]
@@ -68,7 +70,11 @@ impl AdapterRegistry {
     }
 
     pub fn builtin() -> Self {
-        Self::new(vec![Box::new(CalendarAdapter), Box::new(LinearAdapter)])
+        Self::new(vec![
+            Box::new(CalendarAdapter),
+            Box::new(LinearAdapter),
+            Box::new(NotionAdapter),
+        ])
     }
 
     pub fn get(&self, id: &str) -> Option<&dyn ConnectorAdapter> {
@@ -191,6 +197,47 @@ impl ConnectorAdapter for LinearAdapter {
     }
 }
 
+pub struct NotionAdapter;
+
+impl ConnectorAdapter for NotionAdapter {
+    fn id(&self) -> &'static str {
+        "notion.api"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["notion", "notion_read_only"]
+    }
+
+    fn manifest(&self) -> ConnectorManifest {
+        ConnectorManifest {
+            adapter: self.id().into(),
+            provider: "notion".into(),
+            auth_mode: ConnectorAuthMode::ApiToken,
+            scopes: vec!["pages:read".into(), "databases:read".into()],
+            read_capabilities: vec!["notion.page.read".into(), "notion.database.read".into()],
+            write_capabilities: vec!["notion.page.update".into(), "notion.database.update".into()],
+            sync_modes: vec![ConnectorSyncMode::Pull],
+            data_sensitivity: "internal".into(),
+            retention_policy: "metadata_and_summary".into(),
+            health: ConnectorHealth::Healthy,
+        }
+    }
+
+    fn pull_stream_id(&self) -> &'static str {
+        "notion-pages"
+    }
+
+    fn pull(
+        &self,
+        connector_id: ConnectorId,
+        source: &str,
+        _cursor: Option<&SyncCursor>,
+        _now: DateTime<Utc>,
+    ) -> Result<ConnectorPullPage> {
+        pull_notion(connector_id, source)
+    }
+}
+
 pub fn pull_calendar(
     connector_id: ConnectorId,
     source: &str,
@@ -286,6 +333,302 @@ pub fn pull_linear(connector_id: ConnectorId, source: &str) -> Result<ConnectorP
         overlap_until: None,
         observations: normalize_linear_payload(&connector_id, &payload)?,
     })
+}
+
+pub fn pull_notion(connector_id: ConnectorId, source: &str) -> Result<ConnectorPullPage> {
+    let content = load_source(source)?;
+    let payload: Value = serde_json::from_str(&content)
+        .map_err(|error| ConnectorError::Notion(error.to_string()))?;
+    Ok(ConnectorPullPage {
+        stream_id: "notion-pages".into(),
+        opaque_cursor: format!("notion:{:016x}", stable_hash(&content)),
+        overlap_until: None,
+        observations: normalize_notion_payload(&connector_id, &payload)?,
+    })
+}
+
+pub fn normalize_notion_payload(
+    connector_id: &ConnectorId,
+    payload: &Value,
+) -> Result<Vec<ConnectorObservation>> {
+    let mut observations = notion_nodes(payload)
+        .into_iter()
+        .filter_map(|node| normalize_notion_node(connector_id, node).transpose())
+        .collect::<Result<Vec<_>>>()?;
+    observations
+        .sort_by_key(|observation| (observation.occurred_at, observation.dedupe_key.clone()));
+    Ok(observations)
+}
+
+fn normalize_notion_node(
+    connector_id: &ConnectorId,
+    node: &Value,
+) -> Result<Option<ConnectorObservation>> {
+    let Some(id) = string_at(node, &["id"]) else {
+        return Ok(None);
+    };
+    let properties = node.get("properties").and_then(Value::as_object);
+    let property_facts = notion_property_facts(properties);
+    let title = notion_title(node, properties).unwrap_or_else(|| format!("Notion {id}"));
+    let url = string_at(node, &["url"]);
+    let parent_type = string_at(node, &["parent", "type"]);
+    let parent_id = string_at(node, &["parent", "database_id"])
+        .or_else(|| string_at(node, &["parent", "page_id"]))
+        .or_else(|| string_at(node, &["parent", "workspace"]));
+    let database_id = string_at(node, &["parent", "database_id"]);
+    let archived = node
+        .get("archived")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || node
+            .get("in_trash")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    let updated_at = string_at(node, &["last_edited_time"])
+        .and_then(|raw| DateTime::parse_from_rfc3339(&raw).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+    let labels = property_facts
+        .iter()
+        .flat_map(
+            |(name, fact)| match fact.get("type").and_then(Value::as_str) {
+                Some("status" | "select") => fact
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                Some("multi_select") => fact
+                    .get("values")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect(),
+                _ => {
+                    let lower = name.to_ascii_lowercase();
+                    if lower.contains("label") || lower.contains("tag") {
+                        fact.get("value")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                            .into_iter()
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                }
+            },
+        )
+        .collect::<Vec<_>>();
+    let state_type = property_facts.iter().find_map(|(_, fact)| {
+        fact.get("group")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
+    let due_at = property_facts.iter().find_map(|(name, fact)| {
+        let lower = name.to_ascii_lowercase();
+        (lower.contains("due")
+            || lower.contains("deadline")
+            || lower.contains("截止")
+            || lower.contains("日期"))
+        .then(|| {
+            fact.get("start")
+                .and_then(Value::as_str)
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc))
+        })
+        .flatten()
+    });
+    let blocked_by = property_facts
+        .iter()
+        .filter(|(name, _)| name.to_ascii_lowercase().contains("block"))
+        .flat_map(|(_, fact)| {
+            fact.get("values")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let work_item =
+        database_id.is_some() || state_type.is_some() || due_at.is_some() || !blocked_by.is_empty();
+    let object_kind = if work_item {
+        ObjectKind::WorkItem
+    } else {
+        ObjectKind::Document
+    };
+    let actor = string_at(node, &["last_edited_by", "id"]);
+    let source_version = format!(
+        "{:016x}",
+        stable_hash(&format!(
+            "{id}\0{title}\0{updated_at:?}\0{archived}\0{property_facts:?}"
+        ))
+    );
+    let entity_kind = if work_item {
+        "notion_database_row"
+    } else {
+        "notion_page"
+    };
+    Ok(Some(ConnectorObservation {
+        connector_id: connector_id.clone(),
+        entity_id: id.clone(),
+        source_version: source_version.clone(),
+        dedupe_key: format!("notion:{connector_id}:{id}:{source_version}"),
+        source: "notion".into(),
+        summary: format!("Notion: {title}（{entity_kind}）"),
+        occurred_at: updated_at,
+        valid_until: None,
+        entity_kind: entity_kind.into(),
+        canonical_url: url.clone(),
+        object_kind,
+        change: if archived {
+            ObservationChange::Delete
+        } else {
+            ObservationChange::Upsert
+        },
+        actor: actor.clone(),
+        attributes: json!({
+            "page_id": id,
+            "title": title,
+            "parent_type": parent_type,
+            "parent_id": parent_id,
+            "database_id": database_id,
+            "properties": property_facts,
+            "labels": labels,
+            "state_type": state_type,
+            "due_at": due_at.map(|value| value.to_rfc3339()),
+            "blocked_by": blocked_by,
+            "last_edited_by": actor,
+            "last_edited_time": updated_at.to_rfc3339(),
+            "url": url,
+        }),
+        evidence_ref: string_at(node, &["url"]),
+        sensitivity: "internal".into(),
+        source_trust: "provider_read_only".into(),
+    }))
+}
+
+fn notion_nodes(payload: &Value) -> Vec<&Value> {
+    for value in [
+        &payload["results"],
+        &payload["data"]["page"],
+        &payload["page"],
+    ] {
+        if let Some(items) = value.as_array() {
+            return items.iter().collect();
+        }
+        if value.is_object() {
+            return vec![value];
+        }
+    }
+    if payload.get("id").is_some() {
+        return vec![payload];
+    }
+    vec![]
+}
+
+fn notion_title(
+    node: &Value,
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> Option<String> {
+    if let Some(title) = node.get("title").and_then(notion_rich_text) {
+        return Some(title);
+    }
+    properties.and_then(|properties| {
+        properties.values().find_map(|property| {
+            matches!(property.get("type").and_then(Value::as_str), Some("title"))
+                .then(|| {
+                    property
+                        .get("title")
+                        .and_then(notion_rich_text)
+                        .or_else(|| property.get("rich_text").and_then(notion_rich_text))
+                })
+                .flatten()
+        })
+    })
+}
+
+fn notion_rich_text(value: &Value) -> Option<String> {
+    let items = value.as_array()?;
+    let text = items
+        .iter()
+        .filter_map(|item| {
+            item.get("plain_text").and_then(Value::as_str).or_else(|| {
+                item.get("text")
+                    .and_then(|text| text.get("content"))
+                    .and_then(Value::as_str)
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    (!text.is_empty()).then_some(text)
+}
+
+fn notion_property_facts(
+    properties: Option<&serde_json::Map<String, Value>>,
+) -> serde_json::Map<String, Value> {
+    let mut facts = serde_json::Map::new();
+    for (name, property) in properties.into_iter().flatten() {
+        let kind = property.get("type").and_then(Value::as_str);
+        let fact = match kind {
+            Some("title") => json!({
+                "type": "title",
+                "value": property.get("title").and_then(notion_rich_text)
+            }),
+            Some("rich_text") => json!({
+                "type": "rich_text",
+                "value": property.get("rich_text").and_then(notion_rich_text)
+            }),
+            Some("status") => json!({
+                "type": "status",
+                "value": property.pointer("/status/name"),
+                "group": property.pointer("/status/group")
+            }),
+            Some("select") => json!({
+                "type": "select",
+                "value": property.pointer("/select/name")
+            }),
+            Some("multi_select") => json!({
+                "type": "multi_select",
+                "values": property
+                    .pointer("/multi_select")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|item| item.get("name").cloned())
+                    .collect::<Vec<_>>()
+            }),
+            Some("date") => json!({
+                "type": "date",
+                "start": property.pointer("/date/start"),
+                "end": property.pointer("/date/end")
+            }),
+            Some("relation") => json!({
+                "type": "relation",
+                "values": property
+                    .pointer("/relation")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|item| item.get("id").cloned())
+                    .collect::<Vec<_>>()
+            }),
+            Some("checkbox") => json!({
+                "type": "checkbox",
+                "value": property.get("checkbox")
+            }),
+            Some("number") => json!({
+                "type": "number",
+                "value": property.get("number")
+            }),
+            _ => json!({ "type": kind }),
+        };
+        facts.insert(name.clone(), fact);
+    }
+    facts
 }
 
 pub fn normalize_linear_payload(
@@ -472,12 +815,18 @@ impl InterpretationRule for WorkItemRule {
         let meaning = if matches!(state_type, Some("completed" | "canceled")) {
             SignalMeaning::Context
         } else if blocked
-            || labels
-                .iter()
-                .any(|label| matches!(label.as_str(), "waiting" | "waiting_external" | "blocked"))
+            || labels.iter().any(|label| {
+                matches!(
+                    label.to_ascii_lowercase().as_str(),
+                    "waiting" | "waiting_external" | "blocked"
+                )
+            })
         {
             SignalMeaning::WaitingExternal
-        } else if labels.iter().any(|label| label == "commitment") {
+        } else if labels
+            .iter()
+            .any(|label| label.eq_ignore_ascii_case("commitment"))
+        {
             SignalMeaning::Commitment
         } else {
             SignalMeaning::ActionItem
@@ -486,7 +835,10 @@ impl InterpretationRule for WorkItemRule {
         if blocked {
             basis.push("blocked_by".into());
         }
-        if labels.iter().any(|label| label == "commitment") {
+        if labels
+            .iter()
+            .any(|label| label.eq_ignore_ascii_case("commitment"))
+        {
             basis.push("label=commitment".into());
         }
         if state_type.is_some() {

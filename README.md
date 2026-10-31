@@ -33,7 +33,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 134 Rust tests and 9 Swift tests passing on macOS.
+**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 135 Rust tests and 9 Swift tests passing on macOS.
 
 - **Kernel (MVP-0)**: durable root Scope identity, explicit Scope dependencies, artifact lineage across child workspaces, fair multi-Scope reconciliation ordered by creation and last execution, replayable external waits and ExternalEvent/Timer wakes that feed the next Context Snapshot, continuous `drive` loops, and a resident single-thread Runtime supervisor; event-sourced ledger on SQLite, Checkpoint → Fork → Rerun → Compare, Abort + Generation Fencing, Subagent delegation tree, Admission + Lease + Accounting, deny-by-default OS sandboxes (macOS Seatbelt verified on real hardware; Linux bubblewrap policy unit-tested, awaiting Linux CI).
 - **Context & Memory (MVP-1)**: Intent Resolution with revisions, three-tier memory (Working / Episodic / Semantic) with scoped promotion rules, Context Compiler producing minimal read-only snapshots per Planner / Executor / Verifier. Memory is never a source of authority.
@@ -48,7 +48,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 - **Loopback daemon**: single-instance runtime, Bearer authentication, idempotent commands, revision preconditions, asynchronous operations, and cursor-based event streaming for CLI, Apple, and future surfaces.
 - **Unified capabilities and bindings**: Builtin tools, MCP tools, and Skills share one Gateway contract; MCP tools can be discovered from `tools/list`, while LocalProcess, McpStdio, and HTTPS RemoteHttp Agent bindings dispatch outbound work through the existing verifier and resource lifecycle.
 - **Binding lifecycle closure**: MCP sessions support `list_changed` refresh and persisted restart recovery; Agent bindings expose explicit lifecycle states, RemoteHttp callbacks, and SSE event streams.
-- **Personal world signal foundation**: an Adapter Registry isolates Calendar and Linear provider details behind neutral Observations; a separate Interpreter derives ActionItem / Commitment / WaitingExternal interpretations before Resolver sees them. Connectors retain manifests, persistent cursors, tombstones, and session-scoped webhooks, while Resolver output stays Candidate-only unless an explicit low-risk policy preauthorizes acceptance.
+- **Personal world signal foundation**: an Adapter Registry isolates Calendar, Linear, and Notion provider details behind neutral Observations; a separate Interpreter derives ActionItem / Commitment / WaitingExternal interpretations before Resolver sees them. Notion Pages enter Document Context while Database Rows reuse the WorkItem pipeline. Connectors retain manifests, persistent cursors, tombstones, and session-scoped webhooks.
 
 ### Quickstart
 
@@ -69,6 +69,7 @@ else plan <intent-id>                    # current plan, evidence, and fact impa
 else calendar <intent-id> --source ./calendar.ics
 else linear <intent-id> --source ./linear.json
 else connector-adapters
+else connector <intent-id> notion.api ./notion.json
 else connector-policy <intent-id> --auto-accept --allow-origin commitment --min-confidence 80
 else connectors <intent-id>
 else signals <intent-id>

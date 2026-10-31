@@ -206,6 +206,16 @@ enum Command {
         #[arg(long, default_value = "linear")]
         name: String,
     },
+    /// 通过 Adapter Registry 注册并同步任意 Connector
+    Connector {
+        intent_id: String,
+        /// Adapter ID，例如 notion.api / linear.graphql / calendar.ics
+        adapter: String,
+        /// 本地文件或 HTTPS URL
+        source: String,
+        #[arg(long, default_value = "connector")]
+        name: String,
+    },
     /// 配置 Connector 候选的低风险自动接受边界
     ConnectorPolicy {
         intent_id: String,
@@ -782,6 +792,28 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 result.auto_accepted,
                 result.cursor.as_deref().unwrap_or("none"),
                 connector.webhook_session.as_deref().unwrap_or("none")
+            );
+        }
+        Command::Connector {
+            intent_id,
+            adapter,
+            source,
+            name,
+        } => {
+            let intent_id = IntentId::from(intent_id);
+            let connector =
+                runtime.register_connector_adapter(&intent_id, &name, &source, &adapter)?;
+            let result = runtime.sync_connector(&intent_id, &connector.id)?;
+            println!(
+                "connector: {} adapter={} observed={} inserted={} skipped={} candidates={} auto_accepted={} cursor={}",
+                connector.id,
+                connector.adapter,
+                result.observed,
+                result.inserted,
+                result.skipped,
+                result.candidates_proposed,
+                result.auto_accepted,
+                result.cursor.as_deref().unwrap_or("none")
             );
         }
         Command::ConnectorPolicy {

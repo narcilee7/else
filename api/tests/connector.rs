@@ -115,6 +115,73 @@ fn linear_payload() -> serde_json::Value {
     })
 }
 
+fn notion_payload() -> serde_json::Value {
+    let updated = Utc::now().to_rfc3339();
+    let due = (Utc::now() + Duration::days(2)).to_rfc3339();
+    serde_json::json!({
+        "object": "list",
+        "results": [
+            {
+                "object": "page",
+                "id": "notion-page-1",
+                "created_time": updated,
+                "last_edited_time": updated,
+                "archived": false,
+                "url": "https://notion.so/notion-page-1",
+                "parent": {"type": "workspace", "workspace": true},
+                "properties": {
+                    "Name": {
+                        "type": "title",
+                        "title": [{"plain_text": "发布说明文档"}]
+                    }
+                }
+            },
+            {
+                "object": "page",
+                "id": "notion-row-1",
+                "created_time": updated,
+                "last_edited_time": updated,
+                "archived": false,
+                "url": "https://notion.so/notion-row-1",
+                "parent": {"type": "database_id", "database_id": "db-1"},
+                "properties": {
+                    "Name": {
+                        "type": "title",
+                        "title": [{"plain_text": "等待安全审批"}]
+                    },
+                    "Status": {
+                        "type": "status",
+                        "status": {"name": "Blocked", "group": "in_progress"}
+                    },
+                    "Due": {
+                        "type": "date",
+                        "date": {"start": due, "end": null}
+                    },
+                    "Blocked by": {
+                        "type": "relation",
+                        "relation": [{"id": "security-team"}]
+                    }
+                }
+            },
+            {
+                "object": "page",
+                "id": "notion-page-old",
+                "created_time": updated,
+                "last_edited_time": updated,
+                "archived": true,
+                "url": "https://notion.so/notion-page-old",
+                "parent": {"type": "workspace", "workspace": true},
+                "properties": {
+                    "Name": {
+                        "type": "title",
+                        "title": [{"plain_text": "旧文档"}]
+                    }
+                }
+            }
+        ]
+    })
+}
+
 #[test]
 fn calendar_signals_are_versioned_deduplicated_and_resolved() {
     let dir = tempfile::tempdir().unwrap();
@@ -734,4 +801,70 @@ fn injected_adapter_and_interpreter_do_not_require_runtime_changes() {
         projection.intent_candidates.values().next().unwrap().origin,
         IntentOriginKind::Commitment
     );
+}
+
+#[test]
+fn notion_documents_and_database_rows_flow_through_generic_pipeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("准备发布资料", None).unwrap();
+    let path = dir.path().join("notion.json");
+    std::fs::write(&path, notion_payload().to_string()).unwrap();
+    let connector = runtime
+        .register_connector_adapter(&spec.id, "docs", path.to_str().unwrap(), "notion.api")
+        .unwrap();
+    assert_eq!(connector.adapter, "notion.api");
+    assert_eq!(connector.manifest.provider, "notion");
+
+    let result = runtime.sync_connector(&spec.id, &connector.id).unwrap();
+    assert_eq!(result.observed, 3);
+    assert_eq!(result.inserted, 3);
+    assert_eq!(result.candidates_proposed, 1);
+    let projection = runtime.projection(&spec.id).unwrap();
+    assert_eq!(projection.world_signals.len(), 3);
+    assert_eq!(projection.external_events.len(), 2);
+    assert_eq!(
+        projection
+            .world_signals
+            .values()
+            .filter(|signal| signal.object_kind == ObjectKind::Document)
+            .count(),
+        2
+    );
+    assert_eq!(
+        projection
+            .world_signals
+            .values()
+            .filter(|signal| signal.object_kind == ObjectKind::WorkItem)
+            .count(),
+        1
+    );
+    assert_eq!(
+        projection
+            .signal_interpretations
+            .values()
+            .flatten()
+            .filter(|interpretation| interpretation.meaning == SignalMeaning::WaitingExternal)
+            .count(),
+        1
+    );
+    let candidate = projection.intent_candidates.values().next().unwrap();
+    assert_eq!(candidate.origin, IntentOriginKind::InferredNeed);
+    assert!(candidate.proposed_outcome.contains("等待安全审批"));
+    let snapshot = runtime
+        .compile_snapshot(&spec.id, SnapshotAudience::Planner)
+        .unwrap();
+    assert_eq!(snapshot.external_events.len(), 2);
+    assert!(snapshot
+        .external_events
+        .iter()
+        .any(|event| event.summary.contains("发布说明文档")));
+    assert!(snapshot
+        .external_events
+        .iter()
+        .any(|event| event.summary.contains("等待安全审批")));
+    assert!(runtime
+        .connector_manifests()
+        .iter()
+        .any(|manifest| manifest.adapter == "notion.api"));
 }
