@@ -1,0 +1,12 @@
+[package]
+name = "else-connector"
+version = "0.1.0"
+edition.workspace = true
+description = "Read-only external world connectors for else"
+
+[dependencies]
+else-protocol = { path = "../else-protocol" }
+chrono.workspace = true
+ical.workspace = true
+thiserror.workspace = true
+ureq.workspace = true

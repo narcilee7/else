@@ -4,6 +4,7 @@ members = [
     "core/else-protocol",
     "core/else-ledger",
     "core/else-context",
+    "core/else-connector",
     "core/else-attention",
     "core/else-gateway",
     "core/else-harness",
@@ -25,6 +26,8 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
+ical = "0.11"
+ureq = "2"
 
 [profile.release]
 lto = "thin"

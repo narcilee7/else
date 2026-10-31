@@ -11,8 +11,10 @@ use else_protocol::attention::{AttentionRequest, DecisionChoice};
 use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, AgentBindingState, AgentTransport, CapabilityRegistration,
 };
+use else_protocol::connector::{ConnectorRegistration, ConnectorSyncResult};
 use else_protocol::ids::{
-    AgentBindingId, AgentId, AttentionId, CapabilityId, IntentId, RunId, ScopeId, TimerId,
+    AgentBindingId, AgentId, AttentionId, CapabilityId, ConnectorId, IntentId, RunId, ScopeId,
+    TimerId,
 };
 use else_protocol::intent::IntentSpec;
 use else_protocol::plan::Plan;
@@ -92,6 +94,17 @@ enum Command {
         binding_id: AgentBindingId,
         state: AgentBindingState,
         reply: Reply<()>,
+    },
+    RegisterCalendar {
+        intent_id: IntentId,
+        name: String,
+        source: String,
+        reply: Reply<ConnectorRegistration>,
+    },
+    SyncConnector {
+        intent_id: IntentId,
+        connector_id: ConnectorId,
+        reply: Reply<ConnectorSyncResult>,
     },
     RecordExternalEvent {
         intent_id: IntentId,
@@ -292,6 +305,32 @@ impl RuntimeHandle {
             intent_id: intent_id.clone(),
             binding_id: binding_id.clone(),
             state,
+            reply,
+        })
+    }
+
+    pub fn register_calendar_connector(
+        &self,
+        intent_id: &IntentId,
+        name: &str,
+        source: &str,
+    ) -> Result<ConnectorRegistration> {
+        self.request(|reply| Command::RegisterCalendar {
+            intent_id: intent_id.clone(),
+            name: name.into(),
+            source: source.into(),
+            reply,
+        })
+    }
+
+    pub fn sync_connector(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+    ) -> Result<ConnectorSyncResult> {
+        self.request(|reply| Command::SyncConnector {
+            intent_id: intent_id.clone(),
+            connector_id: connector_id.clone(),
             reply,
         })
     }
@@ -559,6 +598,21 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.transition_agent_binding(&intent_id, &binding_id, state));
+        }
+        Command::RegisterCalendar {
+            intent_id,
+            name,
+            source,
+            reply,
+        } => {
+            let _ = reply.send(runtime.register_calendar_connector(&intent_id, &name, &source));
+        }
+        Command::SyncConnector {
+            intent_id,
+            connector_id,
+            reply,
+        } => {
+            let _ = reply.send(runtime.sync_connector(&intent_id, &connector_id));
         }
         Command::RecordExternalEvent {
             intent_id,

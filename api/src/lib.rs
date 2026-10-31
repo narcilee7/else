@@ -7,6 +7,7 @@ mod abort;
 mod attention;
 mod binding;
 mod capability;
+mod connector;
 mod context;
 mod dependency;
 mod dispatch;

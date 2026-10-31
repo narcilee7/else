@@ -10,6 +10,7 @@ use else_protocol::attention::{
 use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, CapabilityRegistration, McpServerRegistration,
 };
+use else_protocol::connector::ConnectorRegistration;
 use else_protocol::event::{Actor, EventPayload, ScopeState};
 use else_protocol::failure::ScopeFailure;
 use else_protocol::ids::{ArtifactId, AttentionId, AttentionWindowId, LeaseId, ScopeId, TimerId};
@@ -107,6 +108,8 @@ pub struct IntentProjection {
         BTreeMap<else_protocol::ids::AgentBindingId, Vec<(u64, AgentBindingEvent)>>,
     pub mcp_servers: BTreeMap<else_protocol::ids::McpServerId, McpServerRegistration>,
     pub dirty_mcp_servers: std::collections::BTreeSet<else_protocol::ids::McpServerId>,
+    pub connectors: BTreeMap<else_protocol::ids::ConnectorId, ConnectorRegistration>,
+    pub external_fact_keys: std::collections::BTreeSet<String>,
     pub artifacts: Vec<Artifact>,
     pub artifact_scopes: BTreeMap<ArtifactId, ScopeId>,
     pub checkpoints: Vec<Checkpoint>,
@@ -246,6 +249,22 @@ impl Projection for IntentProjection {
             }
             EventPayload::CapabilityRevoked { capability_id, .. } => {
                 self.capabilities.remove(capability_id);
+            }
+            EventPayload::ConnectorRegistered { connector } => {
+                self.connectors
+                    .insert(connector.id.clone(), connector.clone());
+            }
+            EventPayload::ExternalFactIngested { fact }
+                if self.external_fact_keys.insert(fact.fact_id.clone()) =>
+            {
+                self.external_events.push(ExternalEventProjection {
+                    event_id: fact.fact_id.clone(),
+                    seq: event.seq,
+                    source: fact.source.clone(),
+                    summary: fact.summary.clone(),
+                    occurred_at: fact.occurred_at,
+                });
+                self.external_wait_reason = None;
             }
             EventPayload::AttentionRequested { request } => {
                 self.open_requests

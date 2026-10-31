@@ -74,3 +74,4 @@ define_id!(
 define_id!(AgentId, "外部或本地 Agent 的稳定身份。");
 define_id!(AgentBindingId, "Agent 与一次 Intent/Scope/Run 的双向绑定。");
 define_id!(McpServerId, "一个可重连的 MCP Server 注册。");
+define_id!(ConnectorId, "只读或受 Gateway 管控的外部世界连接器。");

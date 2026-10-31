@@ -13,6 +13,7 @@ use crate::capability::{
     AgentBinding, AgentBindingEvent, AgentBindingState, CapabilityRegistration,
     McpServerRegistration,
 };
+use crate::connector::{ConnectorRegistration, ExternalFact};
 use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
 use crate::egress::EgressDecision;
 use crate::failure::ScopeFailure;
@@ -176,6 +177,12 @@ pub enum EventPayload {
     CapabilityRevoked {
         capability_id: CapabilityId,
         reason: String,
+    },
+    ConnectorRegistered {
+        connector: ConnectorRegistration,
+    },
+    ExternalFactIngested {
+        fact: ExternalFact,
     },
 
     RunStarted {

@@ -8,6 +8,7 @@ description = "else runtime API: one API for all surfaces (CLI/Web/desktop/App/I
 else-protocol = { path = "../core/else-protocol" }
 else-ledger = { path = "../core/else-ledger" }
 else-context = { path = "../core/else-context" }
+else-connector = { path = "../core/else-connector" }
 else-attention = { path = "../core/else-attention" }
 else-gateway = { path = "../core/else-gateway" }
 else-harness = { path = "../core/else-harness" }

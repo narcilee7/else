@@ -411,6 +411,44 @@ fn route(
                 _ => {}
             }
         }
+        if segments.len() == 4 && segments[3] == "connectors" {
+            match request.method() {
+                Method::Get => {
+                    let connectors = state
+                        .handle
+                        .projection(&intent_id)?
+                        .connectors
+                        .into_values()
+                        .collect::<Vec<_>>();
+                    return Ok((200, json_string(&connectors)?));
+                }
+                Method::Post => {
+                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    let value: Value = serde_json::from_str(body).map_err(json_error)?;
+                    let connector = state.handle.register_calendar_connector(
+                        &intent_id,
+                        value["name"].as_str().unwrap_or("calendar"),
+                        value["source"]
+                            .as_str()
+                            .ok_or_else(|| DaemonError::InvalidRequest("missing source".into()))?,
+                    )?;
+                    return Ok((200, json_string(&connector)?));
+                }
+                _ => {}
+            }
+        }
+        if segments.len() == 6
+            && segments[3] == "connectors"
+            && segments[5] == "sync"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let result = state.handle.sync_connector(
+                &intent_id,
+                &else_protocol::ids::ConnectorId::from(segments[4]),
+            )?;
+            return Ok((200, json_string(&result)?));
+        }
         if segments.len() == 5
             && segments[3] == "mcp"
             && segments[4] == "discover"

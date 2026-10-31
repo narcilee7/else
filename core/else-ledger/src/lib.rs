@@ -225,6 +225,8 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::McpToolsChanged { .. } => "mcp_tools_changed",
         P::McpToolsRefreshed { .. } => "mcp_tools_refreshed",
         P::CapabilityRevoked { .. } => "capability_revoked",
+        P::ConnectorRegistered { .. } => "connector_registered",
+        P::ExternalFactIngested { .. } => "external_fact_ingested",
         P::RunStarted { .. } => "run_started",
         P::RunFinished { .. } => "run_finished",
         P::ScopeFailureRecorded { .. } => "scope_failure_recorded",

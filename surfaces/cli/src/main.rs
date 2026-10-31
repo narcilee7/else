@@ -190,6 +190,16 @@ enum Command {
         #[arg(long)]
         token: Option<String>,
     },
+    /// 注册并同步只读日历连接器
+    Calendar {
+        intent_id: String,
+        /// 本地 ICS 文件或 HTTPS URL
+        source: String,
+        #[arg(long, default_value = "calendar")]
+        name: String,
+    },
+    /// 查看已注册连接器
+    Connectors { intent_id: String },
 }
 
 #[derive(Subcommand)]
@@ -662,6 +672,28 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         }
         Command::ToolCall { .. } => unreachable!("handled before Runtime::open"),
         Command::Serve { .. } => unreachable!("handled before Runtime::open"),
+        Command::Calendar {
+            intent_id,
+            source,
+            name,
+        } => {
+            let intent_id = IntentId::from(intent_id);
+            let connector = runtime.register_calendar_connector(&intent_id, &name, &source)?;
+            let result = runtime.sync_connector(&intent_id, &connector.id)?;
+            println!(
+                "connector: {} observed={} inserted={} skipped={}",
+                connector.id, result.observed, result.inserted, result.skipped
+            );
+        }
+        Command::Connectors { intent_id } => {
+            let projection = runtime.projection(&IntentId::from(intent_id))?;
+            for connector in projection.connectors.values() {
+                println!(
+                    "{} {:?} enabled={} source={}",
+                    connector.id, connector.kind, connector.enabled, connector.source
+                );
+            }
+        }
     }
     Ok(())
 }
