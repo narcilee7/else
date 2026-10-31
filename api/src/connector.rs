@@ -1423,9 +1423,12 @@ fn candidate_state_event(
 }
 
 fn validate_connector_source(source: &str) -> Result<()> {
-    if !source.starts_with("https://") && !std::path::Path::new(source).is_file() {
+    let loopback_http =
+        source.starts_with("http://127.0.0.1:") || source.starts_with("http://localhost:");
+    if !source.starts_with("https://") && !loopback_http && !std::path::Path::new(source).is_file()
+    {
         return Err(ApiError::NotFound(format!(
-            "connector source is not an existing file or HTTPS URL: {source}"
+            "connector source is not an existing file, HTTPS URL, or loopback HTTP test endpoint: {source}"
         )));
     }
     Ok(())

@@ -122,6 +122,10 @@ impl Runtime {
             }
             ConnectorActionStatus::Unknown
             | ConnectorActionStatus::Failed
+            | ConnectorActionStatus::Compensating
+            | ConnectorActionStatus::CompensationExecuting
+            | ConnectorActionStatus::Compensated
+            | ConnectorActionStatus::CompensationFailed
             | ConnectorActionStatus::Cancelled => {
                 return Err(ApiError::Conflict(format!(
                     "connector action {action_id} is {:?}; create a new action instead of retrying",
@@ -177,6 +181,7 @@ impl Runtime {
             adapter,
             connector: connector.clone(),
             credential,
+            mode: ActionMode::Execute,
         };
         let tools = ToolGateway::new(&self.ledger, self.workspace.clone())
             .with_external_executor(&executor);
@@ -196,7 +201,16 @@ impl Runtime {
         let result = tools.execute(&ctx, call);
         let _ = self.revoke_lease(&ctx, &lease);
         match result {
-            Ok(outcome) => {
+            Ok(mut outcome) => {
+                if let Some(before) = action
+                    .outcome
+                    .as_ref()
+                    .and_then(|previous| previous.output.get("before"))
+                {
+                    if let Value::Object(output) = &mut outcome.output {
+                        output.entry("before").or_insert_with(|| before.clone());
+                    }
+                }
                 let status = match outcome.status {
                     ToolStatus::Succeeded => ConnectorActionStatus::Applied,
                     ToolStatus::Failed => ConnectorActionStatus::Failed,
@@ -249,6 +263,240 @@ impl Runtime {
             .collect())
     }
 
+    /// 对 Executing / Unknown / Applied 动作回源查询 Provider，不产生新的写副作用。
+    pub fn verify_connector_action(
+        &self,
+        intent_id: &IntentId,
+        action_id: &ConnectorActionId,
+    ) -> Result<ConnectorAction> {
+        let projection = self.projection(intent_id)?;
+        let action = projection
+            .connector_actions
+            .get(action_id)
+            .cloned()
+            .ok_or_else(|| ApiError::NotFound(format!("connector action {action_id}")))?;
+        if !matches!(
+            action.status,
+            ConnectorActionStatus::Executing
+                | ConnectorActionStatus::Unknown
+                | ConnectorActionStatus::Applied
+        ) {
+            return Err(ApiError::Conflict(format!(
+                "connector action {action_id} cannot be verified from {:?}",
+                action.status
+            )));
+        }
+        let connector = projection
+            .connectors
+            .get(&action.connector_id)
+            .cloned()
+            .ok_or_else(|| ApiError::NotFound(format!("connector {}", action.connector_id)))?;
+        let adapter = self
+            .connector_adapters
+            .get(&connector.adapter)
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("connector adapter {}", connector.adapter))
+            })?;
+        let credential = self.connector_credential(&connector)?;
+        match adapter.verify_action(&connector.source, &action, credential.as_ref()) {
+            Ok(mut outcome) => {
+                if let Some(before) = action
+                    .outcome
+                    .as_ref()
+                    .and_then(|previous| previous.output.get("before"))
+                {
+                    if let Value::Object(output) = &mut outcome.output {
+                        output.entry("before").or_insert_with(|| before.clone());
+                    }
+                }
+                let status = match outcome.status {
+                    ToolStatus::Succeeded => ConnectorActionStatus::Applied,
+                    ToolStatus::Failed => ConnectorActionStatus::Failed,
+                    ToolStatus::Unknown => ConnectorActionStatus::Unknown,
+                };
+                self.record_action_state(
+                    intent_id,
+                    &action,
+                    status,
+                    action.attention_id.clone(),
+                    action.tool_call_id.clone(),
+                    Some(outcome),
+                    None,
+                )?;
+                self.projected_action(intent_id, action_id)
+            }
+            Err(error) => {
+                self.record_action_state(
+                    intent_id,
+                    &action,
+                    ConnectorActionStatus::Unknown,
+                    action.attention_id.clone(),
+                    action.tool_call_id.clone(),
+                    action.outcome.clone(),
+                    Some(error.to_string()),
+                )?;
+                Err(error.into())
+            }
+        }
+    }
+
+    /// 补偿本身也是外部写，必须重新通过 Tool Gateway 与 Decision。
+    pub fn compensate_connector_action(
+        &self,
+        intent_id: &IntentId,
+        action_id: &ConnectorActionId,
+    ) -> Result<ConnectorAction> {
+        let projection = self.projection(intent_id)?;
+        let action = projection
+            .connector_actions
+            .get(action_id)
+            .cloned()
+            .ok_or_else(|| ApiError::NotFound(format!("connector action {action_id}")))?;
+        match action.status {
+            ConnectorActionStatus::Compensated => return Ok(action),
+            ConnectorActionStatus::Applied => {}
+            ConnectorActionStatus::CompensationExecuting => {
+                self.record_action_state(
+                    intent_id,
+                    &action,
+                    ConnectorActionStatus::Unknown,
+                    action.attention_id.clone(),
+                    action.tool_call_id.clone(),
+                    action.outcome.clone(),
+                    Some("compensation was interrupted; verify with provider first".into()),
+                )?;
+                return self.projected_action(intent_id, action_id);
+            }
+            ConnectorActionStatus::Compensating => {}
+            _ => {
+                return Err(ApiError::Conflict(format!(
+                    "connector action {action_id} cannot be compensated from {:?}",
+                    action.status
+                )))
+            }
+        }
+        let connector = projection
+            .connectors
+            .get(&action.connector_id)
+            .cloned()
+            .ok_or_else(|| ApiError::NotFound(format!("connector {}", action.connector_id)))?;
+        let adapter = self
+            .connector_adapters
+            .get(&connector.adapter)
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("connector adapter {}", connector.adapter))
+            })?;
+        let credential = self.connector_credential(&connector)?;
+        let root_scope = projection
+            .root_scope_id
+            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+        let generation = projection
+            .scopes
+            .get(&root_scope)
+            .map(|scope| scope.generation)
+            .unwrap_or(1);
+        let spec = projection
+            .spec
+            .clone()
+            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+        let ctx = ExecContext {
+            spec,
+            scope_id: root_scope,
+            run_id: RunId::new(),
+            generation,
+            snapshot_id: None,
+        };
+        let lease = self.admit_external_action(&ctx)?;
+        let tool_call_id = ToolCallId::new();
+        self.record_action_state(
+            intent_id,
+            &action,
+            ConnectorActionStatus::Compensating,
+            action.attention_id.clone(),
+            Some(tool_call_id.clone()),
+            None,
+            None,
+        )?;
+        let executor = AdapterActionExecutor {
+            adapter,
+            connector: connector.clone(),
+            credential,
+            mode: ActionMode::Compensate,
+        };
+        let tools = ToolGateway::new(&self.ledger, self.workspace.clone())
+            .with_external_executor(&executor);
+        let compensation_key = format!("compensate:{}", action.idempotency_key);
+        if tools.effect_is_authorized(&ctx, action.effect, &compensation_key)? {
+            self.record_action_state(
+                intent_id,
+                &action,
+                ConnectorActionStatus::CompensationExecuting,
+                action.attention_id.clone(),
+                Some(tool_call_id.clone()),
+                None,
+                None,
+            )?;
+        }
+        let mut compensation_input = action.input.clone();
+        if let Value::Object(object) = &mut compensation_input {
+            object.insert(
+                "__else_action".into(),
+                serde_json::to_value(&action).map_err(|error| {
+                    ApiError::Conflict(format!("serialize compensation action: {error}"))
+                })?,
+            );
+        }
+        let call = ToolCall {
+            id: tool_call_id.clone(),
+            tool: format!("connector:{}:{}", connector.id, action.capability),
+            effect: action.effect,
+            input: compensation_input,
+            idempotency_key: compensation_key,
+        };
+        let result = tools.execute(&ctx, call);
+        let _ = self.revoke_lease(&ctx, &lease);
+        match result {
+            Ok(outcome) => {
+                let status = status_from_outcome(&outcome, ActionMode::Compensate);
+                self.record_action_state(
+                    intent_id,
+                    &action,
+                    status,
+                    action.attention_id.clone(),
+                    Some(tool_call_id),
+                    Some(outcome),
+                    None,
+                )?;
+                self.projected_action(intent_id, action_id)
+            }
+            Err(GatewayError::NeedsApproval(request_id)) => {
+                let pending_request = request_id.clone();
+                self.record_action_state(
+                    intent_id,
+                    &action,
+                    ConnectorActionStatus::Compensating,
+                    Some(request_id),
+                    Some(tool_call_id),
+                    None,
+                    None,
+                )?;
+                Err(GatewayError::NeedsApproval(pending_request).into())
+            }
+            Err(error) => {
+                self.record_action_state(
+                    intent_id,
+                    &action,
+                    ConnectorActionStatus::CompensationFailed,
+                    action.attention_id.clone(),
+                    Some(tool_call_id),
+                    None,
+                    Some(error.to_string()),
+                )?;
+                Err(error.into())
+            }
+        }
+    }
+
     fn projected_action(
         &self,
         intent_id: &IntentId,
@@ -296,6 +544,7 @@ struct AdapterActionExecutor<'a> {
     adapter: &'a dyn else_connector::ConnectorAdapter,
     connector: ConnectorRegistration,
     credential: Option<ConnectorCredential>,
+    mode: ActionMode,
 }
 
 impl ExternalActionExecutor for AdapterActionExecutor<'_> {
@@ -307,18 +556,64 @@ impl ExternalActionExecutor for AdapterActionExecutor<'_> {
                 effect: EffectConclusion::NoEffect,
             };
         }
-        self.adapter
-            .execute_action(
+        let result = match self.mode {
+            ActionMode::Execute => self.adapter.execute_action(
                 &self.connector.id,
                 &self.connector.source,
                 &binding.operation,
                 self.credential.as_ref(),
                 input,
-            )
-            .unwrap_or_else(|error| ToolOutcome {
-                status: ToolStatus::Failed,
-                output: json!({"error": error.to_string()}),
-                effect: EffectConclusion::NoEffect,
-            })
+            ),
+            ActionMode::Compensate => {
+                let original = input
+                    .get("__else_action")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value::<ConnectorAction>(value).ok());
+                match original {
+                    Some(action) => self.adapter.compensate_action(
+                        &self.connector.source,
+                        &action,
+                        self.credential.as_ref(),
+                    ),
+                    None => Err(else_connector::ConnectorError::ActionUnsupported {
+                        adapter: self.connector.adapter.clone(),
+                        capability: format!("{}#compensate-context", binding.operation),
+                    }),
+                }
+            }
+        };
+        result.unwrap_or_else(|error| ToolOutcome {
+            status: ToolStatus::Failed,
+            output: json!({"error": error.to_string()}),
+            effect: EffectConclusion::NoEffect,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ActionMode {
+    Execute,
+    Compensate,
+}
+
+fn status_from_outcome(outcome: &ToolOutcome, mode: ActionMode) -> ConnectorActionStatus {
+    match mode {
+        ActionMode::Compensate
+            if outcome.status == ToolStatus::Succeeded
+                && outcome.effect == EffectConclusion::Compensated =>
+        {
+            ConnectorActionStatus::Compensated
+        }
+        ActionMode::Compensate if outcome.status == ToolStatus::Failed => {
+            ConnectorActionStatus::CompensationFailed
+        }
+        ActionMode::Compensate if outcome.status == ToolStatus::Unknown => {
+            ConnectorActionStatus::Unknown
+        }
+        _ => match outcome.status {
+            ToolStatus::Succeeded => ConnectorActionStatus::Applied,
+            ToolStatus::Failed => ConnectorActionStatus::Failed,
+            ToolStatus::Unknown => ConnectorActionStatus::Unknown,
+        },
     }
 }

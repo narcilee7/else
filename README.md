@@ -34,7 +34,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 153 Rust tests and 9 Swift tests passing on macOS.
+**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 156 Rust tests and 9 Swift tests passing on macOS.
 
 - **Kernel (MVP-0)**: durable root Scope identity, explicit Scope dependencies, artifact lineage across child workspaces, fair multi-Scope reconciliation ordered by creation and last execution, replayable external waits and ExternalEvent/Timer wakes that feed the next Context Snapshot, continuous `drive` loops, and a resident single-thread Runtime supervisor; event-sourced ledger on SQLite, Checkpoint → Fork → Rerun → Compare, Abort + Generation Fencing, Subagent delegation tree, Admission + Lease + Accounting, deny-by-default OS sandboxes (macOS Seatbelt verified on real hardware; Linux bubblewrap policy unit-tested, awaiting Linux CI).
 - **Context & Memory (MVP-1)**: Intent Resolution with revisions, three-tier memory (Working / Episodic / Semantic) with scoped promotion rules, Context Compiler producing minimal read-only snapshots per Planner / Executor / Verifier. Memory is never a source of authority.
@@ -71,6 +71,7 @@ else decisions <intent-id>               # what truly needs you
 else attention <intent-id>               # windows, batch rate, missed critical work
 else plan <intent-id>                    # current plan, evidence, and fact impacts
 else calendar <intent-id> --source ./calendar.ics
+else google-calendar <intent-id> --calendar-id primary --token-env GOOGLE_CALENDAR_TOKEN
 else linear <intent-id> --source ./linear.json
 else linear <intent-id> --source https://api.linear.app/graphql --token-env LINEAR_API_TOKEN
 else notion <intent-id> --database <database-id-or-url> --token-env NOTION_TOKEN
@@ -82,6 +83,8 @@ else connector-policy <intent-id> --auto-accept --allow-origin commitment --min-
 else connectors <intent-id>
 else connector-action-propose <intent-id> <connector-id> <capability> <target> --input '{"title":"..."}'
 else connector-action-execute <intent-id> <action-id>
+else connector-action-verify <intent-id> <action-id>
+else connector-action-compensate <intent-id> <action-id>
 else connector-actions <intent-id>
 else connector-credential-set <intent-id> <connector-id> --token-keychain-service else-notion
 else connector-credential-revoke <intent-id> <connector-id>

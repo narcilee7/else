@@ -8,12 +8,12 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use else_protocol::connector::{
-    ConnectorAuthMode, ConnectorCredential, ConnectorHealth, ConnectorManifest,
+    ConnectorAction, ConnectorAuthMode, ConnectorCredential, ConnectorHealth, ConnectorManifest,
     ConnectorObservation, ConnectorPullPage, ConnectorSyncMode, CorrelationHint, CorrelationKind,
     ObjectKind, ObservationChange, SignalInterpretation, SignalMeaning, SignalStatus, SignalType,
     SyncCursor, WorldSignal,
 };
-use else_protocol::effect::ToolOutcome;
+use else_protocol::effect::{EffectConclusion, ToolOutcome, ToolStatus};
 use else_protocol::ids::ConnectorId;
 use ical::IcalParser;
 use serde_json::{json, Value};
@@ -89,6 +89,28 @@ pub trait ConnectorAdapter: Send + Sync {
             capability: capability.into(),
         })
     }
+    fn verify_action(
+        &self,
+        _source: &str,
+        action: &ConnectorAction,
+        _credential: Option<&ConnectorCredential>,
+    ) -> Result<ToolOutcome> {
+        Err(ConnectorError::ActionUnsupported {
+            adapter: self.id().into(),
+            capability: format!("{}#verify", action.capability),
+        })
+    }
+    fn compensate_action(
+        &self,
+        _source: &str,
+        action: &ConnectorAction,
+        _credential: Option<&ConnectorCredential>,
+    ) -> Result<ToolOutcome> {
+        Err(ConnectorError::ActionUnsupported {
+            adapter: self.id().into(),
+            capability: format!("{}#compensate", action.capability),
+        })
+    }
 }
 
 pub struct AdapterRegistry {
@@ -103,6 +125,7 @@ impl AdapterRegistry {
     pub fn builtin() -> Self {
         Self::new(vec![
             Box::new(CalendarAdapter),
+            Box::new(GoogleCalendarAdapter),
             Box::new(LinearAdapter),
             Box::new(NotionAdapter),
         ])
@@ -169,6 +192,148 @@ impl ConnectorAdapter for CalendarAdapter {
             now - Duration::days(1),
             now + Duration::days(14),
         )
+    }
+}
+
+pub struct GoogleCalendarAdapter;
+
+impl ConnectorAdapter for GoogleCalendarAdapter {
+    fn id(&self) -> &'static str {
+        "calendar.google"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["google-calendar", "gcal"]
+    }
+
+    fn manifest(&self) -> ConnectorManifest {
+        ConnectorManifest {
+            adapter: self.id().into(),
+            provider: "calendar".into(),
+            auth_mode: ConnectorAuthMode::OAuth,
+            scopes: vec!["calendar.events".into()],
+            read_capabilities: vec!["calendar.event.read".into()],
+            write_capabilities: vec!["calendar.event.update".into()],
+            sync_modes: vec![ConnectorSyncMode::Pull],
+            data_sensitivity: "internal".into(),
+            retention_policy: "metadata_and_summary".into(),
+            health: ConnectorHealth::Healthy,
+        }
+    }
+
+    fn pull_stream_id(&self) -> &'static str {
+        "google-calendar-events"
+    }
+
+    fn pull(
+        &self,
+        connector_id: ConnectorId,
+        source: &str,
+        cursor: Option<&SyncCursor>,
+        _now: DateTime<Utc>,
+        credential: Option<&ConnectorCredential>,
+    ) -> Result<ConnectorPullPage> {
+        pull_google_calendar(connector_id, source, cursor, credential)
+    }
+
+    fn execute_action(
+        &self,
+        connector_id: &ConnectorId,
+        source: &str,
+        capability: &str,
+        credential: Option<&ConnectorCredential>,
+        input: &Value,
+    ) -> Result<ToolOutcome> {
+        if capability != "calendar.event.update" {
+            return Err(ConnectorError::ActionUnsupported {
+                adapter: self.id().into(),
+                capability: capability.into(),
+            });
+        }
+        let target = input["target"]
+            .as_str()
+            .filter(|target| !target.is_empty())
+            .ok_or_else(|| ConnectorError::Calendar("event target is required".into()))?;
+        let changes = writable_google_event_fields(&input["changes"]);
+        if changes.as_object().is_none_or(|changes| changes.is_empty()) {
+            return Err(ConnectorError::Calendar(
+                "calendar.action.update requires non-empty changes".into(),
+            ));
+        }
+        let url = google_event_url(source, target)?;
+        let before = google_calendar_json("GET", &url, credential, None)?;
+        let after = google_calendar_json("PATCH", &url, credential, Some(changes))?;
+        Ok(ToolOutcome {
+            status: ToolStatus::Succeeded,
+            output: json!({
+                "connector_id": connector_id,
+                "before": writable_google_event_fields(&before),
+                "after": writable_google_event_fields(&after),
+                "event_id": target,
+            }),
+            effect: EffectConclusion::Applied,
+        })
+    }
+
+    fn verify_action(
+        &self,
+        source: &str,
+        action: &ConnectorAction,
+        credential: Option<&ConnectorCredential>,
+    ) -> Result<ToolOutcome> {
+        let url = google_event_url(source, &action.target)?;
+        let current = google_calendar_json("GET", &url, credential, None)?;
+        let expected = writable_google_event_fields(&action.input["changes"]);
+        let matches = expected.as_object().is_none_or(|fields| {
+            fields
+                .iter()
+                .all(|(key, value)| current.get(key) == Some(value))
+        });
+        Ok(ToolOutcome {
+            status: if matches {
+                ToolStatus::Succeeded
+            } else {
+                ToolStatus::Failed
+            },
+            output: json!({
+                "event": writable_google_event_fields(&current),
+                "matches_expected": matches,
+            }),
+            effect: if matches {
+                EffectConclusion::Applied
+            } else {
+                EffectConclusion::NoEffect
+            },
+        })
+    }
+
+    fn compensate_action(
+        &self,
+        source: &str,
+        action: &ConnectorAction,
+        credential: Option<&ConnectorCredential>,
+    ) -> Result<ToolOutcome> {
+        let before = action
+            .outcome
+            .as_ref()
+            .and_then(|outcome| outcome.output.get("before"))
+            .map(writable_google_event_fields)
+            .filter(|before| before.as_object().is_some_and(|before| !before.is_empty()))
+            .ok_or_else(|| {
+                ConnectorError::Calendar(
+                    "calendar compensation requires the pre-action event snapshot".into(),
+                )
+            })?;
+        let url = google_event_url(source, &action.target)?;
+        let restored = google_calendar_json("PATCH", &url, credential, Some(before))?;
+        Ok(ToolOutcome {
+            status: ToolStatus::Succeeded,
+            output: json!({
+                "event": writable_google_event_fields(&restored),
+                "restored": true,
+            }),
+            effect: EffectConclusion::Compensated,
+        })
     }
 }
 
@@ -322,6 +487,226 @@ pub fn read_calendar(
     window_end: DateTime<Utc>,
 ) -> Result<Vec<ConnectorObservation>> {
     Ok(pull_calendar(connector_id, source, window_start, window_end)?.observations)
+}
+
+fn pull_google_calendar(
+    connector_id: ConnectorId,
+    source: &str,
+    cursor: Option<&SyncCursor>,
+    credential: Option<&ConnectorCredential>,
+) -> Result<ConnectorPullPage> {
+    let mut url = format!(
+        "{}?singleEvents=true&showDeleted=true&maxResults=2500",
+        source.trim_end_matches('/')
+    );
+    if let Some(page_token) = cursor.and_then(|cursor| cursor.continuation.as_deref()) {
+        url.push_str(&format!("&pageToken={}", form_encode(page_token)));
+    } else if let Some(sync_token) =
+        cursor.and_then(|cursor| cursor.opaque_cursor.strip_prefix("google-sync:"))
+    {
+        url.push_str(&format!("&syncToken={}", form_encode(sync_token)));
+    }
+    let payload = google_calendar_json("GET", &url, credential, None)?;
+    let items = payload
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let observations = items
+        .iter()
+        .filter_map(|event| normalize_google_calendar_event(&connector_id, event))
+        .collect::<Vec<_>>();
+    let continuation = payload
+        .get("nextPageToken")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let opaque_cursor = payload
+        .get("nextSyncToken")
+        .and_then(Value::as_str)
+        .map(|token| format!("google-sync:{token}"))
+        .unwrap_or_else(|| format!("google-calendar:{:016x}", stable_hash(&payload.to_string())));
+    Ok(ConnectorPullPage {
+        stream_id: "google-calendar-events".into(),
+        opaque_cursor,
+        overlap_until: None,
+        continuation,
+        observations,
+    })
+}
+
+fn normalize_google_calendar_event(
+    connector_id: &ConnectorId,
+    event: &Value,
+) -> Option<ConnectorObservation> {
+    let id = string_at(event, &["id"])?;
+    let status = string_at(event, &["status"]).unwrap_or_else(|| "confirmed".into());
+    let summary = string_at(event, &["summary"]).unwrap_or_else(|| "Untitled event".into());
+    let start = string_at(event, &["start", "dateTime"])
+        .or_else(|| string_at(event, &["start", "date"]))
+        .and_then(|value| parse_datetime_flexible(&value))
+        .unwrap_or_else(Utc::now);
+    let end = string_at(event, &["end", "dateTime"])
+        .or_else(|| string_at(event, &["end", "date"]))
+        .and_then(|value| parse_datetime_flexible(&value));
+    let updated = string_at(event, &["updated"])
+        .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or(start);
+    let source_version = format!(
+        "{:016x}",
+        stable_hash(&format!(
+            "{id}\0{summary}\0{start:?}\0{end:?}\0{status}\0{updated:?}"
+        ))
+    );
+    let deleted = status == "cancelled";
+    Some(ConnectorObservation {
+        connector_id: connector_id.clone(),
+        entity_id: id.clone(),
+        source_version: source_version.clone(),
+        dedupe_key: format!("google-calendar:{connector_id}:{id}:{source_version}"),
+        source: "calendar".into(),
+        summary: if deleted {
+            format!("日程取消：{summary}")
+        } else {
+            format!("日程：{summary}（{}）", start.to_rfc3339())
+        },
+        occurred_at: start,
+        valid_until: end,
+        entity_kind: "calendar_event".into(),
+        canonical_url: string_at(event, &["htmlLink"]),
+        object_kind: ObjectKind::CalendarEvent,
+        change: if deleted {
+            ObservationChange::Delete
+        } else {
+            ObservationChange::Upsert
+        },
+        actor: string_at(event, &["organizer", "displayName"])
+            .or_else(|| string_at(event, &["organizer", "email"])),
+        attributes: json!({
+            "title": summary,
+            "description": event.get("description"),
+            "location": event.get("location"),
+            "status": status,
+            "start": event.get("start"),
+            "end": event.get("end"),
+            "attendees": event.get("attendees"),
+            "updated": updated.to_rfc3339(),
+        }),
+        evidence_ref: string_at(event, &["htmlLink"]),
+        sensitivity: "internal".into(),
+        source_trust: "provider_read_only".into(),
+        correlations: vec![],
+    })
+}
+
+fn parse_datetime_flexible(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|value| value.with_timezone(&Utc))
+        .or_else(|| {
+            NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                .ok()
+                .and_then(|date| date.and_hms_opt(0, 0, 0))
+                .map(|date| Utc.from_utc_datetime(&date))
+        })
+}
+
+fn google_event_url(source: &str, event_id: &str) -> Result<String> {
+    let source = source.trim_end_matches('/');
+    if !(source.starts_with("https://")
+        || source.starts_with("http://127.0.0.1:")
+        || source.starts_with("http://localhost:"))
+    {
+        return Err(ConnectorError::Calendar(
+            "Google Calendar API source must use HTTPS or loopback HTTP for tests".into(),
+        ));
+    }
+    Ok(format!("{source}/{}", form_encode(event_id)))
+}
+
+fn writable_google_event_fields(event: &Value) -> Value {
+    const FIELDS: &[&str] = &[
+        "summary",
+        "description",
+        "location",
+        "start",
+        "end",
+        "status",
+        "visibility",
+        "transparency",
+        "attendees",
+        "recurrence",
+        "reminders",
+        "colorId",
+    ];
+    let mut writable = serde_json::Map::new();
+    for field in FIELDS {
+        if let Some(value) = event.get(*field) {
+            writable.insert((*field).into(), value.clone());
+        }
+    }
+    Value::Object(writable)
+}
+
+fn google_calendar_json(
+    method: &str,
+    url: &str,
+    credential: Option<&ConnectorCredential>,
+    body: Option<Value>,
+) -> Result<Value> {
+    let credential = credential
+        .ok_or_else(|| ConnectorError::Calendar("Google Calendar requires OAuth".into()))?;
+    let request = match method {
+        "GET" => ureq::get(url),
+        "PATCH" => ureq::patch(url),
+        _ => {
+            return Err(ConnectorError::Calendar(format!(
+                "unsupported Google Calendar method {method}"
+            )))
+        }
+    }
+    .set("Accept", "application/json")
+    .set("Authorization", &authorization_header(credential));
+    let response = if let Some(body) = body {
+        request
+            .set("Content-Type", "application/json")
+            .send_string(&body.to_string())
+    } else {
+        request.call()
+    }
+    .map_err(map_google_calendar_http_error)?;
+    let content = response
+        .into_string()
+        .map_err(|error| ConnectorError::Http(error.to_string()))?;
+    serde_json::from_str(&content)
+        .ok()
+        .or_else(|| (!content.trim().is_empty()).then_some(json!({"raw": content})))
+        .ok_or_else(|| ConnectorError::Calendar("empty Google Calendar response".into()))
+}
+
+fn map_google_calendar_http_error(error: ureq::Error) -> ConnectorError {
+    match error {
+        ureq::Error::Status(429, response) => ConnectorError::RateLimited {
+            retry_after_seconds: response
+                .header("Retry-After")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(30),
+        },
+        ureq::Error::Status(status, response) => {
+            let body = response.into_string().unwrap_or_default();
+            let message = serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|payload| {
+                    payload
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| body.chars().take(512).collect());
+            ConnectorError::Calendar(format!("HTTP {status}: {message}"))
+        }
+        other => ConnectorError::Http(other.to_string()),
+    }
 }
 
 fn normalize_calendar(
@@ -1491,6 +1876,21 @@ fn parse_date(value: &str) -> Option<DateTime<Utc>> {
         .ok()
         .and_then(|date| date.and_hms_opt(0, 0, 0))
         .map(|date| Utc.from_utc_datetime(&date))
+}
+
+fn form_encode(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    encoded
 }
 
 fn stable_hash(value: &str) -> u64 {

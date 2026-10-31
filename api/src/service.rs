@@ -150,6 +150,16 @@ enum Command {
         action_id: ConnectorActionId,
         reply: Reply<ConnectorAction>,
     },
+    VerifyConnectorAction {
+        intent_id: IntentId,
+        action_id: ConnectorActionId,
+        reply: Reply<ConnectorAction>,
+    },
+    CompensateConnectorAction {
+        intent_id: IntentId,
+        action_id: ConnectorActionId,
+        reply: Reply<ConnectorAction>,
+    },
     ConnectorActions {
         intent_id: IntentId,
         reply: Reply<Vec<ConnectorAction>>,
@@ -553,6 +563,30 @@ impl RuntimeHandle {
     pub fn connector_actions(&self, intent_id: &IntentId) -> Result<Vec<ConnectorAction>> {
         self.request(|reply| Command::ConnectorActions {
             intent_id: intent_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn verify_connector_action(
+        &self,
+        intent_id: &IntentId,
+        action_id: &ConnectorActionId,
+    ) -> Result<ConnectorAction> {
+        self.request(|reply| Command::VerifyConnectorAction {
+            intent_id: intent_id.clone(),
+            action_id: action_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn compensate_connector_action(
+        &self,
+        intent_id: &IntentId,
+        action_id: &ConnectorActionId,
+    ) -> Result<ConnectorAction> {
+        self.request(|reply| Command::CompensateConnectorAction {
+            intent_id: intent_id.clone(),
+            action_id: action_id.clone(),
             reply,
         })
     }
@@ -1047,6 +1081,20 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.execute_connector_action(&intent_id, &action_id));
+        }
+        Command::VerifyConnectorAction {
+            intent_id,
+            action_id,
+            reply,
+        } => {
+            let _ = reply.send(runtime.verify_connector_action(&intent_id, &action_id));
+        }
+        Command::CompensateConnectorAction {
+            intent_id,
+            action_id,
+            reply,
+        } => {
+            let _ = reply.send(runtime.compensate_connector_action(&intent_id, &action_id));
         }
         Command::ConnectorActions { intent_id, reply } => {
             let _ = reply.send(runtime.connector_actions(&intent_id));

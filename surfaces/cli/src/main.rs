@@ -198,6 +198,30 @@ enum Command {
         #[arg(long, default_value = "calendar")]
         name: String,
     },
+    /// 注册真实 Google Calendar API Connector，并支持事件更新/核验/补偿
+    GoogleCalendar {
+        intent_id: String,
+        #[arg(long, default_value = "primary")]
+        calendar_id: String,
+        #[arg(long, conflicts_with = "token_keychain_service")]
+        token_env: Option<String>,
+        #[arg(long, conflicts_with = "token_env")]
+        token_keychain_service: Option<String>,
+        #[arg(long)]
+        refresh_token_env: Option<String>,
+        #[arg(long)]
+        token_url: Option<String>,
+        #[arg(long)]
+        client_id: Option<String>,
+        #[arg(long)]
+        client_secret_env: Option<String>,
+        #[arg(long)]
+        expires_at: Option<String>,
+        #[arg(long, default_value_t = 300)]
+        sync_interval: u64,
+        #[arg(long, default_value = "google-calendar")]
+        name: String,
+    },
     /// 注册并同步只读 Linear Connector
     Linear {
         intent_id: String,
@@ -296,6 +320,16 @@ enum Command {
     },
     /// 执行外部写动作；超出授权时返回 Decision Request
     ConnectorActionExecute {
+        intent_id: String,
+        action_id: String,
+    },
+    /// 回源核验 Executing / Unknown / Applied 动作
+    ConnectorActionVerify {
+        intent_id: String,
+        action_id: String,
+    },
+    /// 通过 Gateway 与 Decision 补偿已应用动作
+    ConnectorActionCompensate {
         intent_id: String,
         action_id: String,
     },
@@ -884,6 +918,62 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 result.cursor.as_deref().unwrap_or("none")
             );
         }
+        Command::GoogleCalendar {
+            intent_id,
+            calendar_id,
+            token_env,
+            token_keychain_service,
+            refresh_token_env,
+            token_url,
+            client_id,
+            client_secret_env,
+            expires_at,
+            sync_interval,
+            name,
+        } => {
+            let intent_id = IntentId::from(intent_id);
+            let source = google_calendar_source_url(&calendar_id)?;
+            let credential = if let Some(service) = token_keychain_service {
+                Some(connector_credential_from_access_token(
+                    &runtime,
+                    "calendar.google",
+                    read_keychain_secret(&service)?,
+                )?)
+            } else {
+                build_connector_credential(
+                    &runtime,
+                    "calendar.google",
+                    Some(token_env.unwrap_or_else(|| "GOOGLE_CALENDAR_TOKEN".into())),
+                    refresh_token_env,
+                    token_url,
+                    client_id,
+                    client_secret_env,
+                    expires_at,
+                    vec![],
+                )?
+            };
+            let connector = runtime.register_connector_adapter_with_credential(
+                &intent_id,
+                &name,
+                &source,
+                "calendar.google",
+                credential,
+                sync_interval,
+            )?;
+            let result = runtime.sync_connector(&intent_id, &connector.id)?;
+            println!(
+                "connector: {} adapter=calendar.google source={} observed={} inserted={} skipped={} candidates={} pages={} backfill_complete={} cursor={}",
+                connector.id,
+                connector.source,
+                result.observed,
+                result.inserted,
+                result.skipped,
+                result.candidates_proposed,
+                result.pages_synced,
+                result.backfill_complete,
+                result.cursor.as_deref().unwrap_or("none")
+            );
+        }
         Command::Linear {
             intent_id,
             source,
@@ -1117,6 +1207,26 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             action_id,
         } => {
             let action = runtime.execute_connector_action(
+                &IntentId::from(intent_id),
+                &else_protocol::ids::ConnectorActionId::from(action_id),
+            )?;
+            print_connector_action(&action);
+        }
+        Command::ConnectorActionVerify {
+            intent_id,
+            action_id,
+        } => {
+            let action = runtime.verify_connector_action(
+                &IntentId::from(intent_id),
+                &else_protocol::ids::ConnectorActionId::from(action_id),
+            )?;
+            print_connector_action(&action);
+        }
+        Command::ConnectorActionCompensate {
+            intent_id,
+            action_id,
+        } => {
+            let action = runtime.compensate_connector_action(
                 &IntentId::from(intent_id),
                 &else_protocol::ids::ConnectorActionId::from(action_id),
             )?;
@@ -1568,6 +1678,19 @@ fn notion_source_url(database: Option<&str>) -> else_api::Result<String> {
     ))
 }
 
+fn google_calendar_source_url(calendar_id: &str) -> else_api::Result<String> {
+    let calendar_id = calendar_id.trim();
+    if calendar_id.is_empty() {
+        return Err(else_api::ApiError::Conflict(
+            "Google Calendar ID cannot be empty".into(),
+        ));
+    }
+    Ok(format!(
+        "https://www.googleapis.com/calendar/v3/calendars/{}/events",
+        form_encode(calendar_id)
+    ))
+}
+
 fn read_environment_secret(name: &str) -> else_api::Result<String> {
     let value = std::env::var(name).map_err(|_| {
         else_api::ApiError::Conflict(format!("environment variable {name} is not set"))
@@ -1630,6 +1753,21 @@ fn connector_credential_from_access_token(
         expires_at: None,
         refresh: None,
     })
+}
+
+fn form_encode(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    encoded
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1963,6 +2101,18 @@ mod tests {
         assert_eq!(
             notion_source_url(Some(id)).unwrap(),
             format!("https://api.notion.com/v1/databases/{id}/query")
+        );
+    }
+
+    #[test]
+    fn google_calendar_source_encodes_calendar_identity() {
+        assert_eq!(
+            google_calendar_source_url("primary").unwrap(),
+            "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+        );
+        assert_eq!(
+            google_calendar_source_url("team@example.com").unwrap(),
+            "https://www.googleapis.com/calendar/v3/calendars/team%40example.com/events"
         );
     }
 }

@@ -559,14 +559,23 @@ fn route(
         }
         if segments.len() == 6
             && segments[3] == "actions"
-            && segments[5] == "execute"
+            && matches!(segments[5], "execute" | "verify" | "compensate")
             && request.method() == &Method::Post
         {
             check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
-            let action = state.handle.execute_connector_action(
-                &intent_id,
-                &else_protocol::ids::ConnectorActionId::from(segments[4]),
-            )?;
+            let action_id = else_protocol::ids::ConnectorActionId::from(segments[4]);
+            let action = match segments[5] {
+                "execute" => state
+                    .handle
+                    .execute_connector_action(&intent_id, &action_id)?,
+                "verify" => state
+                    .handle
+                    .verify_connector_action(&intent_id, &action_id)?,
+                "compensate" => state
+                    .handle
+                    .compensate_connector_action(&intent_id, &action_id)?,
+                _ => unreachable!("route guard"),
+            };
             return Ok((200, json_string(&action)?));
         }
         if segments.len() == 4

@@ -150,6 +150,20 @@ impl<'a> ToolGateway<'a> {
             .map(|capability| capability.manifest.effect)
     }
 
+    /// 只检查当前 Generation/Scope 是否已具备一次性授权，不落 Attention 或 ToolCall。
+    pub fn effect_is_authorized(
+        &self,
+        ctx: &ExecContext,
+        effect: SideEffectKind,
+        idempotency_key: &str,
+    ) -> Result<bool> {
+        if effect <= ctx.spec.authority.max_autonomous_effect {
+            Ok(true)
+        } else {
+            self.approved(ctx, idempotency_key)
+        }
+    }
+
     pub fn list_capabilities(&self) -> Vec<CapabilityRegistration> {
         let mut capabilities = builtin_capabilities();
         capabilities.extend(self.registered_capabilities());

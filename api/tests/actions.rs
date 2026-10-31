@@ -84,6 +84,33 @@ impl ConnectorAdapter for WriteAdapter {
             effect: EffectConclusion::Applied,
         })
     }
+
+    fn verify_action(
+        &self,
+        _source: &str,
+        action: &else_protocol::connector::ConnectorAction,
+        _credential: Option<&ConnectorCredential>,
+    ) -> else_connector::Result<ToolOutcome> {
+        Ok(ToolOutcome {
+            status: ToolStatus::Succeeded,
+            output: json!({"reconciled": true, "target": action.target}),
+            effect: EffectConclusion::Applied,
+        })
+    }
+
+    fn compensate_action(
+        &self,
+        _source: &str,
+        action: &else_protocol::connector::ConnectorAction,
+        _credential: Option<&ConnectorCredential>,
+    ) -> else_connector::Result<ToolOutcome> {
+        let calls = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(ToolOutcome {
+            status: ToolStatus::Succeeded,
+            output: json!({"compensated": true, "target": action.target, "calls": calls}),
+            effect: EffectConclusion::Compensated,
+        })
+    }
 }
 
 fn runtime_with_adapter(dir: &std::path::Path, calls: Arc<AtomicU64>) -> Runtime {
@@ -202,5 +229,30 @@ fn unknown_external_result_is_not_retried_blindly() {
         runtime.execute_connector_action(&spec.id, &action.id),
         Err(ApiError::Conflict(_))
     ));
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let verified = runtime
+        .verify_connector_action(&spec.id, &action.id)
+        .unwrap();
+    assert_eq!(verified.status, ConnectorActionStatus::Applied);
+    let compensation = runtime
+        .compensate_connector_action(&spec.id, &action.id)
+        .unwrap_err();
+    assert!(matches!(compensation, ApiError::Gateway(_)));
+    let pending_compensation = runtime
+        .connector_actions(&spec.id)
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == action.id)
+        .unwrap();
+    runtime
+        .decide(
+            &spec.id,
+            pending_compensation.attention_id.as_ref().unwrap(),
+            DecisionChoice::Option("approve".into()),
+        )
+        .unwrap();
+    let compensated = runtime
+        .compensate_connector_action(&spec.id, &action.id)
+        .unwrap();
+    assert_eq!(compensated.status, ConnectorActionStatus::Compensated);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
