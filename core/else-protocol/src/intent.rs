@@ -92,6 +92,8 @@ pub struct AttentionPolicy {
 pub struct OpaqueHarnessPolicy {
     pub enabled: bool,
     pub allow_native_provider_network: bool,
+    #[serde(default)]
+    pub use_tool_gateway: bool,
     pub max_observed_effect: SideEffectKind,
 }
 
@@ -100,6 +102,7 @@ impl Default for OpaqueHarnessPolicy {
         Self {
             enabled: false,
             allow_native_provider_network: false,
+            use_tool_gateway: false,
             max_observed_effect: SideEffectKind::ReadOnly,
         }
     }

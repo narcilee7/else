@@ -13,7 +13,9 @@ else-gateway = { path = "../core/else-gateway" }
 else-harness = { path = "../core/else-harness" }
 else-workspace = { path = "../core/else-workspace" }
 chrono.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

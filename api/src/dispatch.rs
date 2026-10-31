@@ -102,6 +102,15 @@ impl Runtime {
             generation,
             snapshot_id: Some(snapshot.id.clone()),
         };
+        let tool_gateway = self.start_tool_gateway(&ctx.spec, &ctx, &scope_workspace)?;
+        let tool_gateway_endpoint = tool_gateway.as_ref().map(|gateway| {
+            let endpoint = gateway.endpoint();
+            else_harness::adapter::ToolGatewayEndpoint {
+                host: endpoint.host.clone(),
+                port: endpoint.port,
+                token: endpoint.token.clone(),
+            }
+        });
         let lease = self.admit_run_with_failure(&ctx)?;
         ctx.record(
             &self.ledger,
@@ -120,6 +129,7 @@ impl Runtime {
             private_dir: &self.harness_private,
             snapshot: &snapshot,
             egress_proxy: egress_proxy.as_ref().map(|proxy| proxy.endpoint()),
+            tool_gateway: tool_gateway_endpoint.as_ref(),
             subagent,
         };
         let result = adapter.execute(&request);

@@ -10,8 +10,15 @@ pub(super) fn command(
     network: NetworkPolicy,
     read_paths: &[PathBuf],
     write_paths: &[PathBuf],
+    workspace_writable: bool,
 ) -> Result<Command> {
-    let profile = profile(workspace, network, read_paths, write_paths)?;
+    let profile = profile(
+        workspace,
+        network,
+        read_paths,
+        write_paths,
+        workspace_writable,
+    )?;
     let mut command = Command::new(executable);
     command
         .arg("-p")
@@ -27,6 +34,7 @@ fn profile(
     network: NetworkPolicy,
     read_paths: &[PathBuf],
     write_paths: &[PathBuf],
+    workspace_writable: bool,
 ) -> Result<String> {
     let workspace = workspace
         .to_str()
@@ -39,8 +47,17 @@ fn profile(
         NetworkPolicy::Deny => {
             "; 没有 network-inbound/network-outbound 规则：网络默认拒绝。".to_string()
         }
-        NetworkPolicy::Proxy { port } => {
-            format!("(allow network-outbound (remote ip \"localhost:{port}\"))")
+        NetworkPolicy::Proxy {
+            port,
+            tool_gateway_port,
+        } => {
+            let mut rule = format!("(allow network-outbound (remote ip \"localhost:{port}\"))");
+            if let Some(tool_port) = tool_gateway_port {
+                rule.push_str(&format!(
+                    "\n(allow network-outbound (remote ip \"localhost:{tool_port}\"))"
+                ));
+            }
+            rule
         }
         // 显式放通全部出站（Harness 原生 Provider 流量）；入站仍默认拒绝。
         NetworkPolicy::AllowOutbound => "(allow network-outbound)".to_string(),
@@ -122,7 +139,7 @@ fn profile(
     (subpath {workspace}))
 (allow file-write*
     (literal "/dev/null")
-    (subpath {workspace})
+    {workspace_write}
     {extra_writes})
 {network_rule}
 "#,
@@ -131,6 +148,11 @@ fn profile(
         extra_reads = extra_reads,
         metadata_paths = metadata_paths,
         extra_writes = extra_writes,
+        workspace_write = if workspace_writable {
+            format!("(subpath {})", quoted(workspace))
+        } else {
+            String::new()
+        },
     ))
 }
 
@@ -149,6 +171,7 @@ mod tests {
             NetworkPolicy::Deny,
             &[],
             &[],
+            true,
         )
         .unwrap();
         assert!(profile.contains("(deny default)"));
@@ -159,8 +182,14 @@ mod tests {
 
     #[test]
     fn allow_outbound_is_explicit_and_keeps_inbound_denied() {
-        let profile =
-            profile(Path::new("/tmp/ws"), NetworkPolicy::AllowOutbound, &[], &[]).unwrap();
+        let profile = profile(
+            Path::new("/tmp/ws"),
+            NetworkPolicy::AllowOutbound,
+            &[],
+            &[],
+            true,
+        )
+        .unwrap();
         assert!(profile.contains("(allow network-outbound)"));
         assert!(!profile.contains("(allow network-inbound"));
         assert!(!profile.contains("(allow network)"));
@@ -170,12 +199,17 @@ mod tests {
     fn proxy_network_allows_only_loopback_proxy_port() {
         let profile = profile(
             Path::new("/tmp/ws"),
-            NetworkPolicy::Proxy { port: 43123 },
+            NetworkPolicy::Proxy {
+                port: 43123,
+                tool_gateway_port: Some(43124),
+            },
             &[],
             &[],
+            true,
         )
         .unwrap();
         assert!(profile.contains(r#"(remote ip "localhost:43123")"#));
+        assert!(profile.contains(r#"(remote ip "localhost:43124")"#));
         assert!(!profile.contains("(allow network-outbound)\n"));
         assert!(!profile.contains("(allow network-inbound"));
     }
@@ -187,6 +221,7 @@ mod tests {
             NetworkPolicy::Deny,
             &[PathBuf::from("/opt/homebrew")],
             &[],
+            true,
         )
         .unwrap();
         assert!(profile.contains("(subpath \"/opt/homebrew\")"));
@@ -197,10 +232,17 @@ mod tests {
 
     #[test]
     fn profile_allows_framework_shm_and_var_metadata() {
-        let profile = profile(Path::new("/tmp/ws"), NetworkPolicy::Deny, &[], &[]).unwrap();
+        let profile = profile(Path::new("/tmp/ws"), NetworkPolicy::Deny, &[], &[], true).unwrap();
         // CFPreferences 同步所需的共享内存（单反斜杠正则，双写会变成字面反斜杠）
         assert!(profile.contains(r#"(ipc-posix-name-regex #"apple\..*")"#));
         // libinfo 初始化需要 stat /var，firmlink 双形并列
         assert!(profile.contains(r#"(literal "/var") (literal "/private/var")"#));
+    }
+
+    #[test]
+    fn read_only_workspace_omits_workspace_write_rule() {
+        let profile = profile(Path::new("/tmp/ws"), NetworkPolicy::Deny, &[], &[], false).unwrap();
+        let write_section = profile.split("(allow file-write*").nth(1).unwrap();
+        assert!(!write_section.contains("(subpath \"/tmp/ws\")"));
     }
 }

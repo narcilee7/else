@@ -16,6 +16,8 @@ pub enum NetworkPolicy {
     /// 只允许连接 Runtime 的 loopback CONNECT 代理端口。
     Proxy {
         port: u16,
+        #[allow(dead_code)]
+        tool_gateway_port: Option<u16>,
     },
     /// 放通全部出站（MVP-2：Harness 原生 Provider 流量）。
     /// 这是显式策略选择，不是默认；按域名收敛后置，使用方必须声明 Opaque。
@@ -33,6 +35,8 @@ pub struct SandboxProfile {
     /// 额外可写路径。只用于 Runtime 控制的私有 Harness 目录，
     /// 不能用来扩大用户 Workspace 的写入范围。
     pub write_paths: Vec<PathBuf>,
+    /// Opaque Harness 使用 Tool Gateway 时，父 Harness Workspace 必须只读。
+    pub workspace_writable: bool,
 }
 
 impl SandboxProfile {
@@ -42,6 +46,7 @@ impl SandboxProfile {
             network: NetworkPolicy::Deny,
             read_paths: vec![],
             write_paths: vec![],
+            workspace_writable: true,
         }
     }
 
@@ -60,6 +65,11 @@ impl SandboxProfile {
     /// 追加 Runtime 管理的私有可写目录。
     pub fn with_write_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.write_paths = paths;
+        self
+    }
+
+    pub fn with_workspace_read_only(mut self) -> Self {
+        self.workspace_writable = false;
         self
     }
 }
@@ -219,6 +229,7 @@ impl Sandbox {
                 self.profile.network,
                 &self.profile.read_paths,
                 &self.profile.write_paths,
+                self.profile.workspace_writable,
             )?,
             Backend::Bubblewrap => bubblewrap::command(
                 &self.executable,
@@ -227,6 +238,7 @@ impl Sandbox {
                 self.profile.network,
                 &self.profile.read_paths,
                 &self.profile.write_paths,
+                self.profile.workspace_writable,
             ),
         };
         command

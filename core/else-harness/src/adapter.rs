@@ -67,8 +67,17 @@ pub struct HarnessRequest<'a> {
     pub snapshot: &'a ContextSnapshot,
     /// Runtime 提供的 loopback CONNECT 代理；Sandbox 只放通该端口。
     pub egress_proxy: Option<&'a EgressProxyEndpoint>,
+    /// Runtime loopback Tool Gateway；启用时父 Harness Workspace 为只读。
+    pub tool_gateway: Option<&'a ToolGatewayEndpoint>,
     /// 子 Scope 执行：验收只结束自身 Scope，不直接把根 Intent 标记完成。
     pub subagent: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolGatewayEndpoint {
+    pub host: String,
+    pub port: u16,
+    pub token: String,
 }
 
 /// Harness 适配器契约。不能支持的能力必须在 capabilities() 里显式降级。
@@ -297,7 +306,17 @@ impl<P: LineParser> HarnessAdapter for ProcessHarness<P> {
 
     fn execute(&self, request: &HarnessRequest) -> Result<()> {
         ensure_not_fenced(request.ledger, request.ctx)?;
-        let prompt = task_prompt(request.snapshot);
+        let mut prompt = task_prompt(request.snapshot);
+        if request.tool_gateway.is_some() {
+            prompt.push_str(
+                "\n# Tool Gateway（强制）\n\
+                 Workspace 对 Harness 只读。所有文件写入与 shell 必须通过：\n\
+                 \"$ELSE_TOOL_BIN\" tool-call --tool fs.write --input '{\"path\":\"...\",\"content\":\"...\"}'\n\
+                 \"$ELSE_TOOL_BIN\" tool-call --tool fs.read --input '{\"path\":\"...\"}'\n\
+                 \"$ELSE_TOOL_BIN\" tool-call --tool shell --input '{\"command\":\"...\"}'\n\
+                 不要尝试直接写入 Workspace。\n",
+            );
+        }
         // 沙箱按真实路径匹配（/tmp → /private/tmp）：准备与注入一律用解析后的路径。
         let workspace = request
             .workspace
@@ -310,22 +329,44 @@ impl<P: LineParser> HarnessAdapter for ProcessHarness<P> {
                 prep.env.push((key.into(), proxy_url.clone()));
             }
             for key in ["NO_PROXY", "no_proxy"] {
-                prep.env
-                    .push((key.into(), "127.0.0.1,localhost".into()));
+                prep.env.push((key.into(), "127.0.0.1,localhost".into()));
             }
         }
+        if let Some(gateway) = request.tool_gateway {
+            prep.env.push((
+                "ELSE_TOOL_URL".into(),
+                format!("http://{}:{}", gateway.host, gateway.port),
+            ));
+            prep.env
+                .push(("ELSE_TOOL_TOKEN".into(), gateway.token.clone()));
+            let binary = std::env::current_exe()?;
+            prep.env
+                .push(("ELSE_TOOL_BIN".into(), binary.display().to_string()));
+            prep.read_paths.push(binary);
+        }
         let _cleanup = CleanupPaths(prep.cleanup_paths.clone());
-        let network = request
-            .egress_proxy
-            .map(|proxy| else_environment::NetworkPolicy::Proxy { port: proxy.port })
-            .unwrap_or(self.network);
-        let sandbox = Sandbox::new(
-            SandboxProfile::new(&workspace)
-                .with_network(network)
-                .with_read_paths(prep.read_paths)
-                .with_write_paths(prep.write_paths),
-        )
-        .map_err(|e| GatewayError::Model(format!("sandbox: {e}")))?;
+        let egress_port = request.egress_proxy.map(|proxy| proxy.port);
+        let tool_port = request.tool_gateway.map(|gateway| gateway.port);
+        let network = match (egress_port, tool_port) {
+            (Some(port), tool_gateway_port) => else_environment::NetworkPolicy::Proxy {
+                port,
+                tool_gateway_port,
+            },
+            (None, Some(port)) => else_environment::NetworkPolicy::Proxy {
+                port,
+                tool_gateway_port: None,
+            },
+            (None, None) => self.network,
+        };
+        let mut profile = SandboxProfile::new(&workspace)
+            .with_network(network)
+            .with_read_paths(prep.read_paths)
+            .with_write_paths(prep.write_paths);
+        if request.tool_gateway.is_some() {
+            profile = profile.with_workspace_read_only();
+        }
+        let sandbox =
+            Sandbox::new(profile).map_err(|e| GatewayError::Model(format!("sandbox: {e}")))?;
         let child = sandbox
             .spawn_shell(&prep.command, &prep.env)
             .map_err(|e| GatewayError::Model(format!("spawn {}: {e}", self.name)))?;

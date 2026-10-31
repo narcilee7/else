@@ -36,6 +36,9 @@ enum Command {
         /// 显式允许 Opaque Harness 使用原生 Provider 出站网络。
         #[arg(long)]
         opaque_network: bool,
+        /// 通过 loopback Tool Gateway 执行文件与 Shell，父 Harness Workspace 只读。
+        #[arg(long)]
+        tool_gateway: bool,
         /// Opaque Profile 允许的最高观察副作用等级。
         #[arg(long, default_value = "read_only", value_parser = ["read_only", "reversible", "compensatable", "irreversible", "unknown"])]
         opaque_max_effect: String,
@@ -89,6 +92,8 @@ enum Command {
         intent_id: String,
         #[arg(long)]
         network: bool,
+        #[arg(long)]
+        tool_gateway: bool,
         #[arg(long, default_value = "read_only", value_parser = ["read_only", "reversible", "compensatable", "irreversible", "unknown"])]
         max_effect: String,
     },
@@ -168,6 +173,15 @@ enum Command {
         #[arg(long)]
         project: Option<String>,
     },
+    /// 通过 Runtime Tool Gateway 执行受控工具（Opaque Harness 内部使用）
+    ToolCall {
+        #[arg(long, value_parser = ["fs.read", "fs.write", "shell"])]
+        tool: String,
+        #[arg(long)]
+        input: String,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -208,6 +222,15 @@ fn main() {
 }
 
 fn dispatch(cli: Cli) -> else_api::Result<()> {
+    if let Command::ToolCall {
+        tool,
+        input,
+        idempotency_key,
+    } = &cli.command
+    {
+        run_tool_call(tool, input, idempotency_key.as_deref())?;
+        return Ok(());
+    }
     let runtime = Runtime::open(&cli.dir)?;
     match cli.command {
         Command::Intent {
@@ -216,6 +239,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             harness,
             allow_opaque,
             opaque_network,
+            tool_gateway,
             opaque_max_effect,
         } => {
             let spec = runtime.create_intent(&outcome, project)?;
@@ -227,6 +251,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                     else_protocol::intent::OpaqueHarnessPolicy {
                         enabled: true,
                         allow_native_provider_network: opaque_network,
+                        use_tool_gateway: tool_gateway,
                         max_observed_effect: parse_effect(&opaque_max_effect),
                     },
                 )?;
@@ -315,6 +340,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         Command::AllowOpaque {
             intent_id,
             network,
+            tool_gateway,
             max_effect,
         } => {
             let spec = runtime.configure_opaque_harness(
@@ -322,6 +348,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 else_protocol::intent::OpaqueHarnessPolicy {
                     enabled: true,
                     allow_native_provider_network: network,
+                    use_tool_gateway: tool_gateway,
                     max_observed_effect: parse_effect(&max_effect),
                 },
             )?;
@@ -612,8 +639,66 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 }
             }
         }
+        Command::ToolCall { .. } => unreachable!("handled before Runtime::open"),
     }
     Ok(())
+}
+
+fn run_tool_call(tool: &str, input: &str, idempotency_key: Option<&str>) -> else_api::Result<()> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    let url = std::env::var("ELSE_TOOL_URL")
+        .map_err(|_| else_api::ApiError::NotFound("ELSE_TOOL_URL is not set".into()))?;
+    let token = std::env::var("ELSE_TOOL_TOKEN")
+        .map_err(|_| else_api::ApiError::NotFound("ELSE_TOOL_TOKEN is not set".into()))?;
+    let authority = url.strip_prefix("http://").ok_or_else(|| {
+        else_api::ApiError::NotFound("ELSE_TOOL_URL must be http loopback".into())
+    })?;
+    let input: serde_json::Value = serde_json::from_str(input).map_err(|error| {
+        else_api::ApiError::NotFound(format!("invalid tool input JSON: {error}"))
+    })?;
+    let idempotency_key = idempotency_key.map(str::to_string).unwrap_or_else(|| {
+        format!(
+            "auto-{:016x}",
+            stable_hash(tool, input.to_string().as_str())
+        )
+    });
+    let body = serde_json::json!({
+        "tool": tool,
+        "input": input,
+        "idempotency_key": idempotency_key,
+    })
+    .to_string();
+    let mut stream = TcpStream::connect(authority)
+        .map_err(|error| else_api::ApiError::NotFound(format!("tool gateway: {error}")))?;
+    write!(
+        stream,
+        "POST /tool HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    let success = response.starts_with("HTTP/1.1 200");
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or(&response);
+    println!("{body}");
+    if success {
+        Ok(())
+    } else {
+        Err(else_api::ApiError::NotFound(body.into()))
+    }
+}
+
+fn stable_hash(left: &str, right: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in left.bytes().chain([0]).chain(right.bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn print_projection(projection: &else_ledger::IntentProjection) {

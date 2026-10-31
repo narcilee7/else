@@ -10,6 +10,7 @@ pub(super) fn command(
     network: NetworkPolicy,
     read_paths: &[PathBuf],
     write_paths: &[PathBuf],
+    workspace_writable: bool,
 ) -> Command {
     let mut command = Command::new(executable);
     command
@@ -47,7 +48,11 @@ pub(super) fn command(
         }
     }
     command
-        .arg("--bind")
+        .arg(if workspace_writable {
+            "--bind"
+        } else {
+            "--ro-bind"
+        })
         .arg(workspace)
         .arg(workspace)
         .arg("--chdir")
@@ -83,6 +88,7 @@ mod tests {
             NetworkPolicy::Deny,
             &[],
             &[],
+            true,
         );
         let args = command
             .get_args()
@@ -109,6 +115,7 @@ mod tests {
             NetworkPolicy::AllowOutbound,
             &[],
             &[],
+            true,
         );
         let args = command
             .get_args()

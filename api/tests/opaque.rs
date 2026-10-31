@@ -81,10 +81,36 @@ fn network_probe_harness() -> ProcessHarness<JsonParser> {
     harness
 }
 
+fn tool_gateway_harness() -> ProcessHarness<JsonParser> {
+    let mut harness = opaque_harness(else_environment::NetworkPolicy::Deny);
+    harness.name = "opaque-tool-gateway";
+    harness.prepare = Box::new(|_, _, _| {
+        Ok(HarnessPrep {
+            command: r#"printf direct > direct.txt 2>/dev/null || true
+url=${ELSE_TOOL_URL#*//}
+body='{"tool":"fs.write","input":{"path":"plan.md","content":"gateway-write"},"idempotency_key":"opaque-plan"}'
+length=${#body}
+call_tool() {
+  printf 'POST /tool HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' "$url" "$ELSE_TOOL_TOKEN" "$length" "$body" | nc "${url%%:*}" "${url##*:}" | grep -q '"ok":true'
+}
+call_tool || exit 12
+call_tool || exit 13
+printf '%s\n' '{"type":"completed","summary":"gateway done"}'"#
+                .into(),
+            env: vec![],
+            read_paths: vec![],
+            write_paths: vec![],
+            cleanup_paths: vec![],
+        })
+    });
+    harness
+}
+
 fn policy(network: bool, max_observed_effect: SideEffectKind) -> OpaqueHarnessPolicy {
     OpaqueHarnessPolicy {
         enabled: true,
         allow_native_provider_network: network,
+        use_tool_gateway: false,
         max_observed_effect,
     }
 }
@@ -215,4 +241,46 @@ fn egress_proxy_denies_unlisted_host_and_records_decision() {
         .expect("egress decision");
     assert_eq!(decision.host, "example.com");
     assert!(!decision.allowed);
+}
+
+#[test]
+fn tool_gateway_forces_workspace_writes_and_records_authorized_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime
+        .create_intent("Tool Gateway 强制写入", None)
+        .unwrap();
+    runtime
+        .configure_opaque_harness(
+            &spec.id,
+            OpaqueHarnessPolicy {
+                enabled: true,
+                allow_native_provider_network: false,
+                use_tool_gateway: true,
+                max_observed_effect: SideEffectKind::Reversible,
+            },
+        )
+        .unwrap();
+
+    runtime
+        .run_adapter(&spec.id, &tool_gateway_harness())
+        .unwrap();
+    let workspace = dir.path().join("workspace");
+    assert!(!workspace.join("direct.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("plan.md")).unwrap(),
+        "gateway-write"
+    );
+    let events = runtime.events(&spec.id).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.envelope.payload, EventPayload::ToolCalled { .. }))
+            .count(),
+        1
+    );
+    assert!(!events.iter().any(|event| matches!(
+        event.envelope.payload,
+        EventPayload::OpaqueToolObserved { .. }
+    )));
 }

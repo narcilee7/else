@@ -8,6 +8,7 @@ use else_protocol::harness::{HarnessNetworkAccess, ToolEffectVisibility};
 use else_protocol::ids::IntentId;
 use else_protocol::intent::{IntentSpec, OpaqueHarnessPolicy};
 
+use crate::tool_gateway::ToolGatewayServer;
 use crate::{ApiError, Result, Runtime};
 
 impl Runtime {
@@ -127,5 +128,22 @@ impl Runtime {
             )?;
         }
         Ok(())
+    }
+
+    pub(crate) fn start_tool_gateway(
+        &self,
+        spec: &IntentSpec,
+        ctx: &else_gateway::ExecContext,
+        workspace: &std::path::Path,
+    ) -> Result<Option<ToolGatewayServer>> {
+        if !spec.opaque_harness_policy.use_tool_gateway {
+            return Ok(None);
+        }
+        let db_path = self
+            .workspace
+            .parent()
+            .ok_or_else(|| ApiError::NotFound("runtime database path".into()))?
+            .join("else.db");
+        ToolGatewayServer::start(ctx.clone(), db_path, workspace.to_path_buf()).map(Some)
     }
 }
