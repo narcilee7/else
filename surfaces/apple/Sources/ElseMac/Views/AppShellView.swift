@@ -25,6 +25,15 @@ struct AppShellView: View {
         .task {
             await store.load()
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .elseOpenIntent)
+        ) { notification in
+            guard let intentID = notification.object as? IntentID else {
+                return
+            }
+            store.selectedIntentID = intentID
+            store.section = .decisions
+        }
         .sheet(isPresented: $store.isCreatingIntent) {
             NewIntentView()
                 .environmentObject(store)

@@ -1,10 +1,11 @@
 # else Apple client
 
-macOS 原生壳，使用 SwiftUI 与 Swift Package Manager。目标不是再做一个聊天窗口，而是把 Runtime 投影收敛成三个表面：
+macOS 原生壳，使用 SwiftUI 与 Swift Package Manager。目标不是再做一个聊天窗口，而是把 Runtime 投影收敛成三个主表面与常驻体验：
 
 - 今天：可解释 Priority、来源证据、分组 Personal Brief、外部事项、进行中 Intent 与 Decision 聚合
 - 待决策：只有真正需要本人的 Decision，按 Batch/Defer Window 聚合，可直接完成常用选项或进入完整 Intent
 - 结果：已收敛的 Outcome、证据与资源账；详情含 ConnectorAction 执行、核验、补偿与最终副作用结论
+- 常驻体验：15/30/60 秒后台刷新、去重系统通知、Dock Badge、菜单栏 Quick Access 与设置页
 
 视觉、Motion 与组件约束见 [DESIGN.md](../../DESIGN.md)。
 

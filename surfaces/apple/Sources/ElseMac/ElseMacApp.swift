@@ -1,6 +1,7 @@
 import AppKit
 import ElseClientCore
 import SwiftUI
+import UserNotifications
 
 @main
 struct ElseMacApp: App {
@@ -43,11 +44,34 @@ struct ElseMacApp: App {
                 .keyboardShortcut("r", modifiers: [.command])
             }
         }
+
+        MenuBarExtra {
+            MenuBarStatusView()
+                .environmentObject(store)
+        } label: {
+            Image(
+                systemName: store.decisionCount > 0
+                    ? "hand.raised.fill"
+                    : "sun.max"
+            )
+            .accessibilityLabel(
+                store.decisionCount > 0
+                    ? "\(store.decisionCount) 个待决策"
+                    : "else"
+            )
+        }
+        .menuBarExtraStyle(.menu)
+
+        Settings {
+            SettingsView()
+                .environmentObject(store)
+        }
     }
 }
 
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NotificationCoordinator.shared.configure()
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }

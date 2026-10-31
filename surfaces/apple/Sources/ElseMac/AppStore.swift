@@ -49,6 +49,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var attentionWindows: [AttentionWindowRecord] = []
     @Published private(set) var resolvingWorldItemIDs: Set<WorldItemID> = []
     @Published private(set) var mutatingActionIDs: Set<ConnectorActionID> = []
+    @Published private(set) var notificationsEnabled: Bool
+    @Published private(set) var backgroundRefreshEnabled: Bool
+    @Published private(set) var backgroundRefreshInterval: TimeInterval
     @Published private(set) var connection: RuntimeConnection = .idle
     @Published var section: AppSection = .today
     @Published var selectedIntentID: IntentID?
@@ -59,11 +62,26 @@ final class AppStore: ObservableObject {
 
     private let client: any RuntimeClient
     private let configuration: ClientConfiguration
+    private let defaults: UserDefaults
     private var didLoad = false
+    private var backgroundTask: Task<Void, Never>?
+    private var seenDecisionIDs: Set<AttentionID>?
 
-    init(client: any RuntimeClient, configuration: ClientConfiguration) {
+    init(
+        client: any RuntimeClient,
+        configuration: ClientConfiguration,
+        defaults: UserDefaults = .standard
+    ) {
         self.client = client
         self.configuration = configuration
+        self.defaults = defaults
+        notificationsEnabled = defaults.bool(forKey: PreferenceKey.notifications)
+        backgroundRefreshEnabled = defaults.object(
+            forKey: PreferenceKey.backgroundRefresh
+        ) as? Bool ?? true
+        backgroundRefreshInterval = defaults.object(
+            forKey: PreferenceKey.refreshInterval
+        ) as? TimeInterval ?? 30
     }
 
     var runtimeURL: URL { configuration.runtimeURL }
@@ -102,6 +120,7 @@ final class AppStore: ObservableObject {
         guard !didLoad else { return }
         didLoad = true
         await refresh()
+        restartBackgroundTask()
     }
 
     func refresh() async {
@@ -141,6 +160,8 @@ final class AppStore: ObservableObject {
         if let windows = try? await client.attentionWindows() {
             attentionWindows = windows
         }
+        deliverNewDecisionNotifications()
+        NotificationCoordinator.shared.updateBadge(decisionCount: decisionCount)
     }
 
     func createIntent(outcome: String, project: String?) async {
@@ -243,6 +264,35 @@ final class AppStore: ObservableObject {
         operationError = nil
     }
 
+    func setNotificationsEnabled(_ enabled: Bool) async {
+        if enabled {
+            let granted = await NotificationCoordinator.shared.requestAuthorization()
+            guard granted else {
+                notificationsEnabled = false
+                defaults.set(false, forKey: PreferenceKey.notifications)
+                operationError = "系统通知权限未开启，请在系统设置中允许 else 发送通知。"
+                return
+            }
+        }
+        notificationsEnabled = enabled
+        defaults.set(enabled, forKey: PreferenceKey.notifications)
+        if enabled {
+            seenDecisionIDs = Set(decisions.map(\.request.id))
+        }
+    }
+
+    func setBackgroundRefreshEnabled(_ enabled: Bool) {
+        backgroundRefreshEnabled = enabled
+        defaults.set(enabled, forKey: PreferenceKey.backgroundRefresh)
+        restartBackgroundTask()
+    }
+
+    func setBackgroundRefreshInterval(_ interval: TimeInterval) {
+        backgroundRefreshInterval = interval
+        defaults.set(interval, forKey: PreferenceKey.refreshInterval)
+        restartBackgroundTask()
+    }
+
     private func mutate(
         _ intentID: IntentID,
         operation: @escaping () async throws -> IntentSnapshot
@@ -263,6 +313,44 @@ final class AppStore: ObservableObject {
             snapshots[index] = snapshot
         } else {
             snapshots.insert(snapshot, at: 0)
+        }
+    }
+
+    private func restartBackgroundTask() {
+        backgroundTask?.cancel()
+        backgroundTask = nil
+        guard backgroundRefreshEnabled else {
+            return
+        }
+        backgroundTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let interval = self?.backgroundRefreshInterval else {
+                    return
+                }
+                try? await Task.sleep(
+                    nanoseconds: UInt64(max(interval, 15) * 1_000_000_000)
+                )
+                guard !Task.isCancelled else {
+                    return
+                }
+                await self?.refresh()
+            }
+        }
+    }
+
+    private func deliverNewDecisionNotifications() {
+        let currentIDs = Set(decisions.map(\.request.id))
+        defer { seenDecisionIDs = currentIDs }
+        guard notificationsEnabled, let previousIDs = seenDecisionIDs else {
+            return
+        }
+        for item in decisions where !previousIDs.contains(item.request.id) {
+            Task {
+                await NotificationCoordinator.shared.postDecisionNotification(
+                    intentID: item.snapshot.id,
+                    request: item.request
+                )
+            }
         }
     }
 
@@ -301,6 +389,12 @@ final class AppStore: ObservableObject {
         }
         actionsByIntent[intentID] = actions
     }
+}
+
+private enum PreferenceKey {
+    static let notifications = "ElseNotificationsEnabled"
+    static let backgroundRefresh = "ElseBackgroundRefreshEnabled"
+    static let refreshInterval = "ElseBackgroundRefreshInterval"
 }
 
 private extension PersonalBrief {
