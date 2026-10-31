@@ -2,9 +2,13 @@ import Foundation
 
 public actor DemoRuntimeClient: RuntimeClient {
     private var snapshots: [IntentSnapshot]
+    private var brief: PersonalBrief
+    private var actions: [IntentID: [ConnectorAction]]
 
     public init() {
         snapshots = Self.samples
+        brief = Self.sampleBrief()
+        actions = Self.sampleActions
     }
 
     public func listIntents() async throws -> [IntentSnapshot] {
@@ -99,6 +103,82 @@ public actor DemoRuntimeClient: RuntimeClient {
         }
     }
 
+    public func personalBrief() async throws -> PersonalBrief {
+        brief
+    }
+
+    public func resolveWorldItem(
+        intentID: IntentID,
+        itemID: WorldItemID,
+        kind: WorldItemResolutionKind
+    ) async throws -> WorldItem {
+        guard let record = brief.allRecords.first(where: {
+            $0.intentID == intentID && $0.item.id == itemID
+        }) else {
+            throw RuntimeClientError.http(status: 404, message: "World item not found")
+        }
+        brief = brief.removing(itemID: itemID)
+        let state: WorldItemState = kind == .completed ? .completed : .dismissed
+        return record.item.replacing(state: state)
+    }
+
+    public func connectorActions(intentID: IntentID) async throws -> [ConnectorAction] {
+        actions[intentID] ?? []
+    }
+
+    public func executeConnectorAction(
+        intentID: IntentID,
+        actionID: ConnectorActionID
+    ) async throws -> ConnectorAction {
+        try updateAction(intentID: intentID, actionID: actionID) {
+            $0.replacing(status: .applied)
+        }
+    }
+
+    public func verifyConnectorAction(
+        intentID: IntentID,
+        actionID: ConnectorActionID
+    ) async throws -> ConnectorAction {
+        try updateAction(intentID: intentID, actionID: actionID) {
+            $0.replacing(status: .applied)
+        }
+    }
+
+    public func compensateConnectorAction(
+        intentID: IntentID,
+        actionID: ConnectorActionID
+    ) async throws -> ConnectorAction {
+        try updateAction(intentID: intentID, actionID: actionID) {
+            $0.replacing(
+                status: .compensated,
+                outcome: ToolOutcome(status: .succeeded, effect: .compensated)
+            )
+        }
+    }
+
+    public func attentionWindows() async throws -> [AttentionWindowRecord] {
+        snapshots.compactMap { snapshot in
+            guard snapshot.state == .needsDecision, let request = snapshot.decisions.first else {
+                return nil
+            }
+            let now = Date()
+            return AttentionWindowRecord(
+                intentID: snapshot.id,
+                window: AttentionWindow(
+                    id: AttentionWindowID("demo-attention-window"),
+                    kind: .batch,
+                    openedAt: now.addingTimeInterval(-1_800),
+                    dueAt: now.addingTimeInterval(-60),
+                    timerID: TimerID("demo-attention-timer"),
+                    closedAt: now.addingTimeInterval(-60),
+                    deliveredAt: now.addingTimeInterval(-60),
+                    requestIDs: [request.id]
+                ),
+                requests: [request]
+            )
+        }
+    }
+
     private func update(
         id: IntentID,
         transform: (IntentSnapshot) -> IntentSnapshot
@@ -108,6 +188,19 @@ public actor DemoRuntimeClient: RuntimeClient {
         }
         snapshots[index] = transform(snapshots[index])
         return snapshots[index]
+    }
+
+    private func updateAction(
+        intentID: IntentID,
+        actionID: ConnectorActionID,
+        transform: (ConnectorAction) -> ConnectorAction
+    ) throws -> ConnectorAction {
+        guard let index = actions[intentID]?.firstIndex(where: { $0.id == actionID }) else {
+            throw RuntimeClientError.http(status: 404, message: "Connector action not found")
+        }
+        let updated = transform(actions[intentID]![index])
+        actions[intentID]![index] = updated
+        return updated
     }
 
     public static let samples: [IntentSnapshot] = {
@@ -260,6 +353,120 @@ public actor DemoRuntimeClient: RuntimeClient {
         maxToolCalls: 10_000,
         maxSandboxSeconds: 86_400
     )
+
+    private static func sampleBrief() -> PersonalBrief {
+        let now = Date()
+        let overdue = worldRecord(
+            intentID: IntentID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0"),
+            id: "world-overdue-release",
+            kind: .actionItem,
+            state: .overdue,
+            title: "补齐发布前安全回归",
+            summary: "发布检查清单还有一项未完成。",
+            deadline: now.addingTimeInterval(-7_200),
+            project: "else"
+        )
+        let waiting = worldRecord(
+            intentID: IntentID("D91E465C-09F8-49B1-8745-C45A67C00AE1"),
+            id: "world-waiting-security",
+            kind: .waitingExternal,
+            state: .waitingExternal,
+            title: "等待安全团队审批",
+            summary: "Notion 决策页标记为 Waiting External。",
+            deadline: now.addingTimeInterval(86_400),
+            project: "else"
+        )
+        let calendar = worldRecord(
+            intentID: IntentID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0"),
+            id: "world-calendar-review",
+            kind: .actionItem,
+            state: .open,
+            title: "产品评审",
+            summary: "今天 15:00，准备最新构建与风险清单。",
+            deadline: now.addingTimeInterval(4 * 3_600),
+            project: "else-client"
+        )
+        return PersonalBrief(
+            generatedAt: now,
+            waitingExternal: [waiting],
+            overdue: [overdue],
+            upcomingCalendar: [calendar]
+        )
+    }
+
+    private static let sampleActions: [IntentID: [ConnectorAction]] = [
+        IntentID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0"): [
+            ConnectorAction(
+                id: ConnectorActionID("demo-calendar-action"),
+                connectorID: ConnectorID("demo-google-calendar"),
+                capability: "calendar.event.update",
+                target: "event-demo-review",
+                effect: .unknown,
+                idempotencyKey: "calendar-event-demo-review",
+                status: .applied,
+                proposedAt: Date().addingTimeInterval(-600),
+                toolCallID: ToolCallID("demo-tool-call"),
+                outcome: ToolOutcome(status: .succeeded, effect: .applied)
+            ),
+        ],
+    ]
+
+    private static func worldRecord(
+        intentID: IntentID,
+        id: String,
+        kind: WorldItemKind,
+        state: WorldItemState,
+        title: String,
+        summary: String,
+        deadline: Date?,
+        project: String
+    ) -> WorldItemRecord {
+        WorldItemRecord(
+            intentID: intentID,
+            item: WorldItem(
+                id: WorldItemID(id),
+                entityRef: ExternalEntityRef(
+                    provider: "notion",
+                    entityKind: "notion_database_row",
+                    externalID: id
+                ),
+                objectKind: .workItem,
+                kind: kind,
+                state: state,
+                title: title,
+                summary: summary,
+                deadline: deadline,
+                priority: state == .overdue ? 96 : (kind == .waitingExternal ? 70 : 62),
+                priorityReason:
+                    state == .overdue
+                    ? "已逾期，需要立即收敛"
+                    : (kind == .waitingExternal
+                        ? "事项被外部对象阻塞"
+                        : "存在待推进的行动项"),
+                projects: [
+                    CorrelationHint(
+                        kind: "project",
+                        key: "project:\(project)",
+                        label: project
+                    ),
+                ],
+                identities: [
+                    CorrelationHint(
+                        kind: "contact",
+                        key: "contact:alice",
+                        label: "Alice"
+                    ),
+                    CorrelationHint(
+                        kind: "customer",
+                        key: "customer:acme",
+                        label: "Acme"
+                    ),
+                ],
+                firstObservedAt: Date().addingTimeInterval(-86_400),
+                lastObservedAt: Date()
+            )
+        )
+    }
 }
 
 private extension ResourceUsage {
@@ -285,6 +492,74 @@ private extension IntentSnapshot {
             resourceBudget: resourceBudget,
             resourceUsage: resourceUsage,
             cursor: cursor + 1
+        )
+    }
+}
+
+private extension PersonalBrief {
+    var allRecords: [WorldItemRecord] {
+        openCommitments
+            + waitingExternal
+            + overdue
+            + actionItemsDueSoon
+            + risks
+            + upcomingCalendar
+    }
+
+    func removing(itemID: WorldItemID) -> PersonalBrief {
+        PersonalBrief(
+            generatedAt: Date(),
+            openCommitments: openCommitments.filter { $0.item.id != itemID },
+            waitingExternal: waitingExternal.filter { $0.item.id != itemID },
+            overdue: overdue.filter { $0.item.id != itemID },
+            actionItemsDueSoon: actionItemsDueSoon.filter { $0.item.id != itemID },
+            risks: risks.filter { $0.item.id != itemID },
+            upcomingCalendar: upcomingCalendar.filter { $0.item.id != itemID }
+        )
+    }
+}
+
+private extension WorldItem {
+    func replacing(state: WorldItemState) -> WorldItem {
+        WorldItem(
+            id: id,
+            entityRef: entityRef,
+            objectKind: objectKind,
+            kind: kind,
+            state: state,
+            title: title,
+            summary: summary,
+            deadline: deadline,
+            priority: priority,
+            priorityReason: priorityReason,
+            signalIDs: signalIDs,
+            connectorIDs: connectorIDs,
+            projects: projects,
+            identities: identities,
+            firstObservedAt: firstObservedAt,
+            lastObservedAt: lastObservedAt
+        )
+    }
+}
+
+private extension ConnectorAction {
+    func replacing(
+        status: ConnectorActionStatus,
+        outcome: ToolOutcome? = nil
+    ) -> ConnectorAction {
+        ConnectorAction(
+            id: id,
+            connectorID: connectorID,
+            capability: capability,
+            target: target,
+            effect: effect,
+            idempotencyKey: idempotencyKey,
+            status: status,
+            proposedAt: proposedAt,
+            attentionID: attentionID,
+            toolCallID: toolCallID,
+            outcome: outcome ?? self.outcome,
+            lastError: lastError
         )
     }
 }

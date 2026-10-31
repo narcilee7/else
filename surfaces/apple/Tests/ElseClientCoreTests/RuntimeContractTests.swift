@@ -56,6 +56,19 @@ struct RuntimeContractTests {
         #expect(abs(withFraction.timeIntervalSince(withoutFraction) - 0.789) < 0.001)
     }
 
+    @Test
+    func decodesConnectorActionStateAndOutcome() throws {
+        let action = try RuntimeJSON.decoder().decode(
+            ConnectorAction.self,
+            from: Data(Self.actionJSON.utf8)
+        )
+        #expect(action.status == .unknown)
+        #expect(action.effect == .unknown)
+        #expect(action.target == "event-1")
+        #expect(action.outcome?.status == .unknown)
+        #expect(action.outcome?.effect == .unknown)
+    }
+
     private static let snapshotJSON = """
     {
       "spec": {
@@ -106,6 +119,28 @@ struct RuntimeContractTests {
         "sandbox_seconds": 32
       },
       "cursor": 17
+    }
+    """
+
+    private static let actionJSON = """
+    {
+      "id": "action-1",
+      "connector_id": "connector-1",
+      "capability": "calendar.event.update",
+      "target": "event-1",
+      "input": {"changes":{"summary":"new"}},
+      "effect": "unknown",
+      "idempotency_key": "calendar-event-1",
+      "status": "unknown",
+      "proposed_at": "2026-10-31T06:00:00Z",
+      "attention_id": "attention-1",
+      "tool_call_id": "tool-1",
+      "outcome": {
+        "status": "unknown",
+        "output": {"before":{"summary":"old"}},
+        "effect": "unknown"
+      },
+      "last_error": null
     }
     """
 }

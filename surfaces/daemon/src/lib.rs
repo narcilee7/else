@@ -13,7 +13,7 @@ use std::time::Instant;
 use chrono::Utc;
 use else_api::{ApiError, RuntimeHandle, RuntimeService};
 use else_ledger::{IntentProjection, StoredEvent};
-use else_protocol::attention::DecisionChoice;
+use else_protocol::attention::{AttentionRequest, AttentionWindow, DecisionChoice};
 use else_protocol::intent::{IntentSpec, IntentState};
 use fs2::FileExt;
 use serde::Serialize;
@@ -167,6 +167,13 @@ struct EventResponse {
     intent_revision: u64,
     occurred_at: String,
     payload: Value,
+}
+
+#[derive(Serialize)]
+struct AttentionWindowSnapshot {
+    intent_id: else_protocol::ids::IntentId,
+    window: AttentionWindow,
+    requests: Vec<AttentionRequest>,
 }
 
 fn handle_http(mut request: Request, state: &AppState) {
@@ -326,7 +333,8 @@ fn handle_http(mut request: Request, state: &AppState) {
             let status = match error {
                 DaemonError::Api(ApiError::IntentNotFound(_))
                 | DaemonError::Api(ApiError::NotFound(_)) => 404,
-                DaemonError::Api(ApiError::Conflict(_)) => 409,
+                DaemonError::Api(ApiError::Conflict(_))
+                | DaemonError::Api(ApiError::Gateway(_)) => 409,
                 DaemonError::Api(ApiError::Unauthorized(_)) => 403,
                 DaemonError::InvalidRequest(_) => 400,
                 _ => 500,
@@ -394,11 +402,37 @@ fn route(
         let brief = state.handle.personal_brief()?;
         return Ok((200, json_string(&brief)?));
     }
+    if segments == ["v1", "attention"] && request.method() == &Method::Get {
+        let now = Utc::now();
+        let mut windows = Vec::new();
+        for spec in state.handle.list_intents()? {
+            let projection = state.handle.projection(&spec.id)?;
+            for (window, requests) in projection.actionable_attention_windows(now) {
+                windows.push(AttentionWindowSnapshot {
+                    intent_id: spec.id.clone(),
+                    window: window.clone(),
+                    requests: requests.into_iter().cloned().collect(),
+                });
+            }
+        }
+        windows.sort_by_key(|window| (window.window.due_at, window.intent_id.clone()));
+        return Ok((200, json_string(&windows)?));
+    }
     if segments == ["v1", "projects"] && request.method() == &Method::Get {
         let include_resolved = query_value(request.url(), "include_resolved")
             .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
         let projects = state.handle.project_worlds(None, include_resolved)?;
         return Ok((200, json_string(&projects)?));
+    }
+    if segments == ["v1", "identities"] && request.method() == &Method::Get {
+        let include_resolved = query_value(request.url(), "include_resolved")
+            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
+        let intent_id =
+            query_value(request.url(), "intent_id").map(else_protocol::ids::IntentId::from);
+        let identities = state
+            .handle
+            .identity_worlds(intent_id.as_ref(), include_resolved)?;
+        return Ok((200, json_string(&identities)?));
     }
     if segments.len() >= 3 && segments[0..2] == ["v1", "intents"] {
         let intent_id = else_protocol::ids::IntentId::from(segments[2]);

@@ -98,6 +98,90 @@ struct HTTPRuntimeClientTests {
         }
     }
 
+    @Test
+    func loadsPersonalBriefFromWorldEndpoint() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+
+        StubURLProtocol.handler = { request in
+            #expect(request.httpMethod == "GET")
+            #expect(request.url?.path == "/v1/world/brief")
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(Self.emptyBriefJSON.utf8)
+            )
+        }
+
+        let brief = try await client.personalBrief()
+        #expect(brief.outstandingCount == 0)
+    }
+
+    @Test
+    func listsIntentConnectorActions() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+
+        StubURLProtocol.handler = { request in
+            #expect(request.httpMethod == "GET")
+            #expect(request.url?.path == "/v1/intents/intent-1/actions")
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data("[]".utf8)
+            )
+        }
+
+        let actions = try await client.connectorActions(
+            intentID: IntentID("intent-1")
+        )
+        #expect(actions.isEmpty)
+    }
+
+    @Test
+    func loadsAttentionWindows() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+
+        StubURLProtocol.handler = { request in
+            #expect(request.httpMethod == "GET")
+            #expect(request.url?.path == "/v1/attention")
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(Self.attentionWindowJSON.utf8)
+            )
+        }
+
+        let windows = try await client.attentionWindows()
+        #expect(windows.count == 1)
+        #expect(windows.first?.window.kind == .batch)
+    }
+
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
@@ -141,6 +225,47 @@ struct HTTPRuntimeClientTests {
       },
       "cursor": 2
     }
+    """
+
+    private static let emptyBriefJSON = """
+    {
+      "generated_at": "2026-10-31T06:00:00Z",
+      "open_commitments": [],
+      "waiting_external": [],
+      "overdue": [],
+      "action_items_due_soon": [],
+      "risks": [],
+      "upcoming_calendar": []
+    }
+    """
+
+    private static let attentionWindowJSON = """
+    [{
+      "intent_id": "intent-1",
+      "window": {
+        "id": "window-1",
+        "kind": "batch",
+        "opened_at": "2026-10-31T05:00:00Z",
+        "due_at": "2026-10-31T06:00:00Z",
+        "timer_id": "timer-1",
+        "closed_at": "2026-10-31T06:00:00Z",
+        "delivered_at": "2026-10-31T06:00:00Z",
+        "request_ids": ["attention-1"]
+      },
+      "requests": [{
+        "id": "attention-1",
+        "kind": "authorization",
+        "summary": "允许执行？",
+        "blocked_reason": "需要授权",
+        "expected_loss": "high",
+        "blocking": true,
+        "reversible": true,
+        "decide_by": null,
+        "options": [],
+        "default_option": null,
+        "related_call_key": null
+      }]
+    }]
     """
 }
 

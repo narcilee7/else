@@ -30,11 +30,24 @@ struct IntentListView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         if store.section == .decisions {
-                            ForEach(store.decisions, id: \.request.id) { item in
-                                DecisionSummaryRow(item: item)
-                                    .onTapGesture {
-                                        store.selectedIntentID = item.snapshot.id
-                                    }
+                            ForEach(store.attentionWindows) { window in
+                                DecisionWindowHeader(window: window)
+                                ForEach(
+                                    decisions(in: window),
+                                    id: \.request.id
+                                ) { item in
+                                    DecisionSummaryRow(item: item)
+                                }
+                            }
+                            if !ungroupedDecisions.isEmpty {
+                                DecisionWindowHeader(
+                                    title: "即时",
+                                    subtitle: "\(ungroupedDecisions.count) 个请求",
+                                    systemImage: "bolt"
+                                )
+                                ForEach(ungroupedDecisions, id: \.request.id) { item in
+                                    DecisionSummaryRow(item: item)
+                                }
                             }
                         } else {
                             ForEach(visibleSnapshots) { snapshot in
@@ -115,12 +128,62 @@ struct IntentListView: View {
         .padding(.vertical, ElseSpacing.x3)
     }
 
+    private var groupedDecisionIDs: Set<AttentionID> {
+        Set(store.attentionWindows.flatMap(\.window.requestIDs))
+    }
+
+    private var ungroupedDecisions: [(snapshot: IntentSnapshot, request: AttentionRequest)] {
+        let grouped = groupedDecisionIDs
+        return store.decisions.filter { !grouped.contains($0.request.id) }
+    }
+
+    private func decisions(
+        in window: AttentionWindowRecord
+    ) -> [(snapshot: IntentSnapshot, request: AttentionRequest)] {
+        let ids = Set(window.window.requestIDs)
+        return store.decisions.filter {
+            $0.snapshot.id == window.intentID && ids.contains($0.request.id)
+        }
+    }
+
     private var subtitle: String {
         switch store.section {
         case .today: "\(store.today.count) 个进行中"
         case .decisions: store.decisionCount == 0 ? "无需你介入" : "\(store.decisionCount) 个请求"
         case .results: "\(store.results.count) 个已收敛"
         }
+    }
+}
+
+private struct DecisionWindowHeader: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+
+    init(window: AttentionWindowRecord) {
+        title = window.window.kind == .batch ? "批次决策" : "延期决策"
+        subtitle = "\(window.requests.count) 个请求 · \(window.window.dueAt.formatted(date: .omitted, time: .shortened))"
+        systemImage = window.window.kind == .batch ? "rectangle.stack" : "clock"
+    }
+
+    init(title: String, subtitle: String, systemImage: String) {
+        self.title = title
+        self.subtitle = subtitle
+        self.systemImage = systemImage
+    }
+
+    var body: some View {
+        HStack(spacing: ElseSpacing.x2) {
+            Label(title, systemImage: systemImage)
+                .font(ElseType.micro)
+                .foregroundStyle(ElseColor.textSecondary)
+            Spacer()
+            Text(subtitle)
+                .font(ElseType.micro)
+                .foregroundStyle(ElseColor.textTertiary)
+        }
+        .padding(.horizontal, ElseSpacing.x4)
+        .padding(.top, ElseSpacing.x3)
     }
 }
 
@@ -181,6 +244,7 @@ private struct IntentRow: View {
 }
 
 private struct DecisionSummaryRow: View {
+    @EnvironmentObject private var store: AppStore
     let item: (snapshot: IntentSnapshot, request: AttentionRequest)
 
     var body: some View {
@@ -206,6 +270,25 @@ private struct DecisionSummaryRow: View {
                     .font(ElseType.caption)
                     .foregroundStyle(ElseColor.textSecondary)
                     .lineLimit(1)
+
+                HStack(spacing: 8) {
+                    ForEach(item.request.options.prefix(2)) { option in
+                        decisionOptionButton(option)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        store.selectedIntentID = item.snapshot.id
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(ElseColor.textSecondary)
+                    .help("查看完整 Intent")
+                }
+                .controlSize(.small)
+                .disabled(store.mutatingIntentIDs.contains(item.snapshot.id))
             }
         }
         .padding(ElseSpacing.x4)
@@ -215,6 +298,27 @@ private struct DecisionSummaryRow: View {
 
     private var lossTint: Color {
         item.request.expectedLoss >= .high ? ElseColor.danger : ElseColor.textSecondary
+    }
+
+    @ViewBuilder
+    private func decisionOptionButton(_ option: DecisionOption) -> some View {
+        let button = Button(option.label) {
+            Task {
+                await store.resolve(
+                    snapshot: item.snapshot,
+                    request: item.request,
+                    choice: .option(option.id)
+                )
+            }
+        }
+
+        if option.recommended {
+            button
+                .buttonStyle(.borderedProminent)
+                .tint(ElseColor.signal)
+        } else {
+            button.buttonStyle(.bordered)
+        }
     }
 }
 

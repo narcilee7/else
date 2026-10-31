@@ -17,6 +17,10 @@ struct IntentDetailView: View {
                             decisions(snapshot)
                         }
 
+                        if !store.actionsByIntent[snapshot.id, default: []].isEmpty {
+                            connectorActions(snapshot)
+                        }
+
                         acceptance(snapshot)
                         boundaries(snapshot)
                         artifacts(snapshot)
@@ -117,6 +121,19 @@ struct IntentDetailView: View {
                             .font(ElseType.body)
                             .foregroundStyle(ElseColor.textPrimary)
                             .textSelection(.enabled)
+                    }
+                }
+            }
+        }
+    }
+
+    private func connectorActions(_ snapshot: IntentSnapshot) -> some View {
+        DetailSection(title: "外部动作", systemImage: "arrow.up.right.square") {
+            VStack(spacing: 0) {
+                ForEach(store.actionsByIntent[snapshot.id, default: []]) { action in
+                    ConnectorActionRow(intentID: snapshot.id, action: action)
+                    if action.id != store.actionsByIntent[snapshot.id]?.last?.id {
+                        Divider()
                     }
                 }
             }
@@ -271,6 +288,117 @@ private struct DetailSection<Content: View>: View {
     }
 }
 
+private struct ConnectorActionRow: View {
+    @EnvironmentObject private var store: AppStore
+    let intentID: IntentID
+    let action: ConnectorAction
+
+    private var isMutating: Bool {
+        store.mutatingActionIDs.contains(action.id)
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: ElseSpacing.x3) {
+            Rectangle()
+                .fill(action.status.tint)
+                .frame(width: 2)
+                .padding(.vertical, 2)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(action.status.label)
+                        .font(ElseType.micro)
+                        .foregroundStyle(action.status.tint)
+                    Spacer()
+                    Text(action.effect.rawValue)
+                        .font(ElseType.mono)
+                        .foregroundStyle(ElseColor.textTertiary)
+                }
+
+                Text(action.capability)
+                    .font(ElseType.callout)
+                    .foregroundStyle(ElseColor.textPrimary)
+                Text(action.target)
+                    .font(ElseType.mono)
+                    .foregroundStyle(ElseColor.textSecondary)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+
+                if let outcome = action.outcome {
+                    Text("\(outcome.status.rawValue) · \(outcome.effect.rawValue)")
+                        .font(ElseType.caption)
+                        .foregroundStyle(ElseColor.textSecondary)
+                }
+                if let error = action.lastError {
+                    Text(error)
+                        .font(ElseType.caption)
+                        .foregroundStyle(ElseColor.danger)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: ElseSpacing.x2)
+
+            if isMutating {
+                ProgressView()
+                    .controlSize(.mini)
+            } else {
+                actionButtons
+            }
+        }
+        .padding(.vertical, ElseSpacing.x3)
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        HStack(spacing: 6) {
+            if action.status.canExecute {
+                Button {
+                    Task {
+                        await store.executeConnectorAction(
+                            intentID: intentID,
+                            action: action
+                        )
+                    }
+                } label: {
+                    Label("执行", systemImage: "play")
+                }
+                .help("执行外部动作；超出授权时会生成 Decision")
+            }
+
+            if action.status.canVerify {
+                Button {
+                    Task {
+                        await store.verifyConnectorAction(
+                            intentID: intentID,
+                            action: action
+                        )
+                    }
+                } label: {
+                    Label("核验", systemImage: "arrow.clockwise")
+                }
+                .help("回源查询 Provider 的真实结果")
+            }
+
+            if action.status.canCompensate {
+                Button {
+                    Task {
+                        await store.compensateConnectorAction(
+                            intentID: intentID,
+                            action: action
+                        )
+                    }
+                } label: {
+                    Label("补偿", systemImage: "arrow.uturn.backward")
+                }
+                .help("撤销已应用动作；需要重新授权")
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+    }
+}
+
 private struct DecisionBand: View {
     @EnvironmentObject private var store: AppStore
     let snapshot: IntentSnapshot
@@ -372,5 +500,45 @@ private struct DecisionBand: View {
                 choice: .dismissed
             )
         }
+    }
+}
+
+private extension ConnectorActionStatus {
+    var label: String {
+        switch self {
+        case .proposed: "待执行"
+        case .needsApproval: "待授权"
+        case .executing: "执行中"
+        case .applied: "已应用"
+        case .compensating: "补偿待授权"
+        case .compensationExecuting: "补偿执行中"
+        case .compensated: "已补偿"
+        case .compensationFailed: "补偿失败"
+        case .failed: "失败"
+        case .unknown: "结果未知"
+        case .cancelled: "已取消"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .applied, .compensated: ElseColor.success
+        case .needsApproval, .unknown: ElseColor.signal
+        case .executing, .compensationExecuting: ElseColor.info
+        case .failed, .compensationFailed: ElseColor.danger
+        case .proposed, .compensating, .cancelled: ElseColor.textSecondary
+        }
+    }
+
+    var canExecute: Bool {
+        self == .proposed || self == .needsApproval
+    }
+
+    var canVerify: Bool {
+        self == .executing || self == .unknown || self == .applied
+    }
+
+    var canCompensate: Bool {
+        self == .applied || self == .compensating
     }
 }

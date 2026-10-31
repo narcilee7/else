@@ -2,9 +2,9 @@
 
 macOS 原生壳，使用 SwiftUI 与 Swift Package Manager。目标不是再做一个聊天窗口，而是把 Runtime 投影收敛成三个表面：
 
-- 今天：正在推进的 Intent
-- 待决策：只有真正需要本人的 Decision
-- 结果：已收敛的 Outcome、证据与资源账
+- 今天：可解释 Priority、来源证据、分组 Personal Brief、外部事项、进行中 Intent 与 Decision 聚合
+- 待决策：只有真正需要本人的 Decision，按 Batch/Defer Window 聚合，可直接完成常用选项或进入完整 Intent
+- 结果：已收敛的 Outcome、证据与资源账；详情含 ConnectorAction 执行、核验、补偿与最终副作用结论
 
 视觉、Motion 与组件约束见 [DESIGN.md](../../DESIGN.md)。
 
@@ -49,6 +49,8 @@ open .build/Else.app --args --demo
 | `POST` | `/v1/intents/{intent_id}/run` | `IntentSnapshot` |
 | `POST` | `/v1/intents/{intent_id}/decisions/{decision_id}/resolve` | `IntentSnapshot` |
 | `POST` | `/v1/intents/{intent_id}/abort` | `IntentSnapshot` |
+| `GET` | `/v1/world/brief` | `PersonalBrief` |
+| `POST` | `/v1/intents/{intent_id}/world/resolve` | `WorldItem` |
 | `GET` | `/v1/operations/{operation_id}` | `Operation` |
 | `GET` | `/v1/events?cursor=42` | `[Event]` |
 | `GET/POST` | `/v1/intents/{intent_id}/capabilities` | `[Capability]` / `Capability` |

@@ -2,12 +2,13 @@
 
 use chrono::{Duration, Utc};
 use else_api::Runtime;
+use else_protocol::connector::CorrelationKind;
 
 fn calendar_ics() -> String {
     let start = Utc::now() + Duration::hours(4);
     let end = start + Duration::hours(1);
     format!(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:project-calendar\r\nSUMMARY:发布评审\r\nCATEGORIES:Launch\r\nDTSTART:{}\r\nDTEND:{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:project-calendar\r\nSUMMARY:发布评审\r\nCATEGORIES:Launch\r\nATTENDEE:mailto:alice\r\nDTSTART:{}\r\nDTEND:{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
         start.format("%Y%m%dT%H%M%SZ"),
         end.format("%Y%m%dT%H%M%SZ")
     )
@@ -22,6 +23,8 @@ fn linear_json() -> serde_json::Value {
             "state": {"name": "In Progress", "type": "started"},
             "updatedAt": Utc::now().to_rfc3339(),
             "project": {"name": "Launch"},
+            "milestone": {"name": "Launch GA"},
+            "assignee": {"name": "Alice"},
             "labels": [],
             "blockedBy": []
         }]
@@ -49,6 +52,22 @@ fn notion_json() -> serde_json::Value {
                 "Status": {
                     "type": "status",
                     "status": {"name": "In Progress", "group": "in_progress"}
+                },
+                "Customer": {
+                    "type": "select",
+                    "select": {"name": "Acme"}
+                },
+                "Contact": {
+                    "type": "select",
+                    "select": {"name": "Alice"}
+                },
+                "Thread": {
+                    "type": "rich_text",
+                    "rich_text": [{"plain_text": "launch-review"}]
+                },
+                "Milestone": {
+                    "type": "select",
+                    "select": {"name": "Launch GA"}
                 }
             }
         }]
@@ -108,4 +127,25 @@ fn project_world_correlates_connectors_and_intents_by_project_key() {
     assert_eq!(launch.items.len(), 4);
     assert_eq!(launch.intent_ids.len(), 2);
     assert!(launch.connector_ids.len() >= 4);
+
+    let identities = runtime.identity_worlds(None, false).unwrap();
+    let alice = identities
+        .iter()
+        .find(|identity| {
+            identity.kind == CorrelationKind::Contact && identity.key == "contact:alice"
+        })
+        .unwrap();
+    assert_eq!(alice.items.len(), 4);
+    assert_eq!(alice.intent_ids.len(), 2);
+    assert!(identities.iter().any(|identity| {
+        identity.kind == CorrelationKind::Customer
+            && identity.key == "customer:acme"
+            && identity.items.len() == 1
+    }));
+    assert!(identities.iter().any(|identity| {
+        identity.kind == CorrelationKind::Thread && identity.key == "thread:eng-401"
+    }));
+    assert!(identities.iter().any(|identity| {
+        identity.kind == CorrelationKind::Milestone && identity.key == "milestone:launch-ga"
+    }));
 }

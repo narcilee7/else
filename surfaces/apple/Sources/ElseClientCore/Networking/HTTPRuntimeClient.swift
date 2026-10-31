@@ -73,6 +73,74 @@ public struct HTTPRuntimeClient: RuntimeClient {
         )
     }
 
+    public func personalBrief() async throws -> PersonalBrief {
+        try await send(method: "GET", path: ["v1", "world", "brief"])
+    }
+
+    public func resolveWorldItem(
+        intentID: IntentID,
+        itemID: WorldItemID,
+        kind: WorldItemResolutionKind
+    ) async throws -> WorldItem {
+        try await send(
+            method: "POST",
+            path: ["v1", "intents", intentID.rawValue, "world", "resolve"],
+            body: ResolveWorldItemRequest(itemID: itemID, kind: kind),
+            intentID: intentID
+        )
+    }
+
+    public func connectorActions(intentID: IntentID) async throws -> [ConnectorAction] {
+        try await send(
+            method: "GET",
+            path: ["v1", "intents", intentID.rawValue, "actions"]
+        )
+    }
+
+    public func executeConnectorAction(
+        intentID: IntentID,
+        actionID: ConnectorActionID
+    ) async throws -> ConnectorAction {
+        try await actionCommand("execute", intentID: intentID, actionID: actionID)
+    }
+
+    public func verifyConnectorAction(
+        intentID: IntentID,
+        actionID: ConnectorActionID
+    ) async throws -> ConnectorAction {
+        try await actionCommand("verify", intentID: intentID, actionID: actionID)
+    }
+
+    public func compensateConnectorAction(
+        intentID: IntentID,
+        actionID: ConnectorActionID
+    ) async throws -> ConnectorAction {
+        try await actionCommand("compensate", intentID: intentID, actionID: actionID)
+    }
+
+    private func actionCommand(
+        _ command: String,
+        intentID: IntentID,
+        actionID: ConnectorActionID
+    ) async throws -> ConnectorAction {
+        try await send(
+            method: "POST",
+            path: [
+                "v1",
+                "intents",
+                intentID.rawValue,
+                "actions",
+                actionID.rawValue,
+                command,
+            ],
+            intentID: intentID
+        )
+    }
+
+    public func attentionWindows() async throws -> [AttentionWindowRecord] {
+        try await send(method: "GET", path: ["v1", "attention"])
+    }
+
     private func send<Response: Decodable>(
         method: String,
         path: [String],

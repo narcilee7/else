@@ -8,6 +8,77 @@ public enum AttentionKind: String, Codable, Sendable {
     case verification
 }
 
+public enum AttentionWindowKind: String, Codable, Sendable {
+    case batch
+    case `defer`
+}
+
+public struct AttentionWindow: Codable, Equatable, Identifiable, Sendable {
+    public let id: AttentionWindowID
+    public let kind: AttentionWindowKind
+    public let openedAt: Date
+    public let dueAt: Date
+    public let timerID: TimerID
+    public let closedAt: Date?
+    public let deliveredAt: Date?
+    public let requestIDs: [AttentionID]
+
+    public init(
+        id: AttentionWindowID,
+        kind: AttentionWindowKind,
+        openedAt: Date,
+        dueAt: Date,
+        timerID: TimerID,
+        closedAt: Date? = nil,
+        deliveredAt: Date? = nil,
+        requestIDs: [AttentionID]
+    ) {
+        self.id = id
+        self.kind = kind
+        self.openedAt = openedAt
+        self.dueAt = dueAt
+        self.timerID = timerID
+        self.closedAt = closedAt
+        self.deliveredAt = deliveredAt
+        self.requestIDs = requestIDs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case openedAt = "opened_at"
+        case dueAt = "due_at"
+        case timerID = "timer_id"
+        case closedAt = "closed_at"
+        case deliveredAt = "delivered_at"
+        case requestIDs = "request_ids"
+    }
+}
+
+public struct AttentionWindowRecord: Codable, Equatable, Identifiable, Sendable {
+    public let intentID: IntentID
+    public let window: AttentionWindow
+    public let requests: [AttentionRequest]
+
+    public var id: AttentionWindowID { window.id }
+
+    public init(
+        intentID: IntentID,
+        window: AttentionWindow,
+        requests: [AttentionRequest]
+    ) {
+        self.intentID = intentID
+        self.window = window
+        self.requests = requests
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case intentID = "intent_id"
+        case window
+        case requests
+    }
+}
+
 public enum ExpectedLoss: String, Codable, Comparable, Sendable {
     case low
     case medium

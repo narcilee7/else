@@ -92,6 +92,20 @@ fn personal_world_aggregates_commitments_waiting_overdue_and_brief() {
             .count(),
         1
     );
+    let overdue = items
+        .iter()
+        .find(|item| item.state == WorldItemState::Overdue)
+        .unwrap();
+    assert!(overdue.priority >= 94);
+    assert!(overdue.priority_reason.contains("已逾期"));
+    let waiting = items
+        .iter()
+        .find(|item| item.kind == WorldItemKind::WaitingExternal)
+        .unwrap();
+    assert!(waiting.priority_reason.contains("外部对象阻塞"));
+    assert!(items
+        .windows(2)
+        .all(|pair| pair[0].priority >= pair[1].priority));
 
     let brief = runtime.personal_brief().unwrap();
     assert_eq!(brief.open_commitments.len(), 1);

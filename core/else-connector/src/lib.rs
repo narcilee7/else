@@ -744,11 +744,32 @@ fn normalize_calendar(
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
                 .collect::<Vec<_>>();
+            let attendees = event
+                .properties
+                .iter()
+                .filter(|property| property.name == "ATTENDEE")
+                .filter_map(|property| property.value.as_deref())
+                .map(|value| {
+                    value
+                        .strip_prefix("mailto:")
+                        .unwrap_or(value)
+                        .trim()
+                        .to_string()
+                })
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
             let uid = property("UID").unwrap_or_else(|| format!("{summary}:{start}"));
             let source_version = format!(
                 "{:016x}",
                 stable_hash(&format!("{summary}\0{start}\0{end:?}"))
             );
+            let mut correlations = direct_project_hints(&categories);
+            correlations.extend(
+                attendees
+                    .iter()
+                    .filter_map(|attendee| identity_hint(CorrelationKind::Contact, attendee)),
+            );
+            dedupe_project_hints(&mut correlations);
             observations.push(ConnectorObservation {
                 connector_id: connector_id.clone(),
                 entity_id: uid.clone(),
@@ -770,7 +791,7 @@ fn normalize_calendar(
                 evidence_ref: None,
                 sensitivity: "internal".into(),
                 source_trust: "deterministic_read_only".into(),
-                correlations: direct_project_hints(&categories),
+                correlations,
             });
         }
     }
@@ -1134,10 +1155,7 @@ fn normalize_notion_node(
         .iter()
         .filter(|(name, _)| {
             let name = name.to_ascii_lowercase();
-            name.contains("project")
-                || name.contains("client")
-                || name.contains("customer")
-                || name.contains("workstream")
+            name.contains("project") || name.contains("workstream") || name.contains("项目")
         })
         .flat_map(|(_, fact)| {
             fact.get("value")
@@ -1160,7 +1178,9 @@ fn normalize_notion_node(
             project_labels.push(format!("Notion Database {database_id}"));
         }
     }
-    let correlations = direct_project_hints(&project_labels);
+    let mut correlations = direct_project_hints(&project_labels);
+    correlations.extend(notion_identity_hints(&property_facts));
+    dedupe_project_hints(&mut correlations);
     Ok(Some(ConnectorObservation {
         connector_id: connector_id.clone(),
         entity_id: id.clone(),
@@ -1321,6 +1341,56 @@ fn notion_property_facts(
     facts
 }
 
+fn notion_identity_hints(properties: &serde_json::Map<String, Value>) -> Vec<CorrelationHint> {
+    let mut hints = Vec::new();
+    for (name, fact) in properties {
+        let lower = name.to_ascii_lowercase();
+        let kind = if lower.contains("customer") || lower.contains("客户") {
+            Some(CorrelationKind::Customer)
+        } else if lower.contains("contact")
+            || lower.contains("assignee")
+            || lower.contains("owner")
+            || lower.contains("联系人")
+        {
+            Some(CorrelationKind::Contact)
+        } else if lower.contains("thread")
+            || lower.contains("conversation")
+            || lower.contains("线程")
+        {
+            Some(CorrelationKind::Thread)
+        } else if lower.contains("milestone")
+            || lower.contains("release")
+            || lower.contains("里程碑")
+        {
+            Some(CorrelationKind::Milestone)
+        } else {
+            None
+        };
+        let Some(kind) = kind else {
+            continue;
+        };
+        for label in notion_fact_values(fact) {
+            if let Some(hint) = identity_hint(kind, &label) {
+                hints.push(hint);
+            }
+        }
+    }
+    hints
+}
+
+fn notion_fact_values(fact: &Value) -> Vec<String> {
+    if let Some(value) = fact.get("value").and_then(Value::as_str) {
+        return vec![value.to_string()];
+    }
+    fact.get("values")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
 pub fn normalize_linear_payload(
     connector_id: &ConnectorId,
     payload: &Value,
@@ -1359,6 +1429,8 @@ fn normalize_linear_issue(
     let assignee = string_at(issue, &["assignee", "name"])
         .or_else(|| string_at(issue, &["assignee", "displayName"]));
     let project = string_at(issue, &["project", "name"]);
+    let milestone = string_at(issue, &["milestone", "name"]);
+    let thread = string_at(issue, &["identifier"]).or_else(|| Some(identifier.clone()));
     let url = string_at(issue, &["url"]);
     let mut sorted_labels = labels.clone();
     sorted_labels.sort();
@@ -1383,6 +1455,21 @@ fn normalize_linear_issue(
     let mut correlations = project_hints_from_labels(&labels);
     if let Some(project) = &project {
         correlations.extend(direct_project_hints(std::slice::from_ref(project)));
+    }
+    if let Some(assignee) = &assignee {
+        if let Some(hint) = identity_hint(CorrelationKind::Contact, assignee) {
+            correlations.push(hint);
+        }
+    }
+    if let Some(milestone) = &milestone {
+        if let Some(hint) = identity_hint(CorrelationKind::Milestone, milestone) {
+            correlations.push(hint);
+        }
+    }
+    if let Some(thread) = &thread {
+        if let Some(hint) = identity_hint(CorrelationKind::Thread, thread) {
+            correlations.push(hint);
+        }
     }
     dedupe_project_hints(&mut correlations);
     Ok(Some(ConnectorObservation {
@@ -1824,6 +1911,10 @@ fn project_hints_from_labels(labels: &[String]) -> Vec<CorrelationHint> {
 }
 
 fn project_hint(label: &str) -> Option<CorrelationHint> {
+    identity_hint(CorrelationKind::Project, label)
+}
+
+fn identity_hint(kind: CorrelationKind, label: &str) -> Option<CorrelationHint> {
     let label = label.trim();
     if label.is_empty() {
         return None;
@@ -1842,9 +1933,16 @@ fn project_hint(label: &str) -> Option<CorrelationHint> {
     while key.ends_with('-') {
         key.pop();
     }
+    let prefix = match kind {
+        CorrelationKind::Project => "project",
+        CorrelationKind::Contact => "contact",
+        CorrelationKind::Customer => "customer",
+        CorrelationKind::Thread => "thread",
+        CorrelationKind::Milestone => "milestone",
+    };
     (!key.is_empty()).then(|| CorrelationHint {
-        kind: CorrelationKind::Project,
-        key: format!("project:{key}"),
+        kind,
+        key: format!("{prefix}:{key}"),
         label: label.into(),
     })
 }

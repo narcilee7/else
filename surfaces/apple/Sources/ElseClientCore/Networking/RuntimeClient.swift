@@ -11,6 +11,26 @@ public protocol RuntimeClient: Sendable {
         choice: DecisionChoice
     ) async throws -> IntentSnapshot
     func abortIntent(id: IntentID, reason: String) async throws -> IntentSnapshot
+    func personalBrief() async throws -> PersonalBrief
+    func resolveWorldItem(
+        intentID: IntentID,
+        itemID: WorldItemID,
+        kind: WorldItemResolutionKind
+    ) async throws -> WorldItem
+    func connectorActions(intentID: IntentID) async throws -> [ConnectorAction]
+    func executeConnectorAction(
+        intentID: IntentID,
+        actionID: ConnectorActionID
+    ) async throws -> ConnectorAction
+    func verifyConnectorAction(
+        intentID: IntentID,
+        actionID: ConnectorActionID
+    ) async throws -> ConnectorAction
+    func compensateConnectorAction(
+        intentID: IntentID,
+        actionID: ConnectorActionID
+    ) async throws -> ConnectorAction
+    func attentionWindows() async throws -> [AttentionWindowRecord]
 }
 
 public enum RuntimeClientError: Error, LocalizedError, Sendable {

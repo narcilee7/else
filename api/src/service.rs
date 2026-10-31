@@ -214,6 +214,11 @@ enum Command {
         include_resolved: bool,
         reply: Reply<Vec<else_protocol::world::ProjectWorld>>,
     },
+    IdentityWorlds {
+        intent_id: Option<IntentId>,
+        include_resolved: bool,
+        reply: Reply<Vec<else_protocol::world::IdentityWorld>>,
+    },
     ResolveSignals {
         intent_id: IntentId,
         reply: Reply<Vec<IntentCandidate>>,
@@ -700,6 +705,18 @@ impl RuntimeHandle {
         })
     }
 
+    pub fn identity_worlds(
+        &self,
+        intent_id: Option<&IntentId>,
+        include_resolved: bool,
+    ) -> Result<Vec<else_protocol::world::IdentityWorld>> {
+        self.request(|reply| Command::IdentityWorlds {
+            intent_id: intent_id.cloned(),
+            include_resolved,
+            reply,
+        })
+    }
+
     pub fn resolve_signals(&self, intent_id: &IntentId) -> Result<Vec<IntentCandidate>> {
         self.request(|reply| Command::ResolveSignals {
             intent_id: intent_id.clone(),
@@ -1167,6 +1184,13 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.project_worlds(intent_id.as_ref(), include_resolved));
+        }
+        Command::IdentityWorlds {
+            intent_id,
+            include_resolved,
+            reply,
+        } => {
+            let _ = reply.send(runtime.identity_worlds(intent_id.as_ref(), include_resolved));
         }
         Command::ResolveSignals { intent_id, reply } => {
             let _ = reply.send(runtime.resolve_signals(&intent_id));

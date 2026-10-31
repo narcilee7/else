@@ -44,6 +44,11 @@ enum RuntimeConnection: Equatable {
 @MainActor
 final class AppStore: ObservableObject {
     @Published private(set) var snapshots: [IntentSnapshot] = []
+    @Published private(set) var brief: PersonalBrief?
+    @Published private(set) var actionsByIntent: [IntentID: [ConnectorAction]] = [:]
+    @Published private(set) var attentionWindows: [AttentionWindowRecord] = []
+    @Published private(set) var resolvingWorldItemIDs: Set<WorldItemID> = []
+    @Published private(set) var mutatingActionIDs: Set<ConnectorActionID> = []
     @Published private(set) var connection: RuntimeConnection = .idle
     @Published var section: AppSection = .today
     @Published var selectedIntentID: IntentID?
@@ -82,6 +87,10 @@ final class AppStore: ObservableObject {
         decisions.count
     }
 
+    var briefOutstandingCount: Int {
+        brief?.outstandingCount ?? 0
+    }
+
     var selectedSnapshot: IntentSnapshot? {
         guard let selectedIntentID else {
             return snapshots.first ?? nil
@@ -109,9 +118,28 @@ final class AppStore: ObservableObject {
             if selectedIntentID == nil {
                 selectedIntentID = snapshots.first?.id
             }
+            var actions: [IntentID: [ConnectorAction]] = [:]
+            for snapshot in snapshots {
+                if let intentActions = try? await client.connectorActions(
+                    intentID: snapshot.id
+                ), !intentActions.isEmpty {
+                    actions[snapshot.id] = intentActions
+                }
+            }
+            actionsByIntent = actions
         } catch {
             connection = .failed(error.localizedDescription)
             operationError = error.localizedDescription
+        }
+        do {
+            brief = try await client.personalBrief()
+        } catch {
+            if connection == .connected {
+                operationError = error.localizedDescription
+            }
+        }
+        if let windows = try? await client.attentionWindows() {
+            attentionWindows = windows
         }
     }
 
@@ -157,6 +185,60 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func resolveWorldItem(
+        _ record: WorldItemRecord,
+        kind: WorldItemResolutionKind
+    ) async {
+        resolvingWorldItemIDs.insert(record.item.id)
+        defer { resolvingWorldItemIDs.remove(record.item.id) }
+        do {
+            _ = try await client.resolveWorldItem(
+                intentID: record.intentID,
+                itemID: record.item.id,
+                kind: kind
+            )
+            brief = brief?.removing(itemID: record.item.id, generatedAt: Date())
+        } catch {
+            operationError = error.localizedDescription
+        }
+    }
+
+    func executeConnectorAction(
+        intentID: IntentID,
+        action: ConnectorAction
+    ) async {
+        await mutateAction(intentID: intentID, actionID: action.id) {
+            try await self.client.executeConnectorAction(
+                intentID: intentID,
+                actionID: action.id
+            )
+        }
+    }
+
+    func verifyConnectorAction(
+        intentID: IntentID,
+        action: ConnectorAction
+    ) async {
+        await mutateAction(intentID: intentID, actionID: action.id) {
+            try await self.client.verifyConnectorAction(
+                intentID: intentID,
+                actionID: action.id
+            )
+        }
+    }
+
+    func compensateConnectorAction(
+        intentID: IntentID,
+        action: ConnectorAction
+    ) async {
+        await mutateAction(intentID: intentID, actionID: action.id) {
+            try await self.client.compensateConnectorAction(
+                intentID: intentID,
+                actionID: action.id
+            )
+        }
+    }
+
     func clearError() {
         operationError = nil
     }
@@ -182,5 +264,55 @@ final class AppStore: ObservableObject {
         } else {
             snapshots.insert(snapshot, at: 0)
         }
+    }
+
+    private func mutateAction(
+        intentID: IntentID,
+        actionID: ConnectorActionID,
+        operation: @escaping () async throws -> ConnectorAction
+    ) async {
+        mutatingActionIDs.insert(actionID)
+        defer { mutatingActionIDs.remove(actionID) }
+
+        do {
+            let action = try await operation()
+            upsertAction(action, intentID: intentID)
+            connection = .connected
+        } catch {
+            operationError = error.localizedDescription
+            if let runtimeError = error as? RuntimeClientError,
+                case .http(status: 409, message: _) = runtimeError
+            {
+                await refresh()
+            } else {
+                if let actions = try? await client.connectorActions(intentID: intentID) {
+                    actionsByIntent[intentID] = actions
+                }
+            }
+        }
+    }
+
+    private func upsertAction(_ action: ConnectorAction, intentID: IntentID) {
+        var actions = actionsByIntent[intentID] ?? []
+        if let index = actions.firstIndex(where: { $0.id == action.id }) {
+            actions[index] = action
+        } else {
+            actions.insert(action, at: 0)
+        }
+        actionsByIntent[intentID] = actions
+    }
+}
+
+private extension PersonalBrief {
+    func removing(itemID: WorldItemID, generatedAt: Date) -> PersonalBrief {
+        PersonalBrief(
+            generatedAt: generatedAt,
+            openCommitments: openCommitments.filter { $0.item.id != itemID },
+            waitingExternal: waitingExternal.filter { $0.item.id != itemID },
+            overdue: overdue.filter { $0.item.id != itemID },
+            actionItemsDueSoon: actionItemsDueSoon.filter { $0.item.id != itemID },
+            risks: risks.filter { $0.item.id != itemID },
+            upcomingCalendar: upcomingCalendar.filter { $0.item.id != itemID }
+        )
     }
 }

@@ -7,8 +7,8 @@ use else_ledger::IntentProjection;
 use else_protocol::connector::{CorrelationKind, ObjectKind, SignalMeaning, SignalStatus};
 use else_protocol::ids::{ConnectorId, IntentId, WorldItemId};
 use else_protocol::world::{
-    PersonalBrief, ProjectWorld, WorldItem, WorldItemKind, WorldItemRecord, WorldItemResolution,
-    WorldItemResolutionKind, WorldItemState,
+    IdentityWorld, PersonalBrief, ProjectWorld, WorldItem, WorldItemKind, WorldItemRecord,
+    WorldItemResolution, WorldItemResolutionKind, WorldItemState,
 };
 
 use crate::{ApiError, Result, Runtime};
@@ -152,6 +152,73 @@ impl Runtime {
                 .then_with(|| left.title.cmp(&right.title))
         });
         Ok(projects)
+    }
+
+    pub fn identity_worlds(
+        &self,
+        intent_id: Option<&IntentId>,
+        include_resolved: bool,
+    ) -> Result<Vec<IdentityWorld>> {
+        let records = self.world_records(intent_id, include_resolved, Utc::now())?;
+        let mut identities = BTreeMap::<(CorrelationKind, String), IdentityWorld>::new();
+        for record in records {
+            for identity in record
+                .item
+                .identities
+                .iter()
+                .filter(|identity| identity.kind != CorrelationKind::Project)
+            {
+                let key = (identity.kind, identity.key.clone());
+                let entry = identities
+                    .entry(key.clone())
+                    .or_insert_with(|| IdentityWorld {
+                        kind: identity.kind,
+                        key: key.1,
+                        title: identity.label.clone(),
+                        items: vec![],
+                        intent_ids: vec![],
+                        connector_ids: vec![],
+                        open_items: 0,
+                        overdue: 0,
+                        next_deadline: None,
+                    });
+                entry.items.push(record.clone());
+                entry.intent_ids.push(record.intent_id.clone());
+                entry
+                    .connector_ids
+                    .extend(record.item.connector_ids.iter().cloned());
+                if !record.item.state.is_resolved() {
+                    entry.open_items += 1;
+                }
+                if record.item.state == WorldItemState::Overdue {
+                    entry.overdue += 1;
+                }
+                if !record.item.state.is_resolved()
+                    && record.item.deadline.is_some_and(|deadline| {
+                        entry.next_deadline.is_none_or(|current| deadline < current)
+                    })
+                {
+                    entry.next_deadline = record.item.deadline;
+                }
+            }
+        }
+        let mut identities = identities.into_values().collect::<Vec<_>>();
+        for identity in &mut identities {
+            identity.intent_ids.sort();
+            identity.intent_ids.dedup();
+            identity.connector_ids.sort();
+            identity.connector_ids.dedup();
+            sort_records(&mut identity.items);
+        }
+        identities.sort_by(|left, right| {
+            right
+                .overdue
+                .cmp(&left.overdue)
+                .then_with(|| right.open_items.cmp(&left.open_items))
+                .then_with(|| left.next_deadline.cmp(&right.next_deadline))
+                .then_with(|| left.title.cmp(&right.title))
+        });
+        Ok(identities)
     }
 
     pub fn resolve_world_item(
@@ -348,6 +415,25 @@ fn build_world_items(
             })
             .into_values()
             .collect();
+        let identities = versions
+            .iter()
+            .flat_map(|signal| signal.correlations.iter())
+            .filter(|hint| hint.kind != CorrelationKind::Project)
+            .fold(BTreeMap::new(), |mut identities, hint| {
+                identities
+                    .entry((hint.kind, hint.key.clone()))
+                    .or_insert(hint.clone());
+                identities
+            })
+            .into_values()
+            .collect();
+        let (priority, priority_reason) = world_priority(
+            summary.meaning,
+            state,
+            summary.deadline,
+            summary.confidence,
+            now,
+        );
         items.push(WorldItem {
             id: item_id,
             entity_ref: latest.entity_ref.clone(),
@@ -362,9 +448,12 @@ fn build_world_items(
                 .unwrap_or_else(|| display.summary.clone()),
             summary: display.summary.clone(),
             deadline: summary.deadline,
+            priority,
+            priority_reason,
             signal_ids,
             connector_ids: vec![connector_id],
             projects,
+            identities,
             first_observed_at,
             last_observed_at,
         });
@@ -373,6 +462,7 @@ fn build_world_items(
         left.state
             .is_resolved()
             .cmp(&right.state.is_resolved())
+            .then_with(|| right.priority.cmp(&left.priority))
             .then_with(|| left.deadline.cmp(&right.deadline))
             .then_with(|| left.id.cmp(&right.id))
     });
@@ -412,6 +502,50 @@ fn world_kind(meaning: SignalMeaning) -> WorldItemKind {
     }
 }
 
+fn world_priority(
+    meaning: SignalMeaning,
+    state: WorldItemState,
+    deadline: Option<DateTime<Utc>>,
+    confidence: u8,
+    now: DateTime<Utc>,
+) -> (u8, String) {
+    let (mut priority, mut reason): (u8, String) = match state {
+        WorldItemState::Overdue => (94, "已逾期，需要立即收敛".to_string()),
+        WorldItemState::AtRisk => (86, "外部事实被标记为风险".to_string()),
+        WorldItemState::WaitingExternal => (64, "事项被外部对象阻塞".to_string()),
+        WorldItemState::Open => match meaning {
+            SignalMeaning::Commitment => (76, "存在尚未完成的对外承诺".to_string()),
+            SignalMeaning::ActionItem => (58, "存在待推进的行动项".to_string()),
+            SignalMeaning::Risk => (86, "外部事实被标记为风险".to_string()),
+            SignalMeaning::WaitingExternal => (64, "事项被外部对象阻塞".to_string()),
+            SignalMeaning::Context => (20, "仅作为背景上下文".to_string()),
+        },
+        WorldItemState::Completed | WorldItemState::Dismissed | WorldItemState::Superseded => {
+            (10, "事项已经收敛".to_string())
+        }
+    };
+    if !state.is_resolved() {
+        if let Some(deadline) = deadline {
+            let remaining = deadline.signed_duration_since(now);
+            if remaining <= Duration::hours(6) {
+                priority = priority.saturating_add(14).min(99);
+                reason.push_str("；6 小时内到期");
+            } else if remaining <= Duration::hours(24) {
+                priority = priority.saturating_add(9).min(99);
+                reason.push_str("；24 小时内到期");
+            } else if remaining <= Duration::hours(72) {
+                priority = priority.saturating_add(5).min(99);
+                reason.push_str("；72 小时内到期");
+            }
+        }
+    }
+    if confidence < 60 && !state.is_resolved() {
+        priority = priority.saturating_sub(6);
+        reason.push_str("；解释置信度偏低");
+    }
+    (priority, reason)
+}
+
 fn meaning_key(meaning: SignalMeaning) -> &'static str {
     match meaning {
         SignalMeaning::ActionItem => "action-item",
@@ -424,9 +558,11 @@ fn meaning_key(meaning: SignalMeaning) -> &'static str {
 
 fn sort_records(records: &mut [WorldItemRecord]) {
     records.sort_by(|left, right| {
-        left.item
-            .deadline
-            .cmp(&right.item.deadline)
+        right
+            .item
+            .priority
+            .cmp(&left.item.priority)
+            .then_with(|| left.item.deadline.cmp(&right.item.deadline))
             .then_with(|| left.item.id.cmp(&right.item.id))
             .then_with(|| left.intent_id.cmp(&right.intent_id))
     });

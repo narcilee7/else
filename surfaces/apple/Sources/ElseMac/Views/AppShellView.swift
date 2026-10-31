@@ -9,8 +9,14 @@ struct AppShellView: View {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 190, ideal: 218, max: 250)
         } content: {
-            IntentListView()
-                .navigationSplitViewColumnWidth(min: 330, ideal: 390, max: 480)
+            Group {
+                if store.section == .today {
+                    DailyBriefView()
+                } else {
+                    IntentListView()
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 330, ideal: 390, max: 480)
         } detail: {
             IntentDetailView(snapshot: store.selectedSnapshot)
         }

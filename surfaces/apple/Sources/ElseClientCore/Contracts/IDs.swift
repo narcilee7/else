@@ -34,8 +34,22 @@ public enum IntentTag: Sendable {}
 public enum AttentionTag: Sendable {}
 public enum ArtifactTag: Sendable {}
 public enum RunTag: Sendable {}
+public enum WorldItemTag: Sendable {}
+public enum WorldSignalTag: Sendable {}
+public enum ConnectorTag: Sendable {}
+public enum ConnectorActionTag: Sendable {}
+public enum ToolCallTag: Sendable {}
+public enum AttentionWindowTag: Sendable {}
+public enum TimerTag: Sendable {}
 
 public typealias IntentID = ID<IntentTag>
 public typealias AttentionID = ID<AttentionTag>
 public typealias ArtifactID = ID<ArtifactTag>
 public typealias RunID = ID<RunTag>
+public typealias WorldItemID = ID<WorldItemTag>
+public typealias WorldSignalID = ID<WorldSignalTag>
+public typealias ConnectorID = ID<ConnectorTag>
+public typealias ConnectorActionID = ID<ConnectorActionTag>
+public typealias ToolCallID = ID<ToolCallTag>
+public typealias AttentionWindowID = ID<AttentionWindowTag>
+public typealias TimerID = ID<TimerTag>

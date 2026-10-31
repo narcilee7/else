@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::connector::{CorrelationHint, ExternalEntityRef, ObjectKind};
+use crate::connector::{CorrelationHint, CorrelationKind, ExternalEntityRef, ObjectKind};
 use crate::ids::{ConnectorId, IntentId, WorldItemId, WorldSignalId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,10 +43,19 @@ pub struct WorldItem {
     pub title: String,
     pub summary: String,
     pub deadline: Option<DateTime<Utc>>,
+    /// 0-100，由状态、语义、期限和解释置信度确定性计算。
+    #[serde(default)]
+    pub priority: u8,
+    /// 面向用户的可读排序依据，不伪装成模型主观判断。
+    #[serde(default)]
+    pub priority_reason: String,
     pub signal_ids: Vec<WorldSignalId>,
     pub connector_ids: Vec<ConnectorId>,
     #[serde(default)]
     pub projects: Vec<CorrelationHint>,
+    /// 联系人、客户、线程与 Milestone 等非 Project 身份关联。
+    #[serde(default)]
+    pub identities: Vec<CorrelationHint>,
     pub first_observed_at: DateTime<Utc>,
     pub last_observed_at: DateTime<Utc>,
 }
@@ -66,6 +75,19 @@ pub struct ProjectWorld {
     pub connector_ids: Vec<ConnectorId>,
     pub open_items: u64,
     pub waiting_external: u64,
+    pub overdue: u64,
+    pub next_deadline: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IdentityWorld {
+    pub kind: CorrelationKind,
+    pub key: String,
+    pub title: String,
+    pub items: Vec<WorldItemRecord>,
+    pub intent_ids: Vec<IntentId>,
+    pub connector_ids: Vec<ConnectorId>,
+    pub open_items: u64,
     pub overdue: u64,
     pub next_deadline: Option<DateTime<Utc>>,
 }

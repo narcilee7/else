@@ -376,6 +376,12 @@ enum Command {
         #[arg(long)]
         include_resolved: bool,
     },
+    /// 按 Contact / Customer / Thread / Milestone 查看跨 Provider 关系
+    Identities {
+        intent_id: Option<String>,
+        #[arg(long)]
+        include_resolved: bool,
+    },
     /// 跨 Intent 按事件水位读取 Signal
     SignalFeed {
         #[arg(long, default_value_t = 0)]
@@ -1379,6 +1385,34 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                     project.connector_ids.len()
                 );
                 for record in &project.items {
+                    println!(
+                        "  intent={} {:?} {:?} {}",
+                        record.intent_id, record.item.kind, record.item.state, record.item.title
+                    );
+                }
+            }
+        }
+        Command::Identities {
+            intent_id,
+            include_resolved,
+        } => {
+            let intent_id = intent_id.map(IntentId::from);
+            for identity in runtime.identity_worlds(intent_id.as_ref(), include_resolved)? {
+                println!(
+                    "{:?} {} {} open={} overdue={} next_due={} intents={} connectors={}",
+                    identity.kind,
+                    identity.key,
+                    identity.title,
+                    identity.open_items,
+                    identity.overdue,
+                    identity
+                        .next_deadline
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_else(|| "none".into()),
+                    identity.intent_ids.len(),
+                    identity.connector_ids.len()
+                );
+                for record in &identity.items {
                     println!(
                         "  intent={} {:?} {:?} {}",
                         record.intent_id, record.item.kind, record.item.state, record.item.title
