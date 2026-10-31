@@ -20,36 +20,9 @@ impl Runtime {
         server_name: &str,
         command: &str,
     ) -> Result<Vec<CapabilityRegistration>> {
-        let requests = format!(
-            "{}\n{}\n{}\n",
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {},
-                    "clientInfo": {"name": "else", "version": "0.1.0"}
-                }
-            }),
-            serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
-        );
-        let sandbox =
-            else_environment::Sandbox::new(else_environment::SandboxProfile::new(&self.workspace))
-                .map_err(|error| ApiError::NotFound(error.to_string()))?;
-        let output = sandbox
-            .run_shell_with_input(command, &requests)
-            .map_err(|error| ApiError::NotFound(error.to_string()))?;
-        let result = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .find(|value| value["id"] == 2)
-            .ok_or_else(|| ApiError::NotFound("MCP tools/list response".into()))?;
-        let tools = result["result"]["tools"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let result = else_gateway::mcp_session::list_tools(&self.workspace, command)
+            .map_err(ApiError::NotFound)?;
+        let tools = result["tools"].as_array().cloned().unwrap_or_default();
         let mut registrations = Vec::new();
         for tool in tools {
             let Some(tool_name) = tool["name"].as_str() else {

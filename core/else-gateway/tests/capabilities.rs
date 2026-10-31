@@ -70,6 +70,7 @@ fn skill_and_mcp_tools_share_gateway_execution() {
         dir.path().join("mcp.sh"),
         r#"while IFS= read -r line; do
 case "$line" in
+  *'"id":1'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}' ;;
   *'"id":2'*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"mcp-ok"}]}}' ;;
 esac
 done

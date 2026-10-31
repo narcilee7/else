@@ -112,32 +112,16 @@ impl Runtime {
                 })?;
                 let session = binding_session.clone();
                 (
-                    Box::new(move |_workspace, _private, prompt| {
-                        let requests = format!(
-                            "{}\n{}\n{}\n",
-                            serde_json::json!({
-                                "jsonrpc":"2.0","id":1,"method":"initialize",
-                                "params":{
-                                    "protocolVersion":"2025-03-26",
-                                    "capabilities":{},
-                                    "clientInfo":{"name":"else-binding","version":"0.1.0"}
-                                }
-                            }),
-                            serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-                            serde_json::json!({
-                                "jsonrpc":"2.0","id":2,"method":"tools/call",
-                                "params":{
-                                    "name":tool_name,
-                                    "arguments":{"task":prompt,"session":session}
-                                }
-                            }),
-                        );
+                    Box::new(move |workspace, _private, prompt| {
+                        else_gateway::mcp_session::call_tool(
+                            workspace,
+                            &command,
+                            &tool_name,
+                            serde_json::json!({"task":prompt,"session":session}),
+                        )
+                        .map_err(std::io::Error::other)?;
                         Ok(HarnessPrep {
-                            command: format!(
-                                "printf '%s' {} | {} && printf '%s\\n' '{{\"type\":\"completed\",\"summary\":\"mcp binding done\"}}'",
-                                shell_quote(&requests),
-                                command
-                            ),
+                            command: "printf '%s\\n' '{\"type\":\"completed\",\"summary\":\"mcp binding done\"}'".into(),
                             env: vec![],
                             read_paths: vec![],
                             write_paths: vec![],

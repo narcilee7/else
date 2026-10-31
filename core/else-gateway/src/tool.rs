@@ -323,47 +323,14 @@ impl<'a> ToolGateway<'a> {
         binding: &else_protocol::capability::McpToolBinding,
         input: &Value,
     ) -> std::result::Result<(Value, EffectConclusion), Value> {
-        let requests = format!(
-            "{}\n{}\n{}\n",
-            json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {},
-                    "clientInfo": {"name": "else", "version": "0.1.0"}
-                }
-            }),
-            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-            json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {"name": binding.tool_name, "arguments": input}
-            })
-        );
-        let sandbox =
-            else_environment::Sandbox::new(else_environment::SandboxProfile::new(&self.workspace))
-                .map_err(|error| json!({"error": error.to_string()}))?;
-        let output = sandbox
-            .run_shell_with_input(&binding.command, &requests)
-            .map_err(|error| json!({"error": error.to_string()}))?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let response = stdout.lines().find_map(|line| {
-            let value: Value = serde_json::from_str(line).ok()?;
-            (value["id"] == 2).then_some(value)
-        });
-        match response {
-            Some(value) if value.get("error").is_none() => {
-                Ok((value["result"].clone(), EffectConclusion::Applied))
-            }
-            Some(value) => Err(json!({"error": value["error"].clone()})),
-            None => Err(json!({
-                "error": "MCP server produced no tools/call response",
-                "stderr": String::from_utf8_lossy(&output.stderr),
-            })),
-        }
+        crate::mcp_session::call_tool(
+            &self.workspace,
+            &binding.command,
+            &binding.tool_name,
+            input.clone(),
+        )
+        .map(|result| (result, EffectConclusion::Applied))
+        .map_err(|error| json!({"error": error}))
     }
 
     fn fs_read(&self, input: &Value) -> std::result::Result<(Value, EffectConclusion), Value> {

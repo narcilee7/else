@@ -235,6 +235,20 @@ impl Sandbox {
         Ok(command.spawn()?)
     }
 
+    /// 长驻 JSON-RPC 子进程：stdin/stdout 管道用于协议，stderr 由调用方排空。
+    pub fn spawn_shell_interactive(
+        &self,
+        shell_command: &str,
+        env: &[(String, String)],
+    ) -> Result<std::process::Child> {
+        let mut command = self.base_command(shell_command, env)?;
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        Ok(command.spawn()?)
+    }
+
     fn base_command(&self, shell_command: &str, env: &[(String, String)]) -> Result<Command> {
         let mut command = match self.backend {
             Backend::Seatbelt => seatbelt::command(

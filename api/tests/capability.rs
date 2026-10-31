@@ -128,6 +128,7 @@ fn mcp_discovery_registers_tools_with_manifest_effects() {
         dir.path().join("workspace/mcp.sh"),
         r#"while IFS= read -r line; do
 case "$line" in
+  *'"id":1'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}' ;;
   *'"id":2'*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"search","description":"search docs","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}},{"name":"send","description":"send message","inputSchema":{"type":"object"},"annotations":{"destructiveHint":true}}]}}' ;;
 esac
 done
@@ -169,6 +170,7 @@ fn mcp_stdio_binding_dispatches_task_through_selected_tool() {
         dir.path().join("workspace/mcp-agent.sh"),
         r#"while IFS= read -r line; do
 case "$line" in
+  *'"id":1'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}' ;;
   *'"id":2'*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":"agent accepted task"}}' ;;
 esac
 done

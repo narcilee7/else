@@ -83,7 +83,7 @@ else compare <intent-id> <scope-a> <scope-b>
 - **Observed-effect ceilings are enforced after observation.** Exceeding the profile kills the Harness immediately, but cannot undo a side effect that already occurred.
 - **Tool Gateway routing depends on the Harness following the task contract.** Native write attempts are denied by the read-only parent sandbox, but the Runtime does not yet synthesize native provider tool-call messages into a full interactive protocol.
 - **Loopback HTTP is the shared surface boundary.** `/v1/health` is public on loopback; every Runtime endpoint requires the token from `daemon-token` or `ELSE_RUNTIME_TOKEN`.
-- **RemoteHttp uses HTTPS + NDJSON, and MCP servers are restarted per call.** MCP session reuse, dynamic `list_changed`, and a general bidirectional webhook transport remain follow-up work.
+- **RemoteHttp uses HTTPS + NDJSON.** MCP servers are now reused per workspace/command session; dynamic `list_changed` and a general bidirectional webhook transport remain follow-up work.
 - **Nested sandboxes are disabled inside harnesses** (e.g. `sandbox_mode="danger-full-access"` for codex) because Seatbelt cannot nest; else's own sandbox profile is the isolation boundary.
 - **Abort Succeeded means execution converged safely, not that the world was rolled back.** Irreversible effects stay irreversible and are recorded as such.
 - **Misinterrupt rate is a lower bound.** It only counts Interrupt requests a user explicitly dismisses; system cancellations and rejected options are not assumed to be false alarms.

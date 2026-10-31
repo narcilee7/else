@@ -6,6 +6,7 @@
 //!
 //! 当前：文件/shell 工具、genai Provider、Generation Fencing、Lease 与配额熔断。
 
+pub mod mcp_session;
 pub mod model;
 pub mod resource;
 pub mod tool;
