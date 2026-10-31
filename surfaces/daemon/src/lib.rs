@@ -668,6 +668,19 @@ fn route(
             return Ok((200, json_string(&item)?));
         }
         if segments.len() == 5
+            && segments[3] == "world"
+            && segments[4] == "corrections"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let correction: else_protocol::world::WorldCorrelationCorrection =
+                serde_json::from_str(body).map_err(json_error)?;
+            let correction = state
+                .handle
+                .correct_world_correlation(&intent_id, correction)?;
+            return Ok((200, json_string(&correction)?));
+        }
+        if segments.len() == 5
             && segments[3] == "signals"
             && segments[4] == "resolve"
             && request.method() == &Method::Post

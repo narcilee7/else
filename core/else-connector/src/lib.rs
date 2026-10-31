@@ -418,6 +418,179 @@ impl ConnectorAdapter for LinearAdapter {
             .ok_or_else(|| ConnectorError::Linear("webhook hydration requires issue id".into()))?;
         hydrate_linear_issue(source, credential, &issue_id, payload)
     }
+
+    fn execute_action(
+        &self,
+        connector_id: &ConnectorId,
+        source: &str,
+        capability: &str,
+        credential: Option<&ConnectorCredential>,
+        input: &Value,
+    ) -> Result<ToolOutcome> {
+        let target = input["target"]
+            .as_str()
+            .filter(|target| !target.is_empty())
+            .ok_or_else(|| ConnectorError::Linear("issue target is required".into()))?;
+        match capability {
+            "linear.issue.update" => {
+                let changes = linear_writable_issue_fields(&input["changes"]);
+                if changes.as_object().is_none_or(|changes| changes.is_empty()) {
+                    return Err(ConnectorError::Linear(
+                        "linear.issue.update requires non-empty changes".into(),
+                    ));
+                }
+                let before = linear_fetch_issue(source, credential, target)?;
+                let after = linear_update_issue(source, credential, target, changes.clone())?;
+                Ok(ToolOutcome {
+                    status: ToolStatus::Succeeded,
+                    output: json!({
+                        "connector_id": connector_id,
+                        "issue_id": target,
+                        "before": linear_writable_issue_fields(&before),
+                        "after": linear_writable_issue_fields(&after),
+                    }),
+                    effect: EffectConclusion::Applied,
+                })
+            }
+            "linear.issue.comment" => {
+                let body = input["body"]
+                    .as_str()
+                    .filter(|body| !body.trim().is_empty())
+                    .ok_or_else(|| ConnectorError::Linear("comment body is required".into()))?;
+                let comment = linear_create_comment(source, credential, target, body)?;
+                Ok(ToolOutcome {
+                    status: ToolStatus::Succeeded,
+                    output: json!({
+                        "connector_id": connector_id,
+                        "issue_id": target,
+                        "comment": comment,
+                    }),
+                    effect: EffectConclusion::Applied,
+                })
+            }
+            _ => Err(ConnectorError::ActionUnsupported {
+                adapter: self.id().into(),
+                capability: capability.into(),
+            }),
+        }
+    }
+
+    fn verify_action(
+        &self,
+        source: &str,
+        action: &ConnectorAction,
+        credential: Option<&ConnectorCredential>,
+    ) -> Result<ToolOutcome> {
+        match action.capability.as_str() {
+            "linear.issue.update" => {
+                let issue = linear_fetch_issue(source, credential, &action.target)?;
+                let expected = linear_writable_issue_fields(&action.input["changes"]);
+                let matches = expected.as_object().is_none_or(|fields| {
+                    fields
+                        .iter()
+                        .all(|(key, value)| issue.get(key) == Some(value))
+                });
+                Ok(ToolOutcome {
+                    status: if matches {
+                        ToolStatus::Succeeded
+                    } else {
+                        ToolStatus::Failed
+                    },
+                    output: json!({
+                        "issue": linear_writable_issue_fields(&issue),
+                        "matches_expected": matches,
+                    }),
+                    effect: if matches {
+                        EffectConclusion::Applied
+                    } else {
+                        EffectConclusion::NoEffect
+                    },
+                })
+            }
+            "linear.issue.comment" => {
+                let comment_id = action
+                    .outcome
+                    .as_ref()
+                    .and_then(|outcome| outcome.output.pointer("/comment/id"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        ConnectorError::Linear("comment id is missing from action outcome".into())
+                    })?;
+                let comment = linear_fetch_comment(source, credential, comment_id)?;
+                let matches = comment
+                    .get("issue")
+                    .and_then(|issue| issue.get("id"))
+                    .and_then(Value::as_str)
+                    == Some(action.target.as_str());
+                Ok(ToolOutcome {
+                    status: if matches {
+                        ToolStatus::Succeeded
+                    } else {
+                        ToolStatus::Failed
+                    },
+                    output: json!({"comment": comment, "matches_issue": matches}),
+                    effect: if matches {
+                        EffectConclusion::Applied
+                    } else {
+                        EffectConclusion::NoEffect
+                    },
+                })
+            }
+            _ => Err(ConnectorError::ActionUnsupported {
+                adapter: self.id().into(),
+                capability: format!("{}#verify", action.capability),
+            }),
+        }
+    }
+
+    fn compensate_action(
+        &self,
+        source: &str,
+        action: &ConnectorAction,
+        credential: Option<&ConnectorCredential>,
+    ) -> Result<ToolOutcome> {
+        match action.capability.as_str() {
+            "linear.issue.update" => {
+                let before = action
+                    .outcome
+                    .as_ref()
+                    .and_then(|outcome| outcome.output.get("before"))
+                    .map(linear_writable_issue_fields)
+                    .filter(|before| before.as_object().is_some_and(|before| !before.is_empty()))
+                    .ok_or_else(|| {
+                        ConnectorError::Linear(
+                            "issue compensation requires the pre-action snapshot".into(),
+                        )
+                    })?;
+                let restored = linear_update_issue(source, credential, &action.target, before)?;
+                Ok(ToolOutcome {
+                    status: ToolStatus::Succeeded,
+                    output: json!({"issue": linear_writable_issue_fields(&restored)}),
+                    effect: EffectConclusion::Compensated,
+                })
+            }
+            "linear.issue.comment" => {
+                let comment_id = action
+                    .outcome
+                    .as_ref()
+                    .and_then(|outcome| outcome.output.pointer("/comment/id"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        ConnectorError::Linear("comment id is missing from action outcome".into())
+                    })?;
+                linear_delete_comment(source, credential, comment_id)?;
+                Ok(ToolOutcome {
+                    status: ToolStatus::Succeeded,
+                    output: json!({"comment_id": comment_id, "deleted": true}),
+                    effect: EffectConclusion::Compensated,
+                })
+            }
+            _ => Err(ConnectorError::ActionUnsupported {
+                adapter: self.id().into(),
+                capability: format!("{}#compensate", action.capability),
+            }),
+        }
+    }
 }
 
 pub struct NotionAdapter;
@@ -459,6 +632,140 @@ impl ConnectorAdapter for NotionAdapter {
         credential: Option<&ConnectorCredential>,
     ) -> Result<ConnectorPullPage> {
         pull_notion_with_cursor(connector_id, source, cursor, credential)
+    }
+
+    fn execute_action(
+        &self,
+        connector_id: &ConnectorId,
+        source: &str,
+        capability: &str,
+        credential: Option<&ConnectorCredential>,
+        input: &Value,
+    ) -> Result<ToolOutcome> {
+        let (object_type, writable) = match capability {
+            "notion.page.update" => ("pages", notion_writable_page_fields(&input["changes"])),
+            "notion.database.update" => (
+                "databases",
+                notion_writable_database_fields(&input["changes"]),
+            ),
+            _ => {
+                return Err(ConnectorError::ActionUnsupported {
+                    adapter: self.id().into(),
+                    capability: capability.into(),
+                })
+            }
+        };
+        if writable
+            .as_object()
+            .is_none_or(|changes| changes.is_empty())
+        {
+            return Err(ConnectorError::Notion(format!(
+                "{capability} requires non-empty changes"
+            )));
+        }
+        let target = input["target"]
+            .as_str()
+            .filter(|target| !target.is_empty())
+            .ok_or_else(|| ConnectorError::Notion("object target is required".into()))?;
+        let url = notion_object_url(source, object_type, target)?;
+        let before = notion_object_json("GET", &url, credential, None)?;
+        let after = notion_object_json("PATCH", &url, credential, Some(writable.clone()))?;
+        Ok(ToolOutcome {
+            status: ToolStatus::Succeeded,
+            output: json!({
+                "connector_id": connector_id,
+                "object_id": target,
+                "before": notion_writable_fields(&before, &writable),
+                "after": notion_writable_fields(&after, &writable),
+            }),
+            effect: EffectConclusion::Applied,
+        })
+    }
+
+    fn verify_action(
+        &self,
+        source: &str,
+        action: &ConnectorAction,
+        credential: Option<&ConnectorCredential>,
+    ) -> Result<ToolOutcome> {
+        let (object_type, expected) = match action.capability.as_str() {
+            "notion.page.update" => (
+                "pages",
+                notion_writable_page_fields(&action.input["changes"]),
+            ),
+            "notion.database.update" => (
+                "databases",
+                notion_writable_database_fields(&action.input["changes"]),
+            ),
+            _ => {
+                return Err(ConnectorError::ActionUnsupported {
+                    adapter: self.id().into(),
+                    capability: format!("{}#verify", action.capability),
+                })
+            }
+        };
+        let url = notion_object_url(source, object_type, &action.target)?;
+        let current = notion_object_json("GET", &url, credential, None)?;
+        let matches = expected.as_object().is_none_or(|fields| {
+            fields
+                .iter()
+                .all(|(key, value)| current.get(key) == Some(value))
+        });
+        Ok(ToolOutcome {
+            status: if matches {
+                ToolStatus::Succeeded
+            } else {
+                ToolStatus::Failed
+            },
+            output: json!({
+                "object": notion_writable_fields(&current, &expected),
+                "matches_expected": matches,
+            }),
+            effect: if matches {
+                EffectConclusion::Applied
+            } else {
+                EffectConclusion::NoEffect
+            },
+        })
+    }
+
+    fn compensate_action(
+        &self,
+        source: &str,
+        action: &ConnectorAction,
+        credential: Option<&ConnectorCredential>,
+    ) -> Result<ToolOutcome> {
+        let object_type = match action.capability.as_str() {
+            "notion.page.update" => "pages",
+            "notion.database.update" => "databases",
+            _ => {
+                return Err(ConnectorError::ActionUnsupported {
+                    adapter: self.id().into(),
+                    capability: format!("{}#compensate", action.capability),
+                })
+            }
+        };
+        let before = action
+            .outcome
+            .as_ref()
+            .and_then(|outcome| outcome.output.get("before"))
+            .cloned()
+            .filter(|before| before.as_object().is_some_and(|before| !before.is_empty()))
+            .ok_or_else(|| {
+                ConnectorError::Notion(
+                    "Notion compensation requires the pre-action snapshot".into(),
+                )
+            })?;
+        let url = notion_object_url(source, object_type, &action.target)?;
+        let restored = notion_object_json("PATCH", &url, credential, Some(before.clone()))?;
+        Ok(ToolOutcome {
+            status: ToolStatus::Succeeded,
+            output: json!({
+                "object": notion_writable_fields(&restored, &before),
+                "restored": true,
+            }),
+            effect: EffectConclusion::Compensated,
+        })
     }
 }
 
@@ -924,6 +1231,104 @@ fn notion_api_request(
         .map_err(|error| ConnectorError::Http(error.to_string()))
 }
 
+fn notion_object_url(source: &str, object_type: &str, object_id: &str) -> Result<String> {
+    let scheme_end = source
+        .find("://")
+        .ok_or_else(|| ConnectorError::Notion("invalid Notion API source".into()))?
+        + 3;
+    let path_start = source[scheme_end..]
+        .find('/')
+        .map(|offset| scheme_end + offset)
+        .unwrap_or(source.len());
+    let origin = &source[..path_start];
+    if !(origin.starts_with("https://")
+        || origin.starts_with("http://127.0.0.1:")
+        || origin.starts_with("http://localhost:"))
+    {
+        return Err(ConnectorError::Notion(
+            "Notion writes require HTTPS or a loopback test endpoint".into(),
+        ));
+    }
+    Ok(format!(
+        "{origin}/v1/{object_type}/{}",
+        form_encode(object_id)
+    ))
+}
+
+fn notion_object_json(
+    method: &str,
+    url: &str,
+    credential: Option<&ConnectorCredential>,
+    body: Option<Value>,
+) -> Result<Value> {
+    let credential = credential
+        .ok_or_else(|| ConnectorError::Notion("Notion API requires an API token".into()))?;
+    let request = match method {
+        "GET" => ureq::get(url),
+        "PATCH" => ureq::patch(url),
+        _ => {
+            return Err(ConnectorError::Notion(format!(
+                "unsupported Notion method {method}"
+            )))
+        }
+    }
+    .set("Accept", "application/json")
+    .set("Notion-Version", "2022-06-28")
+    .set("Authorization", &authorization_header(credential));
+    let response = if let Some(body) = body {
+        request
+            .set("Content-Type", "application/json")
+            .send_string(&body.to_string())
+    } else {
+        request.call()
+    }
+    .map_err(map_notion_http_error)?;
+    let content = response
+        .into_string()
+        .map_err(|error| ConnectorError::Http(error.to_string()))?;
+    serde_json::from_str(&content).map_err(|error| ConnectorError::Notion(error.to_string()))
+}
+
+fn notion_writable_page_fields(page: &Value) -> Value {
+    notion_writable_fields(
+        page,
+        &json!({
+            "properties": null,
+            "archived": null,
+            "icon": null,
+            "cover": null,
+        }),
+    )
+}
+
+fn notion_writable_database_fields(database: &Value) -> Value {
+    notion_writable_fields(
+        database,
+        &json!({
+            "title": null,
+            "description": null,
+            "properties": null,
+            "archived": null,
+            "icon": null,
+            "cover": null,
+        }),
+    )
+}
+
+fn notion_writable_fields(source: &Value, expected: &Value) -> Value {
+    let mut writable = serde_json::Map::new();
+    for field in expected
+        .as_object()
+        .into_iter()
+        .flat_map(|fields| fields.keys())
+    {
+        if let Some(value) = source.get(field) {
+            writable.insert(field.clone(), value.clone());
+        }
+    }
+    Value::Object(writable)
+}
+
 fn notion_request_body(source: &str, start_cursor: Option<&str>) -> Value {
     let mut body = json!({
         "page_size": 100,
@@ -1024,6 +1429,147 @@ fn linear_graphql(
         return Err(ConnectorError::Linear(errors.to_string()));
     }
     Ok(payload)
+}
+
+fn linear_fetch_issue(
+    source: &str,
+    credential: Option<&ConnectorCredential>,
+    issue_id: &str,
+) -> Result<Value> {
+    let payload = linear_graphql(
+        source,
+        credential,
+        json!({
+            "query": "query Issue($id: String!) { issue(id: $id) { id title description dueDate priority assigneeId projectId stateId milestoneId } }",
+            "variables": {"id": issue_id},
+        }),
+    )?;
+    payload
+        .pointer("/data/issue")
+        .cloned()
+        .ok_or_else(|| ConnectorError::Linear(format!("issue {issue_id} was not returned")))
+}
+
+fn linear_update_issue(
+    source: &str,
+    credential: Option<&ConnectorCredential>,
+    issue_id: &str,
+    changes: Value,
+) -> Result<Value> {
+    let payload = linear_graphql(
+        source,
+        credential,
+        json!({
+            "query": "mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id title description dueDate priority assigneeId projectId stateId milestoneId } } }",
+            "variables": {"id": issue_id, "input": changes},
+        }),
+    )?;
+    if payload
+        .pointer("/data/issueUpdate/success")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(ConnectorError::Linear(format!(
+            "issue update failed: {payload}"
+        )));
+    }
+    payload
+        .pointer("/data/issueUpdate/issue")
+        .cloned()
+        .ok_or_else(|| ConnectorError::Linear("updated issue was not returned".into()))
+}
+
+fn linear_create_comment(
+    source: &str,
+    credential: Option<&ConnectorCredential>,
+    issue_id: &str,
+    body: &str,
+) -> Result<Value> {
+    let payload = linear_graphql(
+        source,
+        credential,
+        json!({
+            "query": "mutation CreateComment($input: CommentCreateInput!) { commentCreate(input: $input) { success comment { id body issue { id } } } }",
+            "variables": {"input": {"issueId": issue_id, "body": body}},
+        }),
+    )?;
+    if payload
+        .pointer("/data/commentCreate/success")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(ConnectorError::Linear(format!(
+            "comment creation failed: {payload}"
+        )));
+    }
+    payload
+        .pointer("/data/commentCreate/comment")
+        .cloned()
+        .ok_or_else(|| ConnectorError::Linear("created comment was not returned".into()))
+}
+
+fn linear_fetch_comment(
+    source: &str,
+    credential: Option<&ConnectorCredential>,
+    comment_id: &str,
+) -> Result<Value> {
+    let payload = linear_graphql(
+        source,
+        credential,
+        json!({
+            "query": "query Comment($id: String!) { comment(id: $id) { id body issue { id } } }",
+            "variables": {"id": comment_id},
+        }),
+    )?;
+    payload
+        .pointer("/data/comment")
+        .cloned()
+        .ok_or_else(|| ConnectorError::Linear(format!("comment {comment_id} was not returned")))
+}
+
+fn linear_delete_comment(
+    source: &str,
+    credential: Option<&ConnectorCredential>,
+    comment_id: &str,
+) -> Result<()> {
+    let payload = linear_graphql(
+        source,
+        credential,
+        json!({
+            "query": "mutation DeleteComment($id: String!) { commentDelete(id: $id) { success } }",
+            "variables": {"id": comment_id},
+        }),
+    )?;
+    if payload
+        .pointer("/data/commentDelete/success")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(ConnectorError::Linear(format!(
+            "comment deletion failed: {payload}"
+        )));
+    }
+    Ok(())
+}
+
+fn linear_writable_issue_fields(issue: &Value) -> Value {
+    const FIELDS: &[&str] = &[
+        "title",
+        "description",
+        "dueDate",
+        "priority",
+        "assigneeId",
+        "projectId",
+        "stateId",
+        "milestoneId",
+    ];
+    let mut writable = serde_json::Map::new();
+    for field in FIELDS {
+        if let Some(value) = issue.get(*field) {
+            writable.insert((*field).into(), value.clone());
+        }
+    }
+    Value::Object(writable)
 }
 
 pub fn normalize_notion_payload(

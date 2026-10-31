@@ -35,6 +35,20 @@ public enum WorldItemResolutionKind: String, Codable, Sendable {
     case dismissed
 }
 
+public enum CorrelationKind: String, Codable, CaseIterable, Hashable, Sendable {
+    case project
+    case contact
+    case customer
+    case thread
+    case milestone
+}
+
+public enum WorldCorrelationCorrectionKind: String, Codable, Hashable, Sendable {
+    case merge
+    case split
+    case rename
+}
+
 public struct ExternalEntityRef: Codable, Equatable, Sendable {
     public let provider: String
     public let tenant: String?
@@ -273,5 +287,143 @@ public struct ResolveWorldItemRequest: Codable, Equatable, Sendable {
         case itemID = "item_id"
         case kind
         case note
+    }
+}
+
+public struct ProjectWorld: Codable, Equatable, Identifiable, Sendable {
+    public let key: String
+    public let title: String
+    public let items: [WorldItemRecord]
+    public let intentIDs: [IntentID]
+    public let connectorIDs: [ConnectorID]
+    public let openItems: Int
+    public let waitingExternal: Int
+    public let overdue: Int
+    public let nextDeadline: Date?
+
+    public var id: String { key }
+
+    public init(
+        key: String,
+        title: String,
+        items: [WorldItemRecord],
+        intentIDs: [IntentID],
+        connectorIDs: [ConnectorID],
+        openItems: Int,
+        waitingExternal: Int,
+        overdue: Int,
+        nextDeadline: Date?
+    ) {
+        self.key = key
+        self.title = title
+        self.items = items
+        self.intentIDs = intentIDs
+        self.connectorIDs = connectorIDs
+        self.openItems = openItems
+        self.waitingExternal = waitingExternal
+        self.overdue = overdue
+        self.nextDeadline = nextDeadline
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case key
+        case title
+        case items
+        case intentIDs = "intent_ids"
+        case connectorIDs = "connector_ids"
+        case openItems = "open_items"
+        case waitingExternal = "waiting_external"
+        case overdue
+        case nextDeadline = "next_deadline"
+    }
+}
+
+public struct IdentityWorld: Codable, Equatable, Identifiable, Sendable {
+    public let kind: CorrelationKind
+    public let key: String
+    public let title: String
+    public let items: [WorldItemRecord]
+    public let intentIDs: [IntentID]
+    public let connectorIDs: [ConnectorID]
+    public let openItems: Int
+    public let overdue: Int
+    public let nextDeadline: Date?
+
+    public var id: String { "\(kind.rawValue):\(key)" }
+
+    public init(
+        kind: CorrelationKind,
+        key: String,
+        title: String,
+        items: [WorldItemRecord],
+        intentIDs: [IntentID],
+        connectorIDs: [ConnectorID],
+        openItems: Int,
+        overdue: Int,
+        nextDeadline: Date?
+    ) {
+        self.kind = kind
+        self.key = key
+        self.title = title
+        self.items = items
+        self.intentIDs = intentIDs
+        self.connectorIDs = connectorIDs
+        self.openItems = openItems
+        self.overdue = overdue
+        self.nextDeadline = nextDeadline
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case key
+        case title
+        case items
+        case intentIDs = "intent_ids"
+        case connectorIDs = "connector_ids"
+        case openItems = "open_items"
+        case overdue
+        case nextDeadline = "next_deadline"
+    }
+}
+
+public struct WorldCorrelationCorrection: Codable, Equatable, Sendable {
+    public let id: String
+    public let kind: WorldCorrelationCorrectionKind
+    public let correlationKind: CorrelationKind
+    public let sourceKeys: [String]
+    public let targetKey: String?
+    public let label: String?
+    public let itemID: WorldItemID?
+    public let correctedAt: Date
+
+    public init(
+        id: String = UUID().uuidString,
+        kind: WorldCorrelationCorrectionKind,
+        correlationKind: CorrelationKind,
+        sourceKeys: [String],
+        targetKey: String? = nil,
+        label: String? = nil,
+        itemID: WorldItemID? = nil,
+        correctedAt: Date = Date()
+    ) {
+        self.id = id
+        self.kind = kind
+        self.correlationKind = correlationKind
+        self.sourceKeys = sourceKeys
+        self.targetKey = targetKey
+        self.label = label
+        self.itemID = itemID
+        self.correctedAt = correctedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case correlationKind = "correlation_kind"
+        case sourceKeys = "source_keys"
+        case targetKey = "target_key"
+        case label
+        case itemID = "item_id"
+        case correctedAt = "corrected_at"
     }
 }

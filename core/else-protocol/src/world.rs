@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::connector::{CorrelationHint, CorrelationKind, ExternalEntityRef, ObjectKind};
-use crate::ids::{ConnectorId, IntentId, WorldItemId, WorldSignalId};
+use crate::ids::{ConnectorId, IntentId, WorldCorrelationCorrectionId, WorldItemId, WorldSignalId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -97,6 +97,28 @@ pub struct IdentityWorld {
 pub enum WorldItemResolutionKind {
     Completed,
     Dismissed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldCorrelationCorrectionKind {
+    Merge,
+    Split,
+    Rename,
+}
+
+/// 人工纠正只改变 World 聚合与展示，不改写 Provider 原始 Signal。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorldCorrelationCorrection {
+    pub id: WorldCorrelationCorrectionId,
+    pub kind: WorldCorrelationCorrectionKind,
+    pub correlation_kind: CorrelationKind,
+    #[serde(default)]
+    pub source_keys: Vec<String>,
+    pub target_key: Option<String>,
+    pub label: Option<String>,
+    pub item_id: Option<WorldItemId>,
+    pub corrected_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

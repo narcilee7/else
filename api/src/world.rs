@@ -7,8 +7,9 @@ use else_ledger::IntentProjection;
 use else_protocol::connector::{CorrelationKind, ObjectKind, SignalMeaning, SignalStatus};
 use else_protocol::ids::{ConnectorId, IntentId, WorldItemId};
 use else_protocol::world::{
-    IdentityWorld, PersonalBrief, ProjectWorld, WorldItem, WorldItemKind, WorldItemRecord,
-    WorldItemResolution, WorldItemResolutionKind, WorldItemState,
+    IdentityWorld, PersonalBrief, ProjectWorld, WorldCorrelationCorrection,
+    WorldCorrelationCorrectionKind, WorldItem, WorldItemKind, WorldItemRecord, WorldItemResolution,
+    WorldItemResolutionKind, WorldItemState,
 };
 
 use crate::{ApiError, Result, Runtime};
@@ -21,6 +22,13 @@ struct MeaningSummary {
     deadline: Option<DateTime<Utc>>,
 }
 
+#[derive(Default)]
+struct CorrelationCorrections {
+    merges: BTreeMap<(CorrelationKind, String), (String, Option<String>)>,
+    renames: BTreeMap<(CorrelationKind, String), String>,
+    splits: BTreeSet<(WorldItemId, CorrelationKind, String)>,
+}
+
 impl Runtime {
     pub fn world_items(
         &self,
@@ -31,7 +39,13 @@ impl Runtime {
         if projection.spec.is_none() {
             return Err(ApiError::IntentNotFound(intent_id.clone()));
         }
-        Ok(build_world_items(&projection, Utc::now(), include_resolved))
+        let corrections = self.world_corrections()?;
+        Ok(build_world_items(
+            &projection,
+            Utc::now(),
+            include_resolved,
+            &corrections,
+        ))
     }
 
     pub fn personal_brief(&self) -> Result<PersonalBrief> {
@@ -232,7 +246,8 @@ impl Runtime {
         if projection.spec.is_none() {
             return Err(ApiError::IntentNotFound(intent_id.clone()));
         }
-        let items = build_world_items(&projection, Utc::now(), true);
+        let corrections = self.world_corrections()?;
+        let items = build_world_items(&projection, Utc::now(), true, &corrections);
         let mut item = items
             .into_iter()
             .find(|item| &item.id == item_id)
@@ -269,6 +284,63 @@ impl Runtime {
         Ok(item)
     }
 
+    pub fn correct_world_correlation(
+        &self,
+        intent_id: &IntentId,
+        mut correction: WorldCorrelationCorrection,
+    ) -> Result<WorldCorrelationCorrection> {
+        match correction.kind {
+            WorldCorrelationCorrectionKind::Merge => {
+                if correction.source_keys.is_empty()
+                    || correction
+                        .target_key
+                        .as_deref()
+                        .is_none_or(|key| key.trim().is_empty())
+                {
+                    return Err(ApiError::Conflict(
+                        "merge requires source_keys and target_key".into(),
+                    ));
+                }
+            }
+            WorldCorrelationCorrectionKind::Split => {
+                if correction.item_id.is_none() || correction.source_keys.len() != 1 {
+                    return Err(ApiError::Conflict(
+                        "split requires one source key and item_id".into(),
+                    ));
+                }
+            }
+            WorldCorrelationCorrectionKind::Rename => {
+                if correction
+                    .target_key
+                    .as_deref()
+                    .is_none_or(|key| key.trim().is_empty())
+                    || correction
+                        .label
+                        .as_deref()
+                        .is_none_or(|label| label.trim().is_empty())
+                {
+                    return Err(ApiError::Conflict(
+                        "rename requires target_key and label".into(),
+                    ));
+                }
+            }
+        }
+        correction.corrected_at = Utc::now();
+        let (root, generation, revision) = self.kernel_context(intent_id)?;
+        self.ledger
+            .append(&else_protocol::event::EventEnvelope::new(
+                intent_id.clone(),
+                root,
+                generation,
+                revision,
+                else_protocol::event::Actor::User,
+                else_protocol::event::EventPayload::WorldCorrelationCorrected {
+                    correction: correction.clone(),
+                },
+            ))?;
+        Ok(correction)
+    }
+
     fn world_records(
         &self,
         intent_id: Option<&IntentId>,
@@ -282,11 +354,12 @@ impl Runtime {
                 .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?],
             None => self.list_intents()?,
         };
+        let corrections = self.world_corrections()?;
         let mut records = Vec::new();
         for spec in specs {
             let projection = self.projection(&spec.id)?;
             records.extend(
-                build_world_items(&projection, now, include_resolved)
+                build_world_items(&projection, now, include_resolved, &corrections)
                     .into_iter()
                     .map(|item| WorldItemRecord {
                         intent_id: spec.id.clone(),
@@ -296,12 +369,69 @@ impl Runtime {
         }
         Ok(records)
     }
+
+    fn world_corrections(&self) -> Result<CorrelationCorrections> {
+        let mut corrections = self
+            .list_intents()?
+            .into_iter()
+            .flat_map(|spec| {
+                self.projection(&spec.id)
+                    .map(|projection| {
+                        projection
+                            .world_correlation_corrections
+                            .into_values()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        corrections.sort_by_key(|correction| (correction.corrected_at, correction.id.clone()));
+        let mut applied = CorrelationCorrections::default();
+        for correction in corrections {
+            match correction.kind {
+                WorldCorrelationCorrectionKind::Merge => {
+                    if let Some(target) = correction.target_key {
+                        for source in correction.source_keys {
+                            applied.merges.insert(
+                                (correction.correlation_kind, source),
+                                (target.clone(), correction.label.clone()),
+                            );
+                        }
+                        if let Some(label) = correction.label {
+                            applied
+                                .renames
+                                .insert((correction.correlation_kind, target), label);
+                        }
+                    }
+                }
+                WorldCorrelationCorrectionKind::Rename => {
+                    if let (Some(key), Some(label)) = (correction.target_key, correction.label) {
+                        applied
+                            .renames
+                            .insert((correction.correlation_kind, key), label);
+                    }
+                }
+                WorldCorrelationCorrectionKind::Split => {
+                    if let (Some(item_id), Some(key)) = (
+                        correction.item_id,
+                        correction.source_keys.into_iter().next(),
+                    ) {
+                        applied
+                            .splits
+                            .insert((item_id, correction.correlation_kind, key));
+                    }
+                }
+            }
+        }
+        Ok(applied)
+    }
 }
 
 fn build_world_items(
     projection: &IntentProjection,
     now: DateTime<Utc>,
     include_resolved: bool,
+    corrections: &CorrelationCorrections,
 ) -> Vec<WorldItem> {
     let mut meanings = BTreeMap::<WorldKey, MeaningSummary>::new();
     for interpretations in projection.signal_interpretations.values() {
@@ -414,7 +544,8 @@ fn build_world_items(
                 projects
             })
             .into_values()
-            .collect();
+            .collect::<Vec<_>>();
+        let projects = apply_correlation_corrections(&item_id, projects, corrections);
         let identities = versions
             .iter()
             .flat_map(|signal| signal.correlations.iter())
@@ -426,7 +557,8 @@ fn build_world_items(
                 identities
             })
             .into_values()
-            .collect();
+            .collect::<Vec<_>>();
+        let identities = apply_correlation_corrections(&item_id, identities, corrections);
         let (priority, priority_reason) = world_priority(
             summary.meaning,
             state,
@@ -467,6 +599,58 @@ fn build_world_items(
             .then_with(|| left.id.cmp(&right.id))
     });
     items
+}
+
+fn apply_correlation_corrections(
+    item_id: &WorldItemId,
+    hints: Vec<else_protocol::connector::CorrelationHint>,
+    corrections: &CorrelationCorrections,
+) -> Vec<else_protocol::connector::CorrelationHint> {
+    let mut corrected = Vec::new();
+    let mut seen = BTreeSet::new();
+    for mut hint in hints {
+        let original_key = hint.key.clone();
+        let canonical = resolve_correlation_key(corrections, hint.kind, &original_key);
+        if corrections
+            .splits
+            .contains(&(item_id.clone(), hint.kind, original_key.clone()))
+            || corrections
+                .splits
+                .contains(&(item_id.clone(), hint.kind, canonical.clone()))
+        {
+            continue;
+        }
+        hint.key = canonical.clone();
+        if let Some(label) = corrections
+            .renames
+            .get(&(hint.kind, canonical.clone()))
+            .or_else(|| corrections.renames.get(&(hint.kind, original_key)))
+        {
+            hint.label = label.clone();
+        }
+        if seen.insert((hint.kind, hint.key.clone())) {
+            corrected.push(hint);
+        }
+    }
+    corrected
+}
+
+fn resolve_correlation_key(
+    corrections: &CorrelationCorrections,
+    kind: CorrelationKind,
+    key: &str,
+) -> String {
+    let mut canonical = key.to_string();
+    for _ in 0..16 {
+        let Some((target, _)) = corrections.merges.get(&(kind, canonical.clone())) else {
+            break;
+        };
+        if target == &canonical {
+            break;
+        }
+        canonical = target.clone();
+    }
+    canonical
 }
 
 fn world_state(

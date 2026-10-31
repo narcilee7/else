@@ -82,3 +82,7 @@ define_id!(
 define_id!(WorldSignalId, "外部世界的一条标准化、可去重事实。");
 define_id!(IntentCandidateId, "根据 World Signal 提出的 Intent 候选。");
 define_id!(WorldItemId, "跨 Signal 版本聚合出的 Personal World 条目。");
+define_id!(
+    WorldCorrelationCorrectionId,
+    "用户对 Project / Identity 自动关联的人工纠正。"
+);

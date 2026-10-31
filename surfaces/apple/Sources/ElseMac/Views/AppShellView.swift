@@ -12,6 +12,10 @@ struct AppShellView: View {
             Group {
                 if store.section == .today {
                     DailyBriefView()
+                } else if store.section == .world {
+                    WorldView()
+                } else if store.section == .connectors {
+                    ConnectorsView()
                 } else {
                     IntentListView()
                 }
@@ -136,6 +140,8 @@ private struct SidebarView: View {
     private func badge(for section: AppSection) -> Int {
         switch section {
         case .today: store.today.count
+        case .world: store.projectWorlds.count + store.identityWorlds.count
+        case .connectors: store.connectorsByIntent.values.reduce(0) { $0 + $1.count }
         case .decisions: store.decisionCount
         case .results: store.results.count
         }

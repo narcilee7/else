@@ -75,6 +75,77 @@ struct DemoRuntimeClientTests {
     }
 
     @Test
+    func projectAndIdentityCorrectionsPropagate() async throws {
+        let client = DemoRuntimeClient()
+        let projects = try await client.projectWorlds(includeResolved: false)
+        let project = try #require(projects.first)
+        let intentID = try #require(project.items.first?.intentID)
+
+        _ = try await client.correctWorldCorrelation(
+            intentID: intentID,
+            correction: WorldCorrelationCorrection(
+                kind: .rename,
+                correlationKind: .project,
+                sourceKeys: [],
+                targetKey: project.key,
+                label: "Renamed Project"
+            )
+        )
+        let corrected = try await client.projectWorlds(includeResolved: false)
+        #expect(corrected.first(where: { $0.key == project.key })?.title == "Renamed Project")
+
+        let identities = try await client.identityWorlds(includeResolved: false)
+        #expect(identities.contains(where: { $0.kind == .contact }))
+        #expect(identities.contains(where: { $0.kind == .customer }))
+    }
+
+    @Test
+    func exposesConnectorAdaptersAndHealth() async throws {
+        let client = DemoRuntimeClient()
+        let intent = try #require(
+            try await client.listIntents().first { $0.state == .active }
+        )
+        let adapters = try await client.connectorAdapters()
+        let connectors = try await client.connectors(intentID: intent.id)
+        let connector = try #require(connectors.first)
+        let health = try await client.connectorHealth(
+            intentID: intent.id,
+            connectorID: connector.id
+        )
+
+        #expect(adapters.contains(where: { $0.adapter == "calendar.google" }))
+        #expect(connector.adapter == "calendar.google")
+        #expect(health.health == .healthy)
+        #expect(health.credentialConfigured)
+    }
+
+    @Test
+    func proposesTypedConnectorAction() async throws {
+        let client = DemoRuntimeClient()
+        let intent = try #require(
+            try await client.listIntents().first { $0.state == .active }
+        )
+        let connector = try #require(
+            try await client.connectors(intentID: intent.id).first
+        )
+        let action = try await client.proposeConnectorAction(
+            intentID: intent.id,
+            request: ProposeConnectorActionRequest(
+                connectorID: connector.id,
+                capability: "calendar.event.update",
+                target: "event-demo",
+                input: .object([
+                    "changes": .object([
+                        "summary": .string("Updated title"),
+                    ]),
+                ])
+            )
+        )
+        #expect(action.status == .proposed)
+        #expect(action.target == "event-demo")
+    }
+
+    @Test
     func configurationReadsLoopbackAndDemoFlag() {
         let configuration = ClientConfiguration.fromEnvironment([
             "ELSE_RUNTIME_URL": "http://127.0.0.1:9999",

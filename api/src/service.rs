@@ -209,6 +209,11 @@ enum Command {
         note: Option<String>,
         reply: Reply<else_protocol::world::WorldItem>,
     },
+    CorrectWorldCorrelation {
+        intent_id: IntentId,
+        correction: else_protocol::world::WorldCorrelationCorrection,
+        reply: Reply<else_protocol::world::WorldCorrelationCorrection>,
+    },
     ProjectWorlds {
         intent_id: Option<IntentId>,
         include_resolved: bool,
@@ -689,6 +694,18 @@ impl RuntimeHandle {
             item_id: item_id.clone(),
             kind,
             note,
+            reply,
+        })
+    }
+
+    pub fn correct_world_correlation(
+        &self,
+        intent_id: &IntentId,
+        correction: else_protocol::world::WorldCorrelationCorrection,
+    ) -> Result<else_protocol::world::WorldCorrelationCorrection> {
+        self.request(|reply| Command::CorrectWorldCorrelation {
+            intent_id: intent_id.clone(),
+            correction,
             reply,
         })
     }
@@ -1177,6 +1194,13 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.resolve_world_item(&intent_id, &item_id, kind, note));
+        }
+        Command::CorrectWorldCorrelation {
+            intent_id,
+            correction,
+            reply,
+        } => {
+            let _ = reply.send(runtime.correct_world_correlation(&intent_id, correction));
         }
         Command::ProjectWorlds {
             intent_id,

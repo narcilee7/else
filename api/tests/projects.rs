@@ -3,6 +3,8 @@
 use chrono::{Duration, Utc};
 use else_api::Runtime;
 use else_protocol::connector::CorrelationKind;
+use else_protocol::ids::WorldCorrelationCorrectionId;
+use else_protocol::world::{WorldCorrelationCorrection, WorldCorrelationCorrectionKind};
 
 fn calendar_ics() -> String {
     let start = Utc::now() + Duration::hours(4);
@@ -148,4 +150,60 @@ fn project_world_correlates_connectors_and_intents_by_project_key() {
     assert!(identities.iter().any(|identity| {
         identity.kind == CorrelationKind::Milestone && identity.key == "milestone:launch-ga"
     }));
+
+    runtime
+        .correct_world_correlation(
+            &first.id,
+            WorldCorrelationCorrection {
+                id: WorldCorrelationCorrectionId::new(),
+                kind: WorldCorrelationCorrectionKind::Merge,
+                correlation_kind: CorrelationKind::Project,
+                source_keys: vec!["project:launch".into()],
+                target_key: Some("project:release-platform".into()),
+                label: Some("Release Platform".into()),
+                item_id: None,
+                corrected_at: Utc::now(),
+            },
+        )
+        .unwrap();
+    let corrected_projects = runtime.project_worlds(None, false).unwrap();
+    let corrected = corrected_projects
+        .iter()
+        .find(|project| project.key == "project:release-platform")
+        .unwrap();
+    assert_eq!(corrected.title, "Release Platform");
+    assert_eq!(corrected.items.len(), 4);
+    assert!(corrected_projects
+        .iter()
+        .all(|project| project.key != "project:launch"));
+
+    let split_item = runtime
+        .world_items(&second.id, false)
+        .unwrap()
+        .into_iter()
+        .find(|item| item.object_kind == else_protocol::connector::ObjectKind::CalendarEvent)
+        .unwrap();
+    runtime
+        .correct_world_correlation(
+            &second.id,
+            WorldCorrelationCorrection {
+                id: WorldCorrelationCorrectionId::new(),
+                kind: WorldCorrelationCorrectionKind::Split,
+                correlation_kind: CorrelationKind::Contact,
+                source_keys: vec!["contact:alice".into()],
+                target_key: None,
+                label: None,
+                item_id: Some(split_item.id),
+                corrected_at: Utc::now(),
+            },
+        )
+        .unwrap();
+    let corrected_identities = runtime.identity_worlds(None, false).unwrap();
+    let alice = corrected_identities
+        .iter()
+        .find(|identity| {
+            identity.kind == CorrelationKind::Contact && identity.key == "contact:alice"
+        })
+        .unwrap();
+    assert_eq!(alice.items.len(), 3);
 }

@@ -182,6 +182,104 @@ struct HTTPRuntimeClientTests {
         #expect(windows.first?.window.kind == .batch)
     }
 
+    @Test
+    func loadsProjectAndIdentityWorlds() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+
+        StubURLProtocol.handler = { request in
+            #expect(request.httpMethod == "GET")
+            #expect(
+                request.url?.path == "/v1/projects"
+                    || request.url?.path == "/v1/identities"
+            )
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data("[]".utf8)
+            )
+        }
+
+        let projects = try await client.projectWorlds(includeResolved: false)
+        let identities = try await client.identityWorlds(includeResolved: false)
+        #expect(projects.isEmpty)
+        #expect(identities.isEmpty)
+    }
+
+    @Test
+    func loadsConnectorAdapters() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+
+        StubURLProtocol.handler = { request in
+            #expect(request.httpMethod == "GET")
+            #expect(request.url?.path == "/v1/connector-adapters")
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data("[]".utf8)
+            )
+        }
+
+        let adapters = try await client.connectorAdapters()
+        #expect(adapters.isEmpty)
+    }
+
+    @Test
+    func proposesConnectorActionWithJSONInput() async throws {
+        let session = makeSession()
+        let client = HTTPRuntimeClient(
+            baseURL: URL(string: "http://127.0.0.1:4180")!,
+            session: session
+        )
+        defer { StubURLProtocol.handler = nil }
+
+        StubURLProtocol.handler = { request in
+            #expect(request.httpMethod == "POST")
+            #expect(request.url?.path == "/v1/intents/intent-1/actions")
+            let body = try #require(requestBodyData(request))
+            let payload = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            #expect(payload?["connector_id"] as? String == "connector-1")
+            #expect(payload?["capability"] as? String == "calendar.event.update")
+            return (
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json"]
+                )!,
+                Data(Self.actionJSON.utf8)
+            )
+        }
+
+        let action = try await client.proposeConnectorAction(
+            intentID: IntentID("intent-1"),
+            request: ProposeConnectorActionRequest(
+                connectorID: ConnectorID("connector-1"),
+                capability: "calendar.event.update",
+                target: "event-1",
+                input: .object(["changes": .object(["summary": .string("new")])])
+            )
+        )
+        #expect(action.target == "event-1")
+    }
+
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
@@ -266,6 +364,24 @@ struct HTTPRuntimeClientTests {
         "related_call_key": null
       }]
     }]
+    """
+
+    private static let actionJSON = """
+    {
+      "id": "action-1",
+      "connector_id": "connector-1",
+      "capability": "calendar.event.update",
+      "target": "event-1",
+      "input": {"changes":{"summary":"new"}},
+      "effect": "unknown",
+      "idempotency_key": "action-1",
+      "status": "proposed",
+      "proposed_at": "2026-10-31T06:00:00Z",
+      "attention_id": null,
+      "tool_call_id": null,
+      "outcome": null,
+      "last_error": null
+    }
     """
 }
 

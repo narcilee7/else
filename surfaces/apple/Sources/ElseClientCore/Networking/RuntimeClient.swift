@@ -30,7 +30,81 @@ public protocol RuntimeClient: Sendable {
         intentID: IntentID,
         actionID: ConnectorActionID
     ) async throws -> ConnectorAction
+    func proposeConnectorAction(
+        intentID: IntentID,
+        request: ProposeConnectorActionRequest
+    ) async throws -> ConnectorAction
     func attentionWindows() async throws -> [AttentionWindowRecord]
+    func projectWorlds(includeResolved: Bool) async throws -> [ProjectWorld]
+    func identityWorlds(includeResolved: Bool) async throws -> [IdentityWorld]
+    func correctWorldCorrelation(
+        intentID: IntentID,
+        correction: WorldCorrelationCorrection
+    ) async throws -> WorldCorrelationCorrection
+    func connectorAdapters() async throws -> [ConnectorManifest]
+    func connectors(intentID: IntentID) async throws -> [ConnectorRegistration]
+    func connectorHealth(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async throws -> ConnectorHealthReport
+    func registerConnector(
+        intentID: IntentID,
+        request: RegisterConnectorRequest
+    ) async throws -> ConnectorRegistration
+    func syncConnector(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async throws -> ConnectorSyncResult
+}
+
+public struct ConnectorSyncResult: Codable, Equatable, Sendable {
+    public let observed: UInt64
+    public let inserted: UInt64
+    public let skipped: UInt64
+    public let candidatesProposed: UInt64
+    public let autoAccepted: UInt64
+    public let cursor: String?
+    public let pagesSynced: UInt64
+    public let hasMore: Bool
+    public let backfillComplete: Bool
+    public let hydrated: Bool
+
+    public init(
+        observed: UInt64,
+        inserted: UInt64,
+        skipped: UInt64,
+        candidatesProposed: UInt64,
+        autoAccepted: UInt64,
+        cursor: String?,
+        pagesSynced: UInt64,
+        hasMore: Bool,
+        backfillComplete: Bool,
+        hydrated: Bool
+    ) {
+        self.observed = observed
+        self.inserted = inserted
+        self.skipped = skipped
+        self.candidatesProposed = candidatesProposed
+        self.autoAccepted = autoAccepted
+        self.cursor = cursor
+        self.pagesSynced = pagesSynced
+        self.hasMore = hasMore
+        self.backfillComplete = backfillComplete
+        self.hydrated = hydrated
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case observed
+        case inserted
+        case skipped
+        case candidatesProposed = "candidates_proposed"
+        case autoAccepted = "auto_accepted"
+        case cursor
+        case pagesSynced = "pages_synced"
+        case hasMore = "has_more"
+        case backfillComplete = "backfill_complete"
+        case hydrated
+    }
 }
 
 public enum RuntimeClientError: Error, LocalizedError, Sendable {

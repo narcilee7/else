@@ -20,7 +20,7 @@ use else_protocol::ids::{ArtifactId, AttentionId, AttentionWindowId, LeaseId, Sc
 use else_protocol::intent::{IntentSpec, IntentState};
 use else_protocol::plan::{Plan, PlanImpact, PlanStepStatus};
 use else_protocol::resource::{ResourceBudget, ResourceUsage, SandboxUsage, SandboxUsageBasis};
-use else_protocol::world::WorldItemResolution;
+use else_protocol::world::{WorldCorrelationCorrection, WorldItemResolution};
 
 use crate::{Projection, StoredEvent};
 
@@ -126,6 +126,8 @@ pub struct IntentProjection {
     pub candidate_seqs: BTreeMap<else_protocol::ids::IntentCandidateId, u64>,
     pub candidate_dedupe: BTreeMap<String, else_protocol::ids::IntentCandidateId>,
     pub world_item_resolutions: BTreeMap<else_protocol::ids::WorldItemId, WorldItemResolution>,
+    pub world_correlation_corrections:
+        BTreeMap<else_protocol::ids::WorldCorrelationCorrectionId, WorldCorrelationCorrection>,
     pub artifacts: Vec<Artifact>,
     pub artifact_scopes: BTreeMap<ArtifactId, ScopeId>,
     pub checkpoints: Vec<Checkpoint>,
@@ -317,6 +319,10 @@ impl Projection for IntentProjection {
             EventPayload::WorldItemResolved { resolution } => {
                 self.world_item_resolutions
                     .insert(resolution.item_id.clone(), resolution.clone());
+            }
+            EventPayload::WorldCorrelationCorrected { correction } => {
+                self.world_correlation_corrections
+                    .insert(correction.id.clone(), correction.clone());
             }
             EventPayload::ExternalFactIngested { fact }
                 if self.external_fact_keys.insert(fact.fact_id.clone()) =>

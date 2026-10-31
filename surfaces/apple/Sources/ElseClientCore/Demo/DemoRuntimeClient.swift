@@ -4,11 +4,16 @@ public actor DemoRuntimeClient: RuntimeClient {
     private var snapshots: [IntentSnapshot]
     private var brief: PersonalBrief
     private var actions: [IntentID: [ConnectorAction]]
+    private var connectorsByIntent: [IntentID: [ConnectorRegistration]]
+    private var correlationRenames: [String: String] = [:]
+    private var correlationMerges: [String: String] = [:]
+    private var correlationSplits: Set<String> = []
 
     public init() {
         snapshots = Self.samples
         brief = Self.sampleBrief()
         actions = Self.sampleActions
+        connectorsByIntent = Self.sampleConnectors
     }
 
     public func listIntents() async throws -> [IntentSnapshot] {
@@ -156,6 +161,24 @@ public actor DemoRuntimeClient: RuntimeClient {
         }
     }
 
+    public func proposeConnectorAction(
+        intentID: IntentID,
+        request: ProposeConnectorActionRequest
+    ) async throws -> ConnectorAction {
+        let action = ConnectorAction(
+            id: ConnectorActionID(UUID().uuidString),
+            connectorID: request.connectorID,
+            capability: request.capability,
+            target: request.target,
+            effect: .unknown,
+            idempotencyKey: request.idempotencyKey ?? UUID().uuidString,
+            status: .proposed,
+            proposedAt: Date()
+        )
+        actions[intentID, default: []].insert(action, at: 0)
+        return action
+    }
+
     public func attentionWindows() async throws -> [AttentionWindowRecord] {
         snapshots.compactMap { snapshot in
             guard snapshot.state == .needsDecision, let request = snapshot.decisions.first else {
@@ -177,6 +200,164 @@ public actor DemoRuntimeClient: RuntimeClient {
                 requests: [request]
             )
         }
+    }
+
+    public func projectWorlds(includeResolved: Bool) async throws -> [ProjectWorld] {
+        groups(for: .project, includeResolved: includeResolved).map { group in
+            ProjectWorld(
+                key: group.key,
+                title: group.title,
+                items: group.records,
+                intentIDs: uniqueIntentIDs(group.records),
+                connectorIDs: uniqueConnectorIDs(group.records),
+                openItems: group.records.filter { !$0.item.state.isResolved }.count,
+                waitingExternal: group.records.filter {
+                    $0.item.state == .waitingExternal
+                }.count,
+                overdue: group.records.filter { $0.item.state == .overdue }.count,
+                nextDeadline: group.records.compactMap(\.item.deadline).min()
+            )
+        }
+    }
+
+    public func identityWorlds(includeResolved: Bool) async throws -> [IdentityWorld] {
+        CorrelationKind.allCases.flatMap { kind in
+            groups(for: kind, includeResolved: includeResolved).map { group in
+                IdentityWorld(
+                    kind: kind,
+                    key: group.key,
+                    title: group.title,
+                    items: group.records,
+                    intentIDs: uniqueIntentIDs(group.records),
+                    connectorIDs: uniqueConnectorIDs(group.records),
+                    openItems: group.records.filter { !$0.item.state.isResolved }.count,
+                    overdue: group.records.filter { $0.item.state == .overdue }.count,
+                    nextDeadline: group.records.compactMap(\.item.deadline).min()
+                )
+            }
+        }
+    }
+
+    public func correctWorldCorrelation(
+        intentID: IntentID,
+        correction: WorldCorrelationCorrection
+    ) async throws -> WorldCorrelationCorrection {
+        _ = intentID
+        switch correction.kind {
+        case .merge:
+            if let target = correction.targetKey {
+                for source in correction.sourceKeys {
+                    correlationMerges[mapKey(correction.correlationKind, source)] =
+                        mapKey(correction.correlationKind, target)
+                }
+                if let label = correction.label {
+                    correlationRenames[mapKey(correction.correlationKind, target)] = label
+                }
+            }
+        case .rename:
+            if let target = correction.targetKey, let label = correction.label {
+                correlationRenames[mapKey(correction.correlationKind, target)] = label
+            }
+        case .split:
+            if let itemID = correction.itemID, let key = correction.sourceKeys.first {
+                correlationSplits.insert(
+                    "\(itemID.rawValue)|\(mapKey(correction.correlationKind, key))"
+                )
+            }
+        }
+        return correction
+    }
+
+    public func connectorAdapters() async throws -> [ConnectorManifest] {
+        Self.sampleManifests
+    }
+
+    public func connectors(intentID: IntentID) async throws -> [ConnectorRegistration] {
+        connectorsByIntent[intentID] ?? []
+    }
+
+    public func connectorHealth(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async throws -> ConnectorHealthReport {
+        guard
+            let connector = connectorsByIntent[intentID]?.first(where: {
+                $0.id == connectorID
+            })
+        else {
+            throw RuntimeClientError.http(status: 404, message: "Connector not found")
+        }
+        return ConnectorHealthReport(
+            connectorID: connector.id,
+            provider: connector.manifest.provider,
+            health: .healthy,
+            credentialConfigured: connector.credential != nil,
+            credentialScopes: connector.credential?.scopes ?? [],
+            lastAttemptAt: Date().addingTimeInterval(-120),
+            lastSuccessAt: Date().addingTimeInterval(-120),
+            consecutiveFailures: 0,
+            lastError: nil,
+            nextSyncAt: Date().addingTimeInterval(
+                TimeInterval(connector.syncIntervalSeconds)
+            ),
+            backfillInProgress: false,
+            pagesSynced: 3
+        )
+    }
+
+    public func registerConnector(
+        intentID: IntentID,
+        request: RegisterConnectorRequest
+    ) async throws -> ConnectorRegistration {
+        guard let manifest = Self.sampleManifests.first(where: {
+            $0.adapter == request.adapter
+        }) else {
+            throw RuntimeClientError.http(status: 404, message: "Adapter not found")
+        }
+        let credential = request.credential.map {
+            ConnectorCredentialMetadata(
+                reference: UUID().uuidString,
+                authMode: manifest.authMode,
+                scopes: $0.scopes,
+                expiresAt: $0.expiresAt,
+                configuredAt: Date(),
+                revokedAt: nil
+            )
+        }
+        let connector = ConnectorRegistration(
+            id: ConnectorID(UUID().uuidString),
+            name: request.name,
+            adapter: request.adapter,
+            source: request.source,
+            enabled: true,
+            manifest: manifest,
+            syncIntervalSeconds: request.syncIntervalSeconds,
+            registeredAt: Date(),
+            credential: credential
+        )
+        connectorsByIntent[intentID, default: []].append(connector)
+        return connector
+    }
+
+    public func syncConnector(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async throws -> ConnectorSyncResult {
+        guard connectorsByIntent[intentID]?.contains(where: { $0.id == connectorID }) == true else {
+            throw RuntimeClientError.http(status: 404, message: "Connector not found")
+        }
+        return ConnectorSyncResult(
+            observed: 3,
+            inserted: 0,
+            skipped: 3,
+            candidatesProposed: 0,
+            autoAccepted: 0,
+            cursor: "demo-cursor",
+            pagesSynced: 1,
+            hasMore: false,
+            backfillComplete: true,
+            hydrated: false
+        )
     }
 
     private func update(
@@ -201,6 +382,66 @@ public actor DemoRuntimeClient: RuntimeClient {
         let updated = transform(actions[intentID]![index])
         actions[intentID]![index] = updated
         return updated
+    }
+
+    private func groups(
+        for kind: CorrelationKind,
+        includeResolved: Bool
+    ) -> [DemoCorrelationGroup] {
+        var groups: [String: DemoCorrelationGroup] = [:]
+        for record in brief.allRecords
+            where includeResolved || !record.item.state.isResolved
+        {
+            let hints =
+                (kind == .project ? record.item.projects : record.item.identities)
+                .filter { $0.kind == kind.rawValue }
+            for hint in hints {
+                let key = canonicalKey(kind, hint.key)
+                if correlationSplits.contains("\(record.item.id.rawValue)|\(mapKey(kind, hint.key))") {
+                    continue
+                }
+                let lookup = mapKey(kind, key)
+                let title = correlationRenames[lookup] ?? hint.label
+                if groups[key] == nil {
+                    groups[key] = DemoCorrelationGroup(
+                        key: key,
+                        title: title,
+                        records: []
+                    )
+                }
+                if !groups[key]!.records.contains(where: { $0.item.id == record.item.id }) {
+                    groups[key]!.records.append(record)
+                }
+            }
+        }
+        return groups.values.sorted {
+            $0.records.count == $1.records.count
+                ? $0.title < $1.title
+                : $0.records.count > $1.records.count
+        }
+    }
+
+    private func canonicalKey(_ kind: CorrelationKind, _ key: String) -> String {
+        var value = mapKey(kind, key)
+        for _ in 0..<16 {
+            guard let target = correlationMerges[value], target != value else {
+                break
+            }
+            value = target
+        }
+        return value.split(separator: ":", maxSplits: 1).last.map(String.init) ?? value
+    }
+
+    private func mapKey(_ kind: CorrelationKind, _ key: String) -> String {
+        "\(kind.rawValue):\(key)"
+    }
+
+    private func uniqueIntentIDs(_ records: [WorldItemRecord]) -> [IntentID] {
+        Array(Set(records.map(\.intentID))).sorted()
+    }
+
+    private func uniqueConnectorIDs(_ records: [WorldItemRecord]) -> [ConnectorID] {
+        Array(Set(records.flatMap(\.item.connectorIDs))).sorted()
     }
 
     public static let samples: [IntentSnapshot] = {
@@ -411,6 +652,71 @@ public actor DemoRuntimeClient: RuntimeClient {
         ],
     ]
 
+    private static let sampleManifests: [ConnectorManifest] = [
+        ConnectorManifest(
+            adapter: "calendar.google",
+            provider: "calendar",
+            authMode: .oauth,
+            scopes: ["calendar.events"],
+            readCapabilities: ["calendar.event.read"],
+            writeCapabilities: ["calendar.event.update"],
+            syncModes: [.pull],
+            dataSensitivity: "internal",
+            retentionPolicy: "metadata_and_summary",
+            health: .healthy
+        ),
+        ConnectorManifest(
+            adapter: "linear.graphql",
+            provider: "linear",
+            authMode: .apiToken,
+            scopes: ["issues:read"],
+            readCapabilities: ["linear.issue.read"],
+            writeCapabilities: ["linear.issue.comment", "linear.issue.update"],
+            syncModes: [.pull, .webhook],
+            dataSensitivity: "internal",
+            retentionPolicy: "metadata_only",
+            health: .healthy
+        ),
+        ConnectorManifest(
+            adapter: "notion.api",
+            provider: "notion",
+            authMode: .apiToken,
+            scopes: ["pages:read", "databases:read"],
+            readCapabilities: ["notion.page.read", "notion.database.read"],
+            writeCapabilities: ["notion.page.update", "notion.database.update"],
+            syncModes: [.pull],
+            dataSensitivity: "internal",
+            retentionPolicy: "metadata_and_summary",
+            health: .healthy
+        ),
+    ]
+
+    private static let sampleConnectors: [IntentID: [ConnectorRegistration]] = {
+        let intentID = IntentID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0")
+        return [
+            intentID: [
+                ConnectorRegistration(
+                    id: ConnectorID("demo-google-calendar"),
+                    name: "calendar",
+                    adapter: "calendar.google",
+                    source: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+                    enabled: true,
+                    manifest: sampleManifests[0],
+                    syncIntervalSeconds: 300,
+                    registeredAt: Date().addingTimeInterval(-86_400),
+                    credential: ConnectorCredentialMetadata(
+                        reference: "demo-credential",
+                        authMode: .oauth,
+                        scopes: ["calendar.events"],
+                        expiresAt: Date().addingTimeInterval(3_600),
+                        configuredAt: Date().addingTimeInterval(-86_400),
+                        revokedAt: nil
+                    )
+                ),
+            ],
+        ]
+    }()
+
     private static func worldRecord(
         intentID: IntentID,
         id: String,
@@ -562,4 +868,10 @@ private extension ConnectorAction {
             lastError: lastError
         )
     }
+}
+
+private struct DemoCorrelationGroup {
+    let key: String
+    let title: String
+    var records: [WorldItemRecord]
 }

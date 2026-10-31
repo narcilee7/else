@@ -4,6 +4,7 @@ import SwiftUI
 struct IntentDetailView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isProposingAction = false
     let snapshot: IntentSnapshot?
 
     var body: some View {
@@ -17,7 +18,9 @@ struct IntentDetailView: View {
                             decisions(snapshot)
                         }
 
-                        if !store.actionsByIntent[snapshot.id, default: []].isEmpty {
+                        if !store.actionsByIntent[snapshot.id, default: []].isEmpty
+                            || !store.connectorsByIntent[snapshot.id, default: []].isEmpty
+                        {
                             connectorActions(snapshot)
                         }
 
@@ -58,6 +61,12 @@ struct IntentDetailView: View {
             }
         }
         .animation(reduceMotion ? nil : ElseMotion.emphasis, value: snapshot?.state)
+        .sheet(isPresented: $isProposingAction) {
+            if let snapshot {
+                ActionProposalSheet(intentID: snapshot.id)
+                    .environmentObject(store)
+            }
+        }
     }
 
     private func detailHeader(_ snapshot: IntentSnapshot) -> some View {
@@ -130,6 +139,25 @@ struct IntentDetailView: View {
     private func connectorActions(_ snapshot: IntentSnapshot) -> some View {
         DetailSection(title: "外部动作", systemImage: "arrow.up.right.square") {
             VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button {
+                        isProposingAction = true
+                    } label: {
+                        Label("新建动作", systemImage: "plus")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(store.connectorsByIntent[snapshot.id, default: []].isEmpty)
+                }
+                .padding(.bottom, ElseSpacing.x2)
+
+                if store.actionsByIntent[snapshot.id, default: []].isEmpty {
+                    QuietEmptyState(
+                        title: "还没有外部动作",
+                        description: "为连接器创建一个受控写入提案。"
+                    )
+                }
                 ForEach(store.actionsByIntent[snapshot.id, default: []]) { action in
                     ConnectorActionRow(intentID: snapshot.id, action: action)
                     if action.id != store.actionsByIntent[snapshot.id]?.last?.id {

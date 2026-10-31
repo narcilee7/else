@@ -34,7 +34,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 156 Rust tests and 17 Swift tests passing on macOS.
+**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 159 Rust tests and 23 Swift tests passing on macOS.
 
 - **Kernel (MVP-0)**: durable root Scope identity, explicit Scope dependencies, artifact lineage across child workspaces, fair multi-Scope reconciliation ordered by creation and last execution, replayable external waits and ExternalEvent/Timer wakes that feed the next Context Snapshot, continuous `drive` loops, and a resident single-thread Runtime supervisor; event-sourced ledger on SQLite, Checkpoint → Fork → Rerun → Compare, Abort + Generation Fencing, Subagent delegation tree, Admission + Lease + Accounting, deny-by-default OS sandboxes (macOS Seatbelt verified on real hardware; Linux bubblewrap policy unit-tested, awaiting Linux CI).
 - **Context & Memory (MVP-1)**: Intent Resolution with revisions, three-tier memory (Working / Episodic / Semantic) with scoped promotion rules, Context Compiler producing minimal read-only snapshots per Planner / Executor / Verifier. Memory is never a source of authority.
@@ -53,7 +53,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 - **Live connector foundation**: OAuth/API credentials live in macOS Keychain or a 0600 private runtime store, never the Event Ledger. Scoped credentials refresh before expiry, can be revoked, and feed a resident scheduler with persistent health, exponential backoff, and `Retry-After` handling.
 - **Personal World**: commitments, waiting-external items, actions, overdue work, and risks are aggregated from replayable interpretations. Users can resolve items without pretending the external provider changed, and a cross-Intent brief summarizes open loops.
 - **Project World**: provider-neutral correlation hints group Linear, Notion, and Calendar items by normalized project key across intents, with open / waiting / overdue counts and the nearest deadline.
-- **Apple Daily Brief and action surface**: the macOS client now opens on a grouped Personal Brief with explainable priority, overdue, waiting, risk, commitment, action, upcoming calendar, active Intent, and Decision context. Source evidence is inspectable, Batch/Defer attention windows are grouped, Decisions can be resolved inline, and World Items can be completed or dismissed without pretending the Provider changed. Intent detail exposes external action Execute / Verify / Compensate with final effect outcomes. Background refresh, deduplicated decision notifications, Dock badges, menu-bar quick access, and persisted notification/refresh settings are built in.
+- **Apple Daily Brief and action surface**: the macOS client now opens on a grouped Personal Brief with explainable priority, overdue, waiting, risk, commitment, action, upcoming calendar, active Intent, and Decision context. Source evidence is inspectable, Batch/Defer attention windows are grouped, Decisions can be resolved inline, and World Items can be completed or dismissed without pretending the Provider changed. World and Connector workspaces manage relationships and external sources with Rename / Merge / Split, Adapter discovery, secure credential entry, Health, and sync. Intent detail supports Action Proposal creation plus Execute / Verify / Compensate with final effect outcomes. Background refresh, deduplicated decision notifications, Dock badges, menu-bar quick access, login launch, Runtime diagnostics, persisted settings, and Developer ID/notarization packaging are built in.
 
 ### Quickstart
 
@@ -101,6 +101,8 @@ else projects
 else projects <intent-id>
 else identities
 else identities <intent-id> --include-resolved
+else correlate-correct <intent-id> merge project --source project:old --target project:new --label "New Name"
+else correlate-correct <intent-id> split contact --source contact:alice --item-id <world-item-id>
 else candidate-accept <intent-id> <candidate-id>
 else allow-opaque <intent-id> --network --tool-gateway --max-effect reversible
 else decide <intent-id> <request-id> approve

@@ -232,6 +232,7 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::ConnectorActionStateChanged { .. } => "connector_action_state_changed",
         P::ConnectorSyncCheckpointed { .. } => "connector_sync_checkpointed",
         P::WorldItemResolved { .. } => "world_item_resolved",
+        P::WorldCorrelationCorrected { .. } => "world_correlation_corrected",
         P::ExternalFactIngested { .. } => "external_fact_ingested",
         P::WorldSignalIngested { .. } => "world_signal_ingested",
         P::WorldSignalStatusChanged { .. } => "world_signal_status_changed",

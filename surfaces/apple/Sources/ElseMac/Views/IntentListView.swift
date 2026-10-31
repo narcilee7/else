@@ -7,6 +7,8 @@ struct IntentListView: View {
     private var visibleSnapshots: [IntentSnapshot] {
         switch store.section {
         case .today: store.today
+        case .world: []
+        case .connectors: []
         case .decisions: store.decisions.map(\.snapshot)
         case .results: store.results
         }
@@ -87,6 +89,8 @@ struct IntentListView: View {
     private var isEmpty: Bool {
         switch store.section {
         case .today: store.today.isEmpty
+        case .world: true
+        case .connectors: true
         case .decisions: store.decisions.isEmpty
         case .results: store.results.isEmpty
         }
@@ -149,6 +153,8 @@ struct IntentListView: View {
     private var subtitle: String {
         switch store.section {
         case .today: "\(store.today.count) 个进行中"
+        case .world: ""
+        case .connectors: ""
         case .decisions: store.decisionCount == 0 ? "无需你介入" : "\(store.decisionCount) 个请求"
         case .results: "\(store.results.count) 个已收敛"
         }
@@ -354,6 +360,8 @@ private struct EmptySectionView: View {
     private var emptyTitle: String {
         switch section {
         case .today: "今天没有进行中的 Intent"
+        case .world: "世界中没有聚合事项"
+        case .connectors: "还没有连接器"
         case .decisions: "目前无需决策"
         case .results: "还没有收敛的结果"
         }
@@ -362,6 +370,8 @@ private struct EmptySectionView: View {
     private var emptyDescription: String {
         switch section {
         case .today: "提交一个目标，让 Runtime 处理其余部分。"
+        case .world: ""
+        case .connectors: ""
         case .decisions: "只有真正需要你的判断时，请求才会出现在这里。"
         case .results: "完成的 Intent 会带着证据和资源账回到这里。"
         }

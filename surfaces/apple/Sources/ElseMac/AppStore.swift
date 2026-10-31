@@ -3,6 +3,8 @@ import Foundation
 
 enum AppSection: String, CaseIterable, Hashable, Identifiable {
     case today
+    case world
+    case connectors
     case decisions
     case results
 
@@ -11,6 +13,8 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
     var title: String {
         switch self {
         case .today: "今天"
+        case .world: "世界"
+        case .connectors: "连接"
         case .decisions: "待决策"
         case .results: "结果"
         }
@@ -19,6 +23,8 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
     var systemImage: String {
         switch self {
         case .today: "sun.max"
+        case .world: "circle.hexagongrid"
+        case .connectors: "link"
         case .decisions: "hand.raised"
         case .results: "checkmark.seal"
         }
@@ -47,6 +53,11 @@ final class AppStore: ObservableObject {
     @Published private(set) var brief: PersonalBrief?
     @Published private(set) var actionsByIntent: [IntentID: [ConnectorAction]] = [:]
     @Published private(set) var attentionWindows: [AttentionWindowRecord] = []
+    @Published private(set) var projectWorlds: [ProjectWorld] = []
+    @Published private(set) var identityWorlds: [IdentityWorld] = []
+    @Published private(set) var connectorManifests: [ConnectorManifest] = []
+    @Published private(set) var connectorsByIntent: [IntentID: [ConnectorRegistration]] = [:]
+    @Published private(set) var connectorHealth: [ConnectorID: ConnectorHealthReport] = [:]
     @Published private(set) var resolvingWorldItemIDs: Set<WorldItemID> = []
     @Published private(set) var mutatingActionIDs: Set<ConnectorActionID> = []
     @Published private(set) var notificationsEnabled: Bool
@@ -57,6 +68,7 @@ final class AppStore: ObservableObject {
     @Published var selectedIntentID: IntentID?
     @Published var isCreatingIntent = false
     @Published private(set) var isRefreshing = false
+    @Published private(set) var lastRefreshedAt: Date?
     @Published private(set) var mutatingIntentIDs: Set<IntentID> = []
     @Published var operationError: String?
 
@@ -134,6 +146,7 @@ final class AppStore: ObservableObject {
         do {
             snapshots = try await client.listIntents()
             connection = .connected
+            lastRefreshedAt = Date()
             if selectedIntentID == nil {
                 selectedIntentID = snapshots.first?.id
             }
@@ -160,6 +173,9 @@ final class AppStore: ObservableObject {
         if let windows = try? await client.attentionWindows() {
             attentionWindows = windows
         }
+        projectWorlds = (try? await client.projectWorlds(includeResolved: false)) ?? []
+        identityWorlds = (try? await client.identityWorlds(includeResolved: false)) ?? []
+        await refreshConnectors()
         deliverNewDecisionNotifications()
         NotificationCoordinator.shared.updateBadge(decisionCount: decisionCount)
     }
@@ -260,6 +276,23 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func proposeConnectorAction(
+        intentID: IntentID,
+        request: ProposeConnectorActionRequest
+    ) async -> ConnectorAction? {
+        do {
+            let action = try await client.proposeConnectorAction(
+                intentID: intentID,
+                request: request
+            )
+            upsertAction(action, intentID: intentID)
+            return action
+        } catch {
+            operationError = error.localizedDescription
+            return nil
+        }
+    }
+
     func clearError() {
         operationError = nil
     }
@@ -291,6 +324,68 @@ final class AppStore: ObservableObject {
         backgroundRefreshInterval = interval
         defaults.set(interval, forKey: PreferenceKey.refreshInterval)
         restartBackgroundTask()
+    }
+
+    func correctWorldCorrelation(
+        intentID: IntentID,
+        correction: WorldCorrelationCorrection
+    ) async {
+        do {
+            _ = try await client.correctWorldCorrelation(
+                intentID: intentID,
+                correction: correction
+            )
+            projectWorlds = try await client.projectWorlds(includeResolved: false)
+            identityWorlds = try await client.identityWorlds(includeResolved: false)
+            brief = try await client.personalBrief()
+        } catch {
+            operationError = error.localizedDescription
+        }
+    }
+
+    func registerConnector(
+        intentID: IntentID,
+        request: RegisterConnectorRequest
+    ) async -> ConnectorRegistration? {
+        do {
+            let connector = try await client.registerConnector(
+                intentID: intentID,
+                request: request
+            )
+            connectorsByIntent[intentID, default: []].append(connector)
+            if let health = try? await client.connectorHealth(
+                intentID: intentID,
+                connectorID: connector.id
+            ) {
+                connectorHealth[connector.id] = health
+            }
+            _ = try? await client.syncConnector(
+                intentID: intentID,
+                connectorID: connector.id
+            )
+            await refresh()
+            return connector
+        } catch {
+            operationError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func syncConnector(intentID: IntentID, connectorID: ConnectorID) async {
+        do {
+            _ = try await client.syncConnector(
+                intentID: intentID,
+                connectorID: connectorID
+            )
+            if let health = try? await client.connectorHealth(
+                intentID: intentID,
+                connectorID: connectorID
+            ) {
+                connectorHealth[connectorID] = health
+            }
+        } catch {
+            operationError = error.localizedDescription
+        }
     }
 
     private func mutate(
@@ -336,6 +431,30 @@ final class AppStore: ObservableObject {
                 await self?.refresh()
             }
         }
+    }
+
+    private func refreshConnectors() async {
+        if let adapters = try? await client.connectorAdapters() {
+            connectorManifests = adapters
+        }
+        var connectors: [IntentID: [ConnectorRegistration]] = [:]
+        var health: [ConnectorID: ConnectorHealthReport] = [:]
+        for snapshot in snapshots {
+            guard let items = try? await client.connectors(intentID: snapshot.id) else {
+                continue
+            }
+            connectors[snapshot.id] = items
+            for item in items {
+                if let report = try? await client.connectorHealth(
+                    intentID: snapshot.id,
+                    connectorID: item.id
+                ) {
+                    health[item.id] = report
+                }
+            }
+        }
+        connectorsByIntent = connectors
+        connectorHealth = health
     }
 
     private func deliverNewDecisionNotifications() {

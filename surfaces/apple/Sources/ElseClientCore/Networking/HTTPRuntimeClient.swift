@@ -118,6 +118,18 @@ public struct HTTPRuntimeClient: RuntimeClient {
         try await actionCommand("compensate", intentID: intentID, actionID: actionID)
     }
 
+    public func proposeConnectorAction(
+        intentID: IntentID,
+        request: ProposeConnectorActionRequest
+    ) async throws -> ConnectorAction {
+        try await send(
+            method: "POST",
+            path: ["v1", "intents", intentID.rawValue, "actions"],
+            body: request,
+            intentID: intentID
+        )
+    }
+
     private func actionCommand(
         _ command: String,
         intentID: IntentID,
@@ -141,16 +153,114 @@ public struct HTTPRuntimeClient: RuntimeClient {
         try await send(method: "GET", path: ["v1", "attention"])
     }
 
+    public func projectWorlds(includeResolved: Bool) async throws -> [ProjectWorld] {
+        try await send(
+            method: "GET",
+            path: ["v1", "projects"],
+            queryItems: [
+                URLQueryItem(
+                    name: "include_resolved",
+                    value: includeResolved ? "true" : "false"
+                ),
+            ]
+        )
+    }
+
+    public func identityWorlds(includeResolved: Bool) async throws -> [IdentityWorld] {
+        try await send(
+            method: "GET",
+            path: ["v1", "identities"],
+            queryItems: [
+                URLQueryItem(
+                    name: "include_resolved",
+                    value: includeResolved ? "true" : "false"
+                ),
+            ]
+        )
+    }
+
+    public func correctWorldCorrelation(
+        intentID: IntentID,
+        correction: WorldCorrelationCorrection
+    ) async throws -> WorldCorrelationCorrection {
+        try await send(
+            method: "POST",
+            path: ["v1", "intents", intentID.rawValue, "world", "corrections"],
+            body: correction,
+            intentID: intentID
+        )
+    }
+
+    public func connectorAdapters() async throws -> [ConnectorManifest] {
+        try await send(method: "GET", path: ["v1", "connector-adapters"])
+    }
+
+    public func connectors(intentID: IntentID) async throws -> [ConnectorRegistration] {
+        try await send(
+            method: "GET",
+            path: ["v1", "intents", intentID.rawValue, "connectors"]
+        )
+    }
+
+    public func connectorHealth(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async throws -> ConnectorHealthReport {
+        try await send(
+            method: "GET",
+            path: [
+                "v1",
+                "intents",
+                intentID.rawValue,
+                "connectors",
+                connectorID.rawValue,
+                "health",
+            ]
+        )
+    }
+
+    public func registerConnector(
+        intentID: IntentID,
+        request: RegisterConnectorRequest
+    ) async throws -> ConnectorRegistration {
+        try await send(
+            method: "POST",
+            path: ["v1", "intents", intentID.rawValue, "connectors"],
+            body: request,
+            intentID: intentID
+        )
+    }
+
+    public func syncConnector(
+        intentID: IntentID,
+        connectorID: ConnectorID
+    ) async throws -> ConnectorSyncResult {
+        try await send(
+            method: "POST",
+            path: [
+                "v1",
+                "intents",
+                intentID.rawValue,
+                "connectors",
+                connectorID.rawValue,
+                "sync",
+            ],
+            intentID: intentID
+        )
+    }
+
     private func send<Response: Decodable>(
         method: String,
         path: [String],
-        intentID: IntentID? = nil
+        intentID: IntentID? = nil,
+        queryItems: [URLQueryItem] = []
     ) async throws -> Response {
         try await send(
             method: method,
             path: path,
             body: Optional<EmptyBody>.none,
-            intentID: intentID
+            intentID: intentID,
+            queryItems: queryItems
         )
     }
 
@@ -158,10 +268,16 @@ public struct HTTPRuntimeClient: RuntimeClient {
         method: String,
         path: [String],
         body: Body?,
-        intentID: IntentID? = nil
+        intentID: IntentID? = nil,
+        queryItems: [URLQueryItem] = []
     ) async throws -> Response {
-        let url = path.reduce(baseURL) { partial, component in
+        let base = path.reduce(baseURL) { partial, component in
             partial.appendingPathComponent(component)
+        }
+        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
+        components?.queryItems = queryItems.isEmpty ? nil : queryItems
+        guard let url = components?.url else {
+            throw RuntimeClientError.invalidResponse
         }
         var request = URLRequest(url: url)
         request.httpMethod = method

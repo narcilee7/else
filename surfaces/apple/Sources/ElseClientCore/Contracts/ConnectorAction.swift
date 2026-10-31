@@ -1,5 +1,47 @@
 import Foundation
 
+public enum JSONValue: Codable, Equatable, Sendable {
+    case object([String: JSONValue])
+    case array([JSONValue])
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case null
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([JSONValue].self) {
+            self = .array(value)
+        } else {
+            self = .object(try container.decode([String: JSONValue].self))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .object(value): try container.encode(value)
+        case let .array(value): try container.encode(value)
+        case let .string(value): try container.encode(value)
+        case let .number(value): try container.encode(value)
+        case let .bool(value): try container.encode(value)
+        case .null: try container.encodeNil()
+        }
+    }
+
+    public static func parse(_ text: String) throws -> JSONValue {
+        try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))
+    }
+}
+
 public enum ConnectorActionStatus: String, Codable, Equatable, Sendable {
     case proposed
     case needsApproval = "needs_approval"
@@ -92,5 +134,35 @@ public struct ConnectorAction: Codable, Equatable, Identifiable, Sendable {
         case toolCallID = "tool_call_id"
         case outcome
         case lastError = "last_error"
+    }
+}
+
+public struct ProposeConnectorActionRequest: Codable, Equatable, Sendable {
+    public let connectorID: ConnectorID
+    public let capability: String
+    public let target: String
+    public let input: JSONValue
+    public let idempotencyKey: String?
+
+    public init(
+        connectorID: ConnectorID,
+        capability: String,
+        target: String,
+        input: JSONValue,
+        idempotencyKey: String? = nil
+    ) {
+        self.connectorID = connectorID
+        self.capability = capability
+        self.target = target
+        self.input = input
+        self.idempotencyKey = idempotencyKey
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case connectorID = "connector_id"
+        case capability
+        case target
+        case input
+        case idempotencyKey = "idempotency_key"
     }
 }

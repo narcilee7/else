@@ -3,9 +3,13 @@
 macOS 原生壳，使用 SwiftUI 与 Swift Package Manager。目标不是再做一个聊天窗口，而是把 Runtime 投影收敛成三个主表面与常驻体验：
 
 - 今天：可解释 Priority、来源证据、分组 Personal Brief、外部事项、进行中 Intent 与 Decision 聚合
+- 世界：Project / Contact / Customer / Thread / Milestone 管理，支持 Rename / Merge / Split
+- 连接：Adapter 发现、连接器注册、凭据安全录入、Health 与手动同步
 - 待决策：只有真正需要本人的 Decision，按 Batch/Defer Window 聚合，可直接完成常用选项或进入完整 Intent
 - 结果：已收敛的 Outcome、证据与资源账；详情含 ConnectorAction 执行、核验、补偿与最终副作用结论
+- 动作创建：Intent 详情可选 Connector / 写 Capability、目标和 JSON 参数，创建受控 Proposal
 - 常驻体验：15/30/60 秒后台刷新、去重系统通知、Dock Badge、菜单栏 Quick Access 与设置页
+- 发布：Developer ID hardened runtime 签名、notarytool 公证、staple 与 SHA-256 打包脚本
 
 视觉、Motion 与组件约束见 [DESIGN.md](../../DESIGN.md)。
 
@@ -34,6 +38,11 @@ swift run ElseMac --demo
 # 生成可启动的 .app bundle
 ./scripts/build-app.sh
 open .build/Else.app --args --demo
+
+# Developer ID / notarization 发布
+CODESIGN_IDENTITY="Developer ID Application: ..." \
+APPLE_ID="..." APPLE_APP_PASSWORD="..." APPLE_TEAM_ID="..." \
+./scripts/package-release.sh
 ```
 
 正式模式默认连接 `http://127.0.0.1:4180`，可通过 `ELSE_RUNTIME_URL` 覆盖；Bearer Token 从 `ELSE_RUNTIME_TOKEN` 读取。`ELSE_DEMO=1` 或 `--demo` 只用于开发与视觉验收。

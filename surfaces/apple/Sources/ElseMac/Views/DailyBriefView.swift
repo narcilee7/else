@@ -37,10 +37,7 @@ struct DailyBriefView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                QuietEmptyState(
-                    title: "今天没有需要你处理的外部事项",
-                    description: "新的承诺、等待、风险和临近日历会出现在这里。"
-                )
+                FirstUseEmptyState()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -515,6 +512,39 @@ private struct SectionHeader: View {
         .padding(.horizontal, ElseSpacing.x4)
         .padding(.top, ElseSpacing.x4)
         .padding(.bottom, ElseSpacing.x2)
+    }
+}
+
+private struct FirstUseEmptyState: View {
+    @EnvironmentObject private var store: AppStore
+
+    var body: some View {
+        VStack(spacing: ElseSpacing.x3) {
+            Rectangle()
+                .fill(ElseColor.lineStrong)
+                .frame(width: 28, height: 1)
+            Text(
+                store.snapshots.isEmpty
+                    ? "从第一个 Intent 开始"
+                    : "今天没有需要你处理的外部事项"
+            )
+            .font(ElseType.section)
+            .foregroundStyle(ElseColor.textPrimary)
+
+            HStack(spacing: ElseSpacing.x2) {
+                Button("新建 Intent") {
+                    store.isCreatingIntent = true
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(ElseColor.action)
+
+                Button("接入外部来源") {
+                    store.section = .connectors
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(ElseSpacing.x6)
     }
 }
 

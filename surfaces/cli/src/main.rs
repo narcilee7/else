@@ -382,6 +382,22 @@ enum Command {
         #[arg(long)]
         include_resolved: bool,
     },
+    /// 人工纠正 Project / Identity：merge / split / rename
+    CorrelateCorrect {
+        intent_id: String,
+        #[arg(value_parser = ["merge", "split", "rename"])]
+        action: String,
+        #[arg(value_parser = ["project", "contact", "customer", "thread", "milestone"])]
+        kind: String,
+        #[arg(long = "source")]
+        sources: Vec<String>,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        item_id: Option<String>,
+    },
     /// 跨 Intent 按事件水位读取 Signal
     SignalFeed {
         #[arg(long, default_value_t = 0)]
@@ -1419,6 +1435,54 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                     );
                 }
             }
+        }
+        Command::CorrelateCorrect {
+            intent_id,
+            action,
+            kind,
+            sources,
+            target,
+            label,
+            item_id,
+        } => {
+            use else_protocol::world::{
+                WorldCorrelationCorrection, WorldCorrelationCorrectionKind,
+            };
+            let kind = match kind.as_str() {
+                "project" => else_protocol::connector::CorrelationKind::Project,
+                "contact" => else_protocol::connector::CorrelationKind::Contact,
+                "customer" => else_protocol::connector::CorrelationKind::Customer,
+                "thread" => else_protocol::connector::CorrelationKind::Thread,
+                "milestone" => else_protocol::connector::CorrelationKind::Milestone,
+                _ => unreachable!("clap validates correlation kind"),
+            };
+            let action = match action.as_str() {
+                "merge" => WorldCorrelationCorrectionKind::Merge,
+                "split" => WorldCorrelationCorrectionKind::Split,
+                "rename" => WorldCorrelationCorrectionKind::Rename,
+                _ => unreachable!("clap validates correction action"),
+            };
+            let correction = runtime.correct_world_correlation(
+                &IntentId::from(intent_id),
+                WorldCorrelationCorrection {
+                    id: else_protocol::ids::WorldCorrelationCorrectionId::new(),
+                    kind: action,
+                    correlation_kind: kind,
+                    source_keys: sources,
+                    target_key: target,
+                    label,
+                    item_id: item_id.map(else_protocol::ids::WorldItemId::from),
+                    corrected_at: chrono::Utc::now(),
+                },
+            )?;
+            println!(
+                "correction: {} {:?} {:?} target={:?} label={:?}",
+                correction.id,
+                correction.kind,
+                correction.correlation_kind,
+                correction.target_key,
+                correction.label
+            );
         }
         Command::SignalFeed {
             cursor,
