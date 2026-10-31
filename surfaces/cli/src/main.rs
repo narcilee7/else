@@ -198,10 +198,44 @@ enum Command {
         #[arg(long, default_value = "calendar")]
         name: String,
     },
+    /// 注册并同步只读 Linear Connector
+    Linear {
+        intent_id: String,
+        /// 本地 JSON/GraphQL 响应或 HTTPS URL
+        source: String,
+        #[arg(long, default_value = "linear")]
+        name: String,
+    },
+    /// 配置 Connector 候选的低风险自动接受边界
+    ConnectorPolicy {
+        intent_id: String,
+        #[arg(long)]
+        auto_accept: bool,
+        #[arg(long = "allow-origin")]
+        allowed_origins: Vec<String>,
+        #[arg(long, default_value_t = 80)]
+        min_confidence: u8,
+        #[arg(long, default_value = "read_only", value_parser = ["read_only", "reversible", "compensatable"])]
+        max_effect: String,
+    },
     /// 查看已注册连接器
     Connectors { intent_id: String },
     /// 查看标准化 World Signal 及失效状态
     Signals { intent_id: String },
+    /// 跨 Intent 按事件水位读取 Signal
+    SignalFeed {
+        #[arg(long, default_value_t = 0)]
+        cursor: u64,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        entity: Option<String>,
+    },
+    /// 跨 Intent 按事件水位读取 Intent Candidate
+    CandidateFeed {
+        #[arg(long, default_value_t = 0)]
+        cursor: u64,
+    },
     /// 运行确定性 Resolver，根据 Signal 提出 Intent Candidate
     ResolveSignals { intent_id: String },
     /// 查看 Intent Candidate
@@ -718,16 +752,80 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             let connector = runtime.register_calendar_connector(&intent_id, &name, &source)?;
             let result = runtime.sync_connector(&intent_id, &connector.id)?;
             println!(
-                "connector: {} observed={} inserted={} skipped={}",
-                connector.id, result.observed, result.inserted, result.skipped
+                "connector: {} observed={} inserted={} skipped={} candidates={} auto_accepted={} cursor={}",
+                connector.id,
+                result.observed,
+                result.inserted,
+                result.skipped,
+                result.candidates_proposed,
+                result.auto_accepted,
+                result.cursor.as_deref().unwrap_or("none")
+            );
+        }
+        Command::Linear {
+            intent_id,
+            source,
+            name,
+        } => {
+            let intent_id = IntentId::from(intent_id);
+            let connector = runtime.register_linear_connector(&intent_id, &name, &source)?;
+            let result = runtime.sync_connector(&intent_id, &connector.id)?;
+            println!(
+                "connector: {} observed={} inserted={} skipped={} candidates={} auto_accepted={} cursor={} webhook_session={}",
+                connector.id,
+                result.observed,
+                result.inserted,
+                result.skipped,
+                result.candidates_proposed,
+                result.auto_accepted,
+                result.cursor.as_deref().unwrap_or("none"),
+                connector.webhook_session.as_deref().unwrap_or("none")
+            );
+        }
+        Command::ConnectorPolicy {
+            intent_id,
+            auto_accept,
+            allowed_origins,
+            min_confidence,
+            max_effect,
+        } => {
+            use else_protocol::connector::ConnectorPolicy;
+            let policy = ConnectorPolicy {
+                auto_accept_low_risk: auto_accept,
+                allowed_origins: if allowed_origins.is_empty() {
+                    ConnectorPolicy::default().allowed_origins
+                } else {
+                    allowed_origins
+                        .iter()
+                        .map(|origin| parse_intent_origin(origin))
+                        .collect()
+                },
+                min_confidence,
+                max_autonomous_effect: parse_effect(&max_effect),
+            };
+            let spec = runtime.configure_connector_policy(&IntentId::from(intent_id), policy)?;
+            println!(
+                "connector policy: auto_accept={} min_confidence={} max_effect={:?} revision={}",
+                spec.connector_policy.auto_accept_low_risk,
+                spec.connector_policy.min_confidence,
+                spec.connector_policy.max_autonomous_effect,
+                spec.revision
             );
         }
         Command::Connectors { intent_id } => {
             let projection = runtime.projection(&IntentId::from(intent_id))?;
             for connector in projection.connectors.values() {
                 println!(
-                    "{} {:?} enabled={} source={}",
-                    connector.id, connector.kind, connector.enabled, connector.source
+                    "{} {:?} enabled={} health={:?} provider={} sync={:?} read={:?} write={:?} source={}",
+                    connector.id,
+                    connector.kind,
+                    connector.enabled,
+                    connector.manifest.health,
+                    connector.manifest.provider,
+                    connector.manifest.sync_modes,
+                    connector.manifest.read_capabilities,
+                    connector.manifest.write_capabilities,
+                    connector.source
                 );
             }
         }
@@ -746,6 +844,36 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                         .unwrap_or_else(|| "none".into()),
                     signal.source_trust,
                     signal.summary
+                );
+            }
+        }
+        Command::SignalFeed {
+            cursor,
+            provider,
+            entity,
+        } => {
+            for record in runtime.world_signals(cursor, provider.as_deref(), entity.as_deref())? {
+                println!(
+                    "#{} intent={} {} {:?} {:?} {}",
+                    record.seq,
+                    record.intent_id,
+                    record.signal.id,
+                    record.signal.signal_type,
+                    record.signal.status,
+                    record.signal.summary
+                );
+            }
+        }
+        Command::CandidateFeed { cursor } => {
+            for record in runtime.intent_candidates(cursor)? {
+                println!(
+                    "#{} intent={} {} {:?} {:?} {}",
+                    record.seq,
+                    record.intent_id,
+                    record.candidate.id,
+                    record.candidate.origin,
+                    record.candidate.state,
+                    record.candidate.proposed_outcome
                 );
             }
         }
@@ -779,18 +907,9 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             deadline,
             dedupe_key,
         } => {
-            use else_protocol::connector::{
-                IntentCandidate, IntentCandidateState, IntentOriginKind,
-            };
+            use else_protocol::connector::{IntentCandidate, IntentCandidateState};
             let intent_id = IntentId::from(intent_id);
-            let origin = match origin.as_str() {
-                "user_direct" => IntentOriginKind::UserDirect,
-                "external_request" => IntentOriginKind::ExternalRequest,
-                "commitment" => IntentOriginKind::Commitment,
-                "agent_proposal" => IntentOriginKind::AgentProposal,
-                "system_recovery" => IntentOriginKind::SystemRecovery,
-                _ => IntentOriginKind::InferredNeed,
-            };
+            let origin = parse_intent_origin(&origin);
             let related_signal_ids = signals
                 .into_iter()
                 .map(else_protocol::ids::WorldSignalId::from)
@@ -847,6 +966,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                     dedupe_key,
                     state: IntentCandidateState::Proposed,
                     accepted_intent_id: None,
+                    accepted_by: None,
                 },
             )?;
             print_candidate(&candidate);
@@ -901,6 +1021,18 @@ fn print_candidate(candidate: &else_protocol::connector::IntentCandidate) {
         candidate.related_signal_ids.len(),
         candidate.proposed_outcome
     );
+}
+
+fn parse_intent_origin(origin: &str) -> else_protocol::connector::IntentOriginKind {
+    use else_protocol::connector::IntentOriginKind;
+    match origin {
+        "user_direct" => IntentOriginKind::UserDirect,
+        "external_request" => IntentOriginKind::ExternalRequest,
+        "commitment" => IntentOriginKind::Commitment,
+        "agent_proposal" => IntentOriginKind::AgentProposal,
+        "system_recovery" => IntentOriginKind::SystemRecovery,
+        _ => IntentOriginKind::InferredNeed,
+    }
 }
 
 fn run_tool_call(tool: &str, input: &str, idempotency_key: Option<&str>) -> else_api::Result<()> {

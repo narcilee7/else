@@ -3,7 +3,8 @@
 use chrono::{DateTime, Duration, Utc};
 use else_api::{ApiError, Runtime};
 use else_protocol::connector::{
-    IntentCandidate, IntentCandidateState, IntentOriginKind, SignalStatus,
+    ConnectorKind, ConnectorPolicy, ConnectorSyncMode, IntentAcceptedBy, IntentCandidate,
+    IntentCandidateState, IntentOriginKind, SignalStatus, SignalType,
 };
 use else_protocol::effect::SideEffectKind;
 use else_protocol::intent::{AttentionPolicy, Authority, Criterion};
@@ -44,7 +45,71 @@ fn manual_candidate(
         dedupe_key: dedupe_key.into(),
         state: IntentCandidateState::Proposed,
         accepted_intent_id: None,
+        accepted_by: None,
     }
+}
+
+fn linear_payload() -> serde_json::Value {
+    let updated = Utc::now().to_rfc3339();
+    let due = (Utc::now() + Duration::days(2))
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    serde_json::json!({
+        "data": {
+            "issues": {
+                "nodes": [
+                    {
+                        "id": "issue-commit",
+                        "identifier": "ENG-101",
+                        "title": "向客户交付评审材料",
+                        "state": {"name": "In Progress", "type": "started"},
+                        "updatedAt": updated,
+                        "dueDate": due,
+                        "url": "https://linear.app/acme/issue/ENG-101",
+                        "assignee": {"name": "Zhuanz"},
+                        "project": {"name": "Launch"},
+                        "labels": {"nodes": [{"name": "commitment"}]},
+                        "blockedBy": {"nodes": []},
+                        "priority": 1
+                    },
+                    {
+                        "id": "issue-wait",
+                        "identifier": "ENG-102",
+                        "title": "等待安全团队审批",
+                        "state": {"name": "Blocked", "type": "started"},
+                        "updatedAt": updated,
+                        "dueDate": due,
+                        "url": "https://linear.app/acme/issue/ENG-102",
+                        "labels": {"nodes": [{"name": "waiting_external"}]},
+                        "blockedBy": {"nodes": [{"id": "issue-security"}]},
+                        "priority": 2
+                    },
+                    {
+                        "id": "issue-action",
+                        "identifier": "ENG-103",
+                        "title": "补充发布说明",
+                        "state": {"name": "Todo", "type": "unstarted"},
+                        "updatedAt": updated,
+                        "dueDate": due,
+                        "url": "https://linear.app/acme/issue/ENG-103",
+                        "labels": {"nodes": []},
+                        "blockedBy": {"nodes": []},
+                        "priority": 3
+                    },
+                    {
+                        "id": "issue-done",
+                        "identifier": "ENG-104",
+                        "title": "归档旧文档",
+                        "state": {"name": "Done", "type": "completed"},
+                        "updatedAt": updated,
+                        "labels": {"nodes": []},
+                        "blockedBy": {"nodes": []}
+                    }
+                ]
+            }
+        }
+    })
 }
 
 #[test]
@@ -159,6 +224,7 @@ fn signal_tombstone_removes_context_and_supersedes_candidate() {
         projection.world_signals.keys().next().unwrap().clone(),
         projection.intent_candidates.keys().next().unwrap().clone(),
     );
+    let signal_seq = projection.signal_seqs[&signal_id];
 
     runtime
         .set_world_signal_status(&spec.id, &signal_id, SignalStatus::Deleted)
@@ -173,6 +239,11 @@ fn signal_tombstone_removes_context_and_supersedes_candidate() {
         IntentCandidateState::Superseded
     );
     assert!(projection.external_events.is_empty());
+    let updates = runtime
+        .world_signals(signal_seq, Some("calendar"), None)
+        .unwrap();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].signal.status, SignalStatus::Deleted);
     assert!(runtime
         .compile_snapshot(&spec.id, SnapshotAudience::Planner)
         .unwrap()
@@ -215,6 +286,13 @@ fn candidate_acceptance_preserves_lineage_and_rejects_duplicate_proposals() {
         1
     );
 
+    let candidate_seq = runtime
+        .intent_candidates(0)
+        .unwrap()
+        .into_iter()
+        .find(|record| record.candidate.id == first.id)
+        .unwrap()
+        .seq;
     let accepted = runtime
         .resolve_intent_candidate(&spec.id, &first.id, true)
         .unwrap()
@@ -237,6 +315,10 @@ fn candidate_acceptance_preserves_lineage_and_rejects_duplicate_proposals() {
             .as_ref(),
         Some(&accepted.id)
     );
+    let feed = runtime.intent_candidates(candidate_seq).unwrap();
+    assert_eq!(feed.len(), 1);
+    assert_eq!(feed[0].candidate.state, IntentCandidateState::Accepted);
+    assert_eq!(feed[0].candidate.accepted_by, Some(IntentAcceptedBy::User));
     assert_eq!(runtime.list_intents().unwrap().len(), 2);
     assert_eq!(accepted.project, spec.project);
 
@@ -300,4 +382,210 @@ fn candidate_cannot_escalate_source_intent_authority() {
         .unwrap()
         .intent_candidates
         .is_empty());
+}
+
+#[test]
+fn linear_pull_classifies_work_and_persists_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("推进发布", None).unwrap();
+    let path = dir.path().join("linear.json");
+    std::fs::write(&path, linear_payload().to_string()).unwrap();
+    let connector = runtime
+        .register_linear_connector(&spec.id, "engineering", path.to_str().unwrap())
+        .unwrap();
+    assert_eq!(connector.kind, ConnectorKind::LinearReadOnly);
+    assert_eq!(connector.manifest.provider, "linear");
+    assert!(connector
+        .manifest
+        .sync_modes
+        .contains(&ConnectorSyncMode::Webhook));
+    assert!(connector.webhook_session.is_some());
+    runtime
+        .wait_for_external(&spec.id, "等待 Linear 工作项变化")
+        .unwrap();
+
+    let first = runtime.sync_connector(&spec.id, &connector.id).unwrap();
+    assert_eq!(first.observed, 4);
+    assert_eq!(first.inserted, 4);
+    assert_eq!(first.candidates_proposed, 3);
+    assert!(first.cursor.is_some());
+    let projection = runtime.projection(&spec.id).unwrap();
+    assert_eq!(
+        projection.state,
+        Some(else_protocol::intent::IntentState::Active)
+    );
+    assert_eq!(projection.world_signals.len(), 4);
+    assert_eq!(projection.external_events.len(), 3);
+    assert_eq!(
+        projection
+            .world_signals
+            .values()
+            .filter(|signal| signal.signal_type == SignalType::Commitment)
+            .count(),
+        1
+    );
+    assert_eq!(
+        projection
+            .world_signals
+            .values()
+            .filter(|signal| signal.signal_type == SignalType::WaitingExternal)
+            .count(),
+        1
+    );
+    assert_eq!(
+        projection
+            .world_signals
+            .values()
+            .filter(|signal| signal.status == SignalStatus::Deleted)
+            .count(),
+        1
+    );
+    assert_eq!(projection.connector_cursors.len(), 1);
+    let cursor = projection
+        .connector_cursors
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    let global_signals = runtime
+        .world_signals(0, Some("linear"), Some("issue-commit"))
+        .unwrap();
+    assert_eq!(global_signals.len(), 1);
+    assert_eq!(global_signals[0].intent_id, spec.id);
+    let candidates = runtime.intent_candidates(0).unwrap();
+    assert_eq!(candidates.len(), 3);
+    let last_candidate_seq = candidates.last().unwrap().seq;
+    assert!(runtime
+        .intent_candidates(last_candidate_seq)
+        .unwrap()
+        .is_empty());
+    assert!(runtime
+        .world_signals(global_signals[0].seq, Some("linear"), None)
+        .unwrap()
+        .iter()
+        .all(|record| record.seq > global_signals[0].seq));
+
+    let second = runtime.sync_connector(&spec.id, &connector.id).unwrap();
+    assert_eq!(second.inserted, 0);
+    assert_eq!(second.skipped, 4);
+    assert_eq!(second.candidates_proposed, 0);
+    assert_eq!(second.cursor, first.cursor);
+
+    drop(runtime);
+    let reopened = Runtime::open(dir.path()).unwrap();
+    assert_eq!(
+        reopened
+            .projection(&spec.id)
+            .unwrap()
+            .connector_cursors
+            .values()
+            .next(),
+        Some(&cursor)
+    );
+}
+
+#[test]
+fn linear_webhook_is_session_scoped_deduplicated_and_handles_completion() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("跟进外部依赖", None).unwrap();
+    let path = dir.path().join("linear.json");
+    std::fs::write(&path, r#"{"issues":[]}"#).unwrap();
+    let connector = runtime
+        .register_linear_connector(&spec.id, "engineering", path.to_str().unwrap())
+        .unwrap();
+    let session = connector.webhook_session.clone().unwrap();
+    let issue = linear_payload()["data"]["issues"]["nodes"][1].clone();
+
+    let error = runtime
+        .ingest_connector_webhook(&spec.id, &connector.id, "wrong-session", issue.clone())
+        .unwrap_err();
+    assert!(matches!(error, ApiError::Unauthorized(_)));
+    let first = runtime
+        .ingest_connector_webhook(&spec.id, &connector.id, &session, issue.clone())
+        .unwrap();
+    assert_eq!(first.inserted, 1);
+    assert_eq!(first.candidates_proposed, 1);
+    let duplicate = runtime
+        .ingest_connector_webhook(&spec.id, &connector.id, &session, issue.clone())
+        .unwrap();
+    assert_eq!(duplicate.inserted, 0);
+    assert_eq!(duplicate.skipped, 1);
+    assert_eq!(duplicate.candidates_proposed, 0);
+
+    let mut completed = issue;
+    completed["state"] = serde_json::json!({"name": "Done", "type": "completed"});
+    completed["updatedAt"] = serde_json::json!((Utc::now() + Duration::seconds(1)).to_rfc3339());
+    let completion = runtime
+        .ingest_connector_webhook(&spec.id, &connector.id, &session, completed)
+        .unwrap();
+    assert_eq!(completion.inserted, 1);
+    let projection = runtime.projection(&spec.id).unwrap();
+    assert_eq!(
+        projection
+            .world_signals
+            .values()
+            .filter(|signal| signal.status == SignalStatus::Active)
+            .count(),
+        0
+    );
+    assert!(projection
+        .intent_candidates
+        .values()
+        .all(|candidate| candidate.state == IntentCandidateState::Superseded));
+    assert!(runtime
+        .compile_snapshot(&spec.id, SnapshotAudience::Planner)
+        .unwrap()
+        .external_events
+        .is_empty());
+}
+
+#[test]
+fn connector_policy_only_auto_accepts_explicit_low_risk_origins() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("推进发布", None).unwrap();
+    let policy = ConnectorPolicy {
+        auto_accept_low_risk: true,
+        allowed_origins: vec![IntentOriginKind::Commitment],
+        min_confidence: 80,
+        max_autonomous_effect: SideEffectKind::ReadOnly,
+    };
+    let revised = runtime
+        .configure_connector_policy(&spec.id, policy.clone())
+        .unwrap();
+    assert_eq!(revised.revision, 2);
+    assert_eq!(revised.connector_policy, policy);
+
+    let path = dir.path().join("linear.json");
+    std::fs::write(&path, linear_payload().to_string()).unwrap();
+    let connector = runtime
+        .register_linear_connector(&spec.id, "engineering", path.to_str().unwrap())
+        .unwrap();
+    let result = runtime.sync_connector(&spec.id, &connector.id).unwrap();
+    assert_eq!(result.auto_accepted, 1);
+    assert_eq!(runtime.list_intents().unwrap().len(), 2);
+    let projection = runtime.projection(&spec.id).unwrap();
+    let accepted = projection
+        .intent_candidates
+        .values()
+        .find(|candidate| candidate.state == IntentCandidateState::Accepted)
+        .unwrap();
+    assert_eq!(accepted.origin, IntentOriginKind::Commitment);
+    assert_eq!(accepted.accepted_by, Some(IntentAcceptedBy::AutonomousRule));
+    let child_id = accepted.accepted_intent_id.as_ref().unwrap();
+    let child = runtime.projection(child_id).unwrap().spec.unwrap();
+    assert_eq!(
+        child.origin.unwrap().accepted_by,
+        IntentAcceptedBy::AutonomousRule
+    );
+    assert_eq!(
+        projection
+            .intent_candidates
+            .values()
+            .filter(|candidate| candidate.state == IntentCandidateState::Proposed)
+            .count(),
+        2
+    );
 }

@@ -29,6 +29,7 @@ fn ctx(intent_id: &IntentId, generation: u64) -> ExecContext {
             assumptions: vec![],
             project: None,
             origin: None,
+            connector_policy: Default::default(),
         },
         scope_id: ScopeId::new(),
         run_id: RunId::new(),

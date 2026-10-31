@@ -14,7 +14,8 @@ use crate::capability::{
     McpServerRegistration,
 };
 use crate::connector::{
-    ConnectorRegistration, ExternalFact, IntentCandidate, IntentCandidateState, WorldSignal,
+    ConnectorRegistration, ExternalFact, IntentAcceptedBy, IntentCandidate, IntentCandidateState,
+    SyncCursor, WorldSignal,
 };
 use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
 use crate::egress::EgressDecision;
@@ -200,6 +201,11 @@ pub enum EventPayload {
         candidate_id: IntentCandidateId,
         state: IntentCandidateState,
         intent_id: Option<IntentId>,
+        #[serde(default)]
+        accepted_by: Option<IntentAcceptedBy>,
+    },
+    ConnectorSyncCheckpointed {
+        cursor: SyncCursor,
     },
 
     RunStarted {
@@ -411,6 +417,7 @@ mod tests {
             assumptions: vec![],
             project: None,
             origin: None,
+            connector_policy: Default::default(),
         }
     }
 
@@ -456,8 +463,50 @@ mod tests {
 
         let mut legacy_intent = serde_json::to_value(spec()).unwrap();
         legacy_intent.as_object_mut().unwrap().remove("origin");
+        legacy_intent
+            .as_object_mut()
+            .unwrap()
+            .remove("connector_policy");
         let decoded: IntentSpec = serde_json::from_value(legacy_intent).unwrap();
         assert!(decoded.origin.is_none());
+        assert!(!decoded.connector_policy.auto_accept_low_risk);
+
+        let legacy_candidate_state = serde_json::json!({
+            "type": "intent_candidate_state_changed",
+            "data": {
+                "candidate_id": "candidate-legacy",
+                "state": "accepted",
+                "intent_id": null
+            }
+        });
+        let payload: EventPayload = serde_json::from_value(legacy_candidate_state).unwrap();
+        match payload {
+            EventPayload::IntentCandidateStateChanged { accepted_by, .. } => {
+                assert!(accepted_by.is_none());
+            }
+            other => panic!("unexpected payload: {other:?}"),
+        }
+
+        let legacy_connector = serde_json::json!({
+            "type": "connector_registered",
+            "data": {
+                "connector": {
+                    "id": "connector-legacy",
+                    "name": "legacy",
+                    "kind": "calendar_read_only",
+                    "source": "/tmp/calendar.ics",
+                    "enabled": true
+                }
+            }
+        });
+        let payload: EventPayload = serde_json::from_value(legacy_connector).unwrap();
+        match payload {
+            EventPayload::ConnectorRegistered { connector } => {
+                assert_eq!(connector.manifest, Default::default());
+                assert!(connector.webhook_session.is_none());
+            }
+            other => panic!("unexpected payload: {other:?}"),
+        }
     }
 
     #[test]

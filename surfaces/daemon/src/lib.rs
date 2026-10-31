@@ -211,6 +211,39 @@ fn handle_http(mut request: Request, state: &AppState) {
         }
         return;
     }
+    if path == "/v1/connector-events" {
+        let mut body = String::new();
+        if request.as_reader().read_to_string(&mut body).is_err() {
+            respond_json(request, 400, &json!({"error":"invalid body"}));
+            return;
+        }
+        let token = header(&request, "Authorization")
+            .and_then(|value| value.strip_prefix("Bearer ").map(str::to_string))
+            .unwrap_or_default();
+        let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+        let intent_id =
+            else_protocol::ids::IntentId::from(value["intent_id"].as_str().unwrap_or_default());
+        let connector_id = else_protocol::ids::ConnectorId::from(
+            value["connector_id"].as_str().unwrap_or_default(),
+        );
+        match state.handle.ingest_connector_webhook(
+            &intent_id,
+            &connector_id,
+            &token,
+            value["payload"].clone(),
+        ) {
+            Ok(result) => {
+                respond_json(request, 200, &json!({"ok":true,"result":result}));
+            }
+            Err(ApiError::Unauthorized(error)) => {
+                respond_json(request, 403, &json!({"error":error}));
+            }
+            Err(error) => {
+                respond_json(request, 400, &json!({"error":error.to_string()}));
+            }
+        }
+        return;
+    }
     if !authorized(&request, &state.token) {
         respond_json(request, 401, &json!({ "error": "unauthorized" }));
         return;
@@ -294,6 +327,7 @@ fn handle_http(mut request: Request, state: &AppState) {
                 DaemonError::Api(ApiError::IntentNotFound(_))
                 | DaemonError::Api(ApiError::NotFound(_)) => 404,
                 DaemonError::Api(ApiError::Conflict(_)) => 409,
+                DaemonError::Api(ApiError::Unauthorized(_)) => 403,
                 DaemonError::InvalidRequest(_) => 400,
                 _ => 500,
             };
@@ -330,6 +364,27 @@ fn route(
             }
             _ => Ok((405, json!({ "error": "method not allowed" }).to_string())),
         };
+    }
+    if segments == ["v1", "signals"] && request.method() == &Method::Get {
+        let cursor = query_value(request.url(), "cursor")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let provider = query_value(request.url(), "provider");
+        let entity = query_value(request.url(), "entity");
+        let mut signals =
+            state
+                .handle
+                .world_signals(cursor, provider.as_deref(), entity.as_deref())?;
+        signals.sort_by_key(|record| record.seq);
+        return Ok((200, json_string(&signals)?));
+    }
+    if segments == ["v1", "candidates"] && request.method() == &Method::Get {
+        let cursor = query_value(request.url(), "cursor")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let mut candidates = state.handle.intent_candidates(cursor)?;
+        candidates.sort_by_key(|record| record.seq);
+        return Ok((200, json_string(&candidates)?));
     }
     if segments.len() >= 3 && segments[0..2] == ["v1", "intents"] {
         let intent_id = else_protocol::ids::IntentId::from(segments[2]);
@@ -425,17 +480,39 @@ fn route(
                 Method::Post => {
                     check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
                     let value: Value = serde_json::from_str(body).map_err(json_error)?;
-                    let connector = state.handle.register_calendar_connector(
-                        &intent_id,
-                        value["name"].as_str().unwrap_or("calendar"),
-                        value["source"]
-                            .as_str()
-                            .ok_or_else(|| DaemonError::InvalidRequest("missing source".into()))?,
-                    )?;
+                    let name = value["name"].as_str().unwrap_or("connector");
+                    let source = value["source"]
+                        .as_str()
+                        .ok_or_else(|| DaemonError::InvalidRequest("missing source".into()))?;
+                    let connector = match value["kind"].as_str().unwrap_or("calendar") {
+                        "linear" | "linear_read_only" => state
+                            .handle
+                            .register_linear_connector(&intent_id, name, source)?,
+                        "calendar" | "calendar_read_only" => state
+                            .handle
+                            .register_calendar_connector(&intent_id, name, source)?,
+                        kind => {
+                            return Err(DaemonError::InvalidRequest(format!(
+                                "unsupported connector kind {kind}"
+                            )));
+                        }
+                    };
                     return Ok((200, json_string(&connector)?));
                 }
                 _ => {}
             }
+        }
+        if segments.len() == 4
+            && segments[3] == "connector-policy"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let policy: else_protocol::connector::ConnectorPolicy =
+                serde_json::from_str(body).map_err(json_error)?;
+            let spec = state
+                .handle
+                .configure_connector_policy(&intent_id, policy)?;
+            return Ok((200, json_string(&spec)?));
         }
         if segments.len() == 4 && segments[3] == "signals" && request.method() == &Method::Get {
             let signals = state
@@ -501,6 +578,47 @@ fn route(
                 200,
                 json_string(&json!({"candidate":candidate,"intent":intent}))?,
             ));
+        }
+        if segments.len() == 6
+            && segments[3] == "connectors"
+            && segments[5] == "health"
+            && request.method() == &Method::Get
+        {
+            let connector_id = else_protocol::ids::ConnectorId::from(segments[4]);
+            let connector = state
+                .handle
+                .projection(&intent_id)?
+                .connectors
+                .get(&connector_id)
+                .cloned()
+                .ok_or_else(|| {
+                    DaemonError::Api(ApiError::NotFound(format!("connector {connector_id}")))
+                })?;
+            return Ok((
+                200,
+                json_string(&json!({
+                    "connector_id": connector.id,
+                    "provider": connector.manifest.provider,
+                    "health": connector.manifest.health,
+                    "checked_at": Utc::now().to_rfc3339()
+                }))?,
+            ));
+        }
+        if segments.len() == 6
+            && segments[3] == "connectors"
+            && segments[5] == "cursor"
+            && request.method() == &Method::Get
+        {
+            let connector_id = else_protocol::ids::ConnectorId::from(segments[4]);
+            let cursors = state
+                .handle
+                .projection(&intent_id)?
+                .connector_cursors
+                .into_iter()
+                .filter(|((id, _), _)| id == &connector_id)
+                .map(|(_, cursor)| cursor)
+                .collect::<Vec<_>>();
+            return Ok((200, json_string(&cursors)?));
         }
         if segments.len() == 6
             && segments[3] == "connectors"
@@ -746,6 +864,7 @@ fn snapshot(projection: &IntentProjection) -> IntentSnapshot {
                 assumptions: vec![],
                 project: None,
                 origin: None,
+                connector_policy: Default::default(),
             }
         }),
         state: projection.state.unwrap_or(IntentState::Active),
@@ -791,8 +910,38 @@ fn header(request: &Request, name: &str) -> Option<String> {
 fn query_value(url: &str, key: &str) -> Option<String> {
     url.split_once('?')?.1.split('&').find_map(|pair| {
         let (name, value) = pair.split_once('=')?;
-        (name == key).then(|| value.to_string())
+        (name == key).then(|| percent_decode(value))
     })
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let high = (bytes[index + 1] as char).to_digit(16);
+                let low = (bytes[index + 2] as char).to_digit(16);
+                if let (Some(high), Some(low)) = (high, low) {
+                    decoded.push((high * 16 + low) as u8);
+                    index += 3;
+                } else {
+                    decoded.push(bytes[index]);
+                    index += 1;
+                }
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 fn respond_json(request: Request, status: u16, value: &Value) {
@@ -1229,6 +1378,121 @@ mod tests {
         assert_eq!(
             accepted["intent"]["origin"]["kind"].as_str(),
             Some("external_request")
+        );
+        daemon.shutdown();
+    }
+
+    #[test]
+    fn daemon_registers_linear_and_accepts_session_scoped_webhooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("linear.json");
+        std::fs::write(&source, r#"{"issues":[]}"#).unwrap();
+        let daemon = Daemon::start(DaemonConfig {
+            dir: dir.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            token: Some("linear-token".into()),
+        })
+        .unwrap();
+        let (status, body) = request(
+            &daemon,
+            "POST",
+            "/v1/intents",
+            r#"{"outcome":"Linear webhook 测试"}"#,
+            Some("linear-create"),
+            None,
+        );
+        assert_eq!(status, 200, "{body}");
+        let snapshot: Value = serde_json::from_str(&body).unwrap();
+        let intent_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
+        let revision = snapshot["spec"]["revision"].as_u64().unwrap();
+        let connectors_path = format!("/v1/intents/{intent_id}/connectors");
+        let connector_body = json!({
+            "kind": "linear",
+            "name": "engineering",
+            "source": source
+        })
+        .to_string();
+        let (status, connector) = request(
+            &daemon,
+            "POST",
+            &connectors_path,
+            &connector_body,
+            Some("linear-register"),
+            Some(revision),
+        );
+        assert_eq!(status, 200, "{connector}");
+        let connector: Value = serde_json::from_str(&connector).unwrap();
+        let connector_id = connector["id"].as_str().unwrap();
+        let session = connector["webhook_session"].as_str().unwrap();
+        assert_eq!(connector["manifest"]["provider"].as_str(), Some("linear"));
+
+        let payload = json!({
+            "id": "issue-webhook",
+            "identifier": "ENG-200",
+            "title": "等待合作方确认",
+            "state": {"name": "Blocked", "type": "started"},
+            "updatedAt": Utc::now().to_rfc3339(),
+            "labels": {"nodes": [{"name": "waiting_external"}]},
+            "blockedBy": {"nodes": [{"id": "external"}]}
+        });
+        let event_body = json!({
+            "intent_id": intent_id,
+            "connector_id": connector_id,
+            "payload": {
+                "action": "update",
+                "type": "Issue",
+                "data": payload
+            }
+        })
+        .to_string();
+        let (status, denied) = request_with_token(
+            &daemon,
+            "wrong-session",
+            "/v1/connector-events",
+            &event_body,
+        );
+        assert_eq!(status, 403, "{denied}");
+        let (status, accepted) =
+            request_with_token(&daemon, session, "/v1/connector-events", &event_body);
+        assert_eq!(status, 200, "{accepted}");
+        let signals_path = format!("/v1/intents/{intent_id}/signals");
+        let (status, signals) = request(&daemon, "GET", &signals_path, "", None, None);
+        assert_eq!(status, 200, "{signals}");
+        assert_eq!(
+            serde_json::from_str::<Vec<Value>>(&signals).unwrap().len(),
+            1
+        );
+        let cursor_path = format!("/v1/intents/{intent_id}/connectors/{connector_id}/cursor");
+        let (status, cursors) = request(&daemon, "GET", &cursor_path, "", None, None);
+        assert_eq!(status, 200, "{cursors}");
+        assert!(cursors.contains("linear-webhook"));
+        let health_path = format!("/v1/intents/{intent_id}/connectors/{connector_id}/health");
+        let (status, health) = request(&daemon, "GET", &health_path, "", None, None);
+        assert_eq!(status, 200, "{health}");
+        assert!(health.contains("healthy"));
+        let (status, global_signals) = request(
+            &daemon,
+            "GET",
+            "/v1/signals?provider=linear&cursor=0",
+            "",
+            None,
+            None,
+        );
+        assert_eq!(status, 200, "{global_signals}");
+        assert_eq!(
+            serde_json::from_str::<Vec<Value>>(&global_signals)
+                .unwrap()
+                .len(),
+            1
+        );
+        let (status, global_candidates) =
+            request(&daemon, "GET", "/v1/candidates?cursor=0", "", None, None);
+        assert_eq!(status, 200, "{global_candidates}");
+        assert_eq!(
+            serde_json::from_str::<Vec<Value>>(&global_candidates)
+                .unwrap()
+                .len(),
+            1
         );
         daemon.shutdown();
     }

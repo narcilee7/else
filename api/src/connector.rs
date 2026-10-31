@@ -1,17 +1,19 @@
-//! 只读连接器、World Signal 与 Intent Candidate 的运行时实现。
+//! 只读连接器、World Signal、Resolver 与 Intent Candidate 的运行时实现。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use else_protocol::connector::{
-    ConnectorKind, ConnectorRegistration, ConnectorSyncResult, ExternalEntityRef, IntentAcceptedBy,
-    IntentCandidate, IntentCandidateState, IntentOrigin, IntentOriginKind, SignalStatus,
-    SignalType, WorldSignal,
+    ConnectorAuthMode, ConnectorHealth, ConnectorKind, ConnectorManifest, ConnectorPolicy,
+    ConnectorRegistration, ConnectorSyncMode, ConnectorSyncResult, ExternalEntityRef, ExternalFact,
+    IntentAcceptedBy, IntentCandidate, IntentCandidateRecord, IntentCandidateState, IntentOrigin,
+    IntentOriginKind, SignalStatus, SignalType, SyncCursor, WorldSignal, WorldSignalRecord,
 };
 use else_protocol::effect::SideEffectKind;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::ids::{ConnectorId, IntentId};
 use else_protocol::intent::{AttentionPolicy, Authority, Criterion};
+use serde_json::Value;
 
 use crate::{ApiError, IntentDraft, Result, Runtime};
 
@@ -22,17 +24,51 @@ impl Runtime {
         name: &str,
         source: &str,
     ) -> Result<ConnectorRegistration> {
-        if !source.starts_with("https://") && !std::path::Path::new(source).is_file() {
-            return Err(ApiError::NotFound(format!(
-                "calendar source is not an existing file or HTTPS URL: {source}"
-            )));
-        }
+        validate_connector_source(source)?;
+        self.register_connector(
+            intent_id,
+            name,
+            source,
+            ConnectorKind::CalendarReadOnly,
+            calendar_manifest(),
+            None,
+        )
+    }
+
+    pub fn register_linear_connector(
+        &self,
+        intent_id: &IntentId,
+        name: &str,
+        source: &str,
+    ) -> Result<ConnectorRegistration> {
+        validate_connector_source(source)?;
+        self.register_connector(
+            intent_id,
+            name,
+            source,
+            ConnectorKind::LinearReadOnly,
+            linear_manifest(),
+            Some(uuid::Uuid::new_v4().to_string()),
+        )
+    }
+
+    fn register_connector(
+        &self,
+        intent_id: &IntentId,
+        name: &str,
+        source: &str,
+        kind: ConnectorKind,
+        manifest: ConnectorManifest,
+        webhook_session: Option<String>,
+    ) -> Result<ConnectorRegistration> {
         let connector = ConnectorRegistration {
             id: ConnectorId::new(),
             name: name.into(),
-            kind: ConnectorKind::CalendarReadOnly,
+            kind,
             source: source.into(),
             enabled: true,
+            manifest,
+            webhook_session,
         };
         let (root, generation, revision) = self.kernel_context(intent_id)?;
         self.ledger.append(&EventEnvelope::new(
@@ -57,6 +93,7 @@ impl Runtime {
         let connector = projection
             .connectors
             .get(connector_id)
+            .cloned()
             .ok_or_else(|| ApiError::NotFound(format!("connector {connector_id}")))?;
         if !connector.enabled {
             return Err(ApiError::Conflict(format!(
@@ -64,54 +101,180 @@ impl Runtime {
             )));
         }
         let now = Utc::now();
-        let facts = else_connector::read_calendar(
-            connector.id.clone(),
-            &connector.source,
-            now - Duration::days(1),
-            now + Duration::days(14),
-        )
+        let page = match connector.kind {
+            ConnectorKind::CalendarReadOnly => else_connector::pull_calendar(
+                connector.id.clone(),
+                &connector.source,
+                now - Duration::days(1),
+                now + Duration::days(14),
+            ),
+            ConnectorKind::LinearReadOnly => {
+                else_connector::pull_linear(connector.id.clone(), &connector.source)
+            }
+        }
         .map_err(|error| ApiError::NotFound(error.to_string()))?;
+        let mut result = ConnectorSyncResult {
+            observed: page.facts.len() as u64,
+            cursor: Some(page.opaque_cursor.clone()),
+            ..ConnectorSyncResult::default()
+        };
+        let cursor_key = (connector.id.clone(), page.stream_id.clone());
+        let unchanged = projection
+            .connector_cursors
+            .get(&cursor_key)
+            .is_some_and(|cursor| cursor.opaque_cursor == page.opaque_cursor);
+        if unchanged {
+            result.skipped = page.facts.len() as u64;
+        } else {
+            let (inserted, skipped) = self.ingest_facts(intent_id, &projection, &page.facts)?;
+            result.inserted = inserted;
+            result.skipped = skipped;
+            self.record_connector_cursor(
+                intent_id,
+                &connector.id,
+                &page.stream_id,
+                &page.opaque_cursor,
+                page.overlap_until,
+            )?;
+        }
+        let (candidates, auto_accepted) = self.resolve_signals_internal(intent_id)?;
+        result.candidates_proposed = candidates.len() as u64;
+        result.auto_accepted = auto_accepted;
+        Ok(result)
+    }
+
+    pub fn world_signals(
+        &self,
+        cursor: u64,
+        provider: Option<&str>,
+        entity: Option<&str>,
+    ) -> Result<Vec<WorldSignalRecord>> {
+        let mut records = Vec::new();
+        for spec in self.list_intents()? {
+            let projection = self.projection(&spec.id)?;
+            for signal in projection.world_signals.into_values() {
+                let Some(seq) = projection.signal_seqs.get(&signal.id).copied() else {
+                    continue;
+                };
+                if seq <= cursor
+                    || provider.is_some_and(|provider| signal.entity_ref.provider != provider)
+                    || entity.is_some_and(|entity| signal.entity_ref.external_id != entity)
+                {
+                    continue;
+                }
+                records.push(WorldSignalRecord {
+                    seq,
+                    intent_id: spec.id.clone(),
+                    signal,
+                });
+            }
+        }
+        records.sort_by_key(|record| (record.seq, record.intent_id.clone()));
+        Ok(records)
+    }
+
+    pub fn intent_candidates(&self, cursor: u64) -> Result<Vec<IntentCandidateRecord>> {
+        let mut records = Vec::new();
+        for spec in self.list_intents()? {
+            let projection = self.projection(&spec.id)?;
+            for candidate in projection.intent_candidates.into_values() {
+                let Some(seq) = projection.candidate_seqs.get(&candidate.id).copied() else {
+                    continue;
+                };
+                if seq <= cursor {
+                    continue;
+                }
+                records.push(IntentCandidateRecord {
+                    seq,
+                    intent_id: spec.id.clone(),
+                    candidate,
+                });
+            }
+        }
+        records.sort_by_key(|record| (record.seq, record.intent_id.clone()));
+        Ok(records)
+    }
+
+    /// Webhook 复用同一 Normalize、去重、Candidate 与 Cursor 路径。
+    pub fn ingest_connector_webhook(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+        session_token: &str,
+        payload: Value,
+    ) -> Result<ConnectorSyncResult> {
+        let projection = self.projection(intent_id)?;
+        let connector = projection
+            .connectors
+            .get(connector_id)
+            .cloned()
+            .ok_or_else(|| ApiError::NotFound(format!("connector {connector_id}")))?;
+        if connector.webhook_session.as_deref() != Some(session_token) {
+            return Err(ApiError::Unauthorized(
+                "invalid connector webhook session".into(),
+            ));
+        }
+        if connector.kind != ConnectorKind::LinearReadOnly {
+            return Err(ApiError::Conflict(format!(
+                "connector {connector_id} does not accept structured webhooks"
+            )));
+        }
+        if !payload.is_object() {
+            return Err(ApiError::Conflict(
+                "connector webhook payload must be a JSON object".into(),
+            ));
+        }
+        let facts = else_connector::normalize_linear_payload(&connector.id, &payload)
+            .map_err(|error| ApiError::NotFound(error.to_string()))?;
         let mut result = ConnectorSyncResult {
             observed: facts.len() as u64,
             ..ConnectorSyncResult::default()
         };
+        let (inserted, skipped) = self.ingest_facts(intent_id, &projection, &facts)?;
+        result.inserted = inserted;
+        result.skipped = skipped;
+        let cursor_value = format!("linear-webhook:{:016x}", stable_hash(&payload.to_string()));
+        result.cursor = Some(cursor_value.clone());
+        let unchanged = projection
+            .connector_cursors
+            .get(&(connector.id.clone(), "linear-webhook".into()))
+            .is_some_and(|cursor| cursor.opaque_cursor == cursor_value);
+        if !unchanged {
+            self.record_connector_cursor(
+                intent_id,
+                &connector.id,
+                "linear-webhook",
+                &cursor_value,
+                None,
+            )?;
+        }
+        let (candidates, auto_accepted) = self.resolve_signals_internal(intent_id)?;
+        result.candidates_proposed = candidates.len() as u64;
+        result.auto_accepted = auto_accepted;
+        Ok(result)
+    }
+
+    fn ingest_facts(
+        &self,
+        intent_id: &IntentId,
+        projection: &else_ledger::IntentProjection,
+        facts: &[ExternalFact],
+    ) -> Result<(u64, u64)> {
         let mut seen = projection
             .signal_dedupe
             .keys()
             .cloned()
-            .collect::<BTreeSet<_>>();
+            .collect::<HashSet<_>>();
+        let mut inserted = 0;
+        let mut skipped = 0;
         let (root, generation, revision) = self.kernel_context(intent_id)?;
         for fact in facts {
             if !seen.insert(fact.fact_id.clone()) {
-                result.skipped += 1;
+                skipped += 1;
                 continue;
             }
-            let signal = WorldSignal {
-                id: else_protocol::ids::WorldSignalId::new(),
-                connector_id: connector.id.clone(),
-                entity_ref: ExternalEntityRef {
-                    provider: "calendar".into(),
-                    tenant: None,
-                    account: None,
-                    entity_kind: "calendar_event".into(),
-                    external_id: fact.entity_id,
-                    canonical_url: None,
-                    source_version: Some(fact.source_version),
-                },
-                signal_type: SignalType::CalendarEvent,
-                actor: None,
-                occurred_at: fact.occurred_at,
-                valid_from: Some(fact.occurred_at),
-                valid_until: fact.valid_until,
-                summary: fact.summary,
-                structured_facts: serde_json::json!({}),
-                evidence_ref: None,
-                dedupe_key: fact.fact_id,
-                sensitivity: "internal".into(),
-                source_trust: "deterministic_read_only".into(),
-                status: SignalStatus::Active,
-            };
-            self.ledger.append(&EventEnvelope::new(
+            let signal = world_signal_from_fact(fact);
+            let stored = self.ledger.append(&EventEnvelope::new(
                 intent_id.clone(),
                 root.clone(),
                 generation,
@@ -119,10 +282,112 @@ impl Runtime {
                 Actor::External,
                 EventPayload::WorldSignalIngested { signal },
             ))?;
-            result.inserted += 1;
+            self.analyze_plan_impact(
+                intent_id,
+                &stored.envelope.event_id,
+                &fact.source,
+                &fact.summary,
+            )?;
+            inserted += 1;
         }
-        result.candidates_proposed = self.resolve_signals(intent_id)?.len() as u64;
-        Ok(result)
+        if inserted > 0 {
+            let projection = self.projection(intent_id)?;
+            if matches!(
+                projection.state,
+                Some(else_protocol::intent::IntentState::WaitingExternal)
+                    | Some(else_protocol::intent::IntentState::Paused)
+            ) {
+                self.ledger.append(&EventEnvelope::new(
+                    intent_id.clone(),
+                    root,
+                    generation,
+                    revision,
+                    Actor::System,
+                    EventPayload::IntentStateChanged {
+                        state: else_protocol::intent::IntentState::Active,
+                    },
+                ))?;
+            }
+        }
+        Ok((inserted, skipped))
+    }
+
+    fn record_connector_cursor(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+        stream_id: &str,
+        opaque_cursor: &str,
+        overlap_until: Option<DateTime<Utc>>,
+    ) -> Result<SyncCursor> {
+        let cursor = SyncCursor {
+            connector_id: connector_id.clone(),
+            stream_id: stream_id.into(),
+            opaque_cursor: opaque_cursor.into(),
+            overlap_until,
+            checkpointed_at: Utc::now(),
+        };
+        let (root, generation, revision) = self.kernel_context(intent_id)?;
+        self.ledger.append(&EventEnvelope::new(
+            intent_id.clone(),
+            root,
+            generation,
+            revision,
+            Actor::System,
+            EventPayload::ConnectorSyncCheckpointed {
+                cursor: cursor.clone(),
+            },
+        ))?;
+        Ok(cursor)
+    }
+
+    pub fn configure_connector_policy(
+        &self,
+        intent_id: &IntentId,
+        policy: ConnectorPolicy,
+    ) -> Result<else_protocol::intent::IntentSpec> {
+        if policy.min_confidence > 100 {
+            return Err(ApiError::Conflict(
+                "connector policy min_confidence must be between 0 and 100".into(),
+            ));
+        }
+        if policy.max_autonomous_effect == SideEffectKind::Unknown {
+            return Err(ApiError::Conflict(
+                "connector policy cannot preauthorize Unknown effects".into(),
+            ));
+        }
+        let projection = self.projection(intent_id)?;
+        let mut spec = projection
+            .spec
+            .clone()
+            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+        if policy.max_autonomous_effect > spec.authority.max_autonomous_effect {
+            return Err(ApiError::PermissionEscalation(
+                "connector policy exceeds Intent Authority".into(),
+            ));
+        }
+        spec.revision = spec.revision.saturating_add(1);
+        spec.connector_policy = policy;
+        let root = projection
+            .root_scope_id
+            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+        let generation = projection
+            .scopes
+            .get(&root)
+            .map(|scope| scope.generation)
+            .unwrap_or(1);
+        self.ledger.append(&EventEnvelope::new(
+            intent_id.clone(),
+            root,
+            generation,
+            spec.revision,
+            Actor::User,
+            EventPayload::IntentRevised {
+                spec: spec.clone(),
+                reason: "用户配置 Connector 低风险自动接受策略".into(),
+            },
+        ))?;
+        Ok(spec)
     }
 
     pub fn propose_intent_candidate(
@@ -193,6 +458,7 @@ impl Runtime {
         }
         candidate.state = IntentCandidateState::Proposed;
         candidate.accepted_intent_id = None;
+        candidate.accepted_by = None;
         candidate.related_intent_id = Some(intent_id.clone());
         let (root, generation, revision) = self.kernel_context(intent_id)?;
         self.ledger.append(&EventEnvelope::new(
@@ -213,6 +479,25 @@ impl Runtime {
         source_intent_id: &IntentId,
         candidate_id: &else_protocol::ids::IntentCandidateId,
         accept: bool,
+    ) -> Result<Option<else_protocol::intent::IntentSpec>> {
+        self.resolve_intent_candidate_as(
+            source_intent_id,
+            candidate_id,
+            accept,
+            if accept {
+                Some(IntentAcceptedBy::User)
+            } else {
+                None
+            },
+        )
+    }
+
+    fn resolve_intent_candidate_as(
+        &self,
+        source_intent_id: &IntentId,
+        candidate_id: &else_protocol::ids::IntentCandidateId,
+        accept: bool,
+        accepted_by: Option<IntentAcceptedBy>,
     ) -> Result<Option<else_protocol::intent::IntentSpec>> {
         let projection = self.projection(source_intent_id)?;
         let source_spec = projection
@@ -237,9 +522,13 @@ impl Runtime {
                 candidate_id,
                 IntentCandidateState::Rejected,
                 None,
+                None,
             )?;
             return Ok(None);
         }
+        let accepted_by = accepted_by.ok_or_else(|| {
+            ApiError::Conflict("candidate acceptance requires an accepted_by actor".into())
+        })?;
         if !source_spec.authority.permits_child(&candidate.authority) {
             return Err(ApiError::PermissionEscalation(format!(
                 "candidate {candidate_id}"
@@ -283,7 +572,7 @@ impl Runtime {
                     connector_ids,
                     signal_ids: candidate.related_signal_ids.clone(),
                     candidate_id: Some(candidate.id.clone()),
-                    accepted_by: IntentAcceptedBy::User,
+                    accepted_by,
                     accepted_at: Utc::now(),
                 }),
             })?
@@ -294,69 +583,58 @@ impl Runtime {
             candidate_id,
             IntentCandidateState::Accepted,
             Some(spec.id.clone()),
+            Some(accepted_by),
         )?;
         Ok(Some(spec))
     }
 
-    /// Deterministic Resolver：只提出 Candidate，绝不自动创建 Intent。
-    /// 24 小时内的 Calendar 信号会生成一个只读准备类候选。
+    /// Deterministic Resolver：只提出 Candidate；是否自动接受由显式 Connector Policy 决定。
     pub fn resolve_signals(&self, intent_id: &IntentId) -> Result<Vec<IntentCandidate>> {
+        Ok(self.resolve_signals_internal(intent_id)?.0)
+    }
+
+    fn resolve_signals_internal(
+        &self,
+        intent_id: &IntentId,
+    ) -> Result<(Vec<IntentCandidate>, u64)> {
         let projection = self.projection(intent_id)?;
         let source_spec = projection
             .spec
             .as_ref()
             .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+        let policy = source_spec.connector_policy.clone();
         let now = Utc::now();
-        let horizon = now + Duration::hours(24);
         let mut candidates = Vec::new();
+        let mut auto_accepted = 0;
         for signal in projection.world_signals.values() {
-            if signal.signal_type != SignalType::CalendarEvent
-                || signal.status != SignalStatus::Active
-                || signal.occurred_at < now
-                || signal.occurred_at > horizon
-                || signal
-                    .valid_until
-                    .is_some_and(|valid_until| valid_until < now)
+            if signal.status != SignalStatus::Active {
+                continue;
+            }
+            let Some(mut candidate) = resolver_candidate(intent_id, source_spec, signal, now)
+            else {
+                continue;
+            };
+            if projection
+                .candidate_dedupe
+                .contains_key(&candidate.dedupe_key)
             {
                 continue;
             }
-            let dedupe_key = format!("resolver:calendar-prep:{}", signal.dedupe_key);
-            if projection.candidate_dedupe.contains_key(&dedupe_key) {
-                continue;
+            candidate = self.propose_intent_candidate(intent_id, candidate)?;
+            if policy_accepts(&policy, &candidate) {
+                self.resolve_intent_candidate_as(
+                    intent_id,
+                    &candidate.id,
+                    true,
+                    Some(IntentAcceptedBy::AutonomousRule),
+                )?;
+                candidate.state = IntentCandidateState::Accepted;
+                candidate.accepted_by = Some(IntentAcceptedBy::AutonomousRule);
+                auto_accepted += 1;
             }
-            let mut forbidden = source_spec.authority.forbidden.clone();
-            let write_guard = "不得修改外部日历，除非经 Gateway 写入 Capability".to_string();
-            if !forbidden.contains(&write_guard) {
-                forbidden.push(write_guard);
-            }
-            let candidate = self.propose_intent_candidate(
-                intent_id,
-                IntentCandidate {
-                    id: else_protocol::ids::IntentCandidateId::new(),
-                    origin: IntentOriginKind::InferredNeed,
-                    proposed_outcome: format!("为日程「{}」准备必要材料", signal.summary),
-                    done_when: vec![Criterion::manual("确认日程准备完成")],
-                    constraints: vec!["只读解析日历；外部写入必须经 Tool Gateway".into()],
-                    authority: Authority {
-                        max_autonomous_effect: SideEffectKind::ReadOnly,
-                        forbidden,
-                    },
-                    attention_policy: AttentionPolicy {
-                        allow_interrupt: false,
-                        batch_interval_minutes: 60,
-                    },
-                    deadline: Some(signal.occurred_at),
-                    related_signal_ids: vec![signal.id.clone()],
-                    related_intent_id: Some(intent_id.clone()),
-                    confidence: 65,
-                    dedupe_key,
-                    state: IntentCandidateState::Proposed,
-                    accepted_intent_id: None,
-                },
-            )?;
             candidates.push(candidate);
         }
-        Ok(candidates)
+        Ok((candidates, auto_accepted))
     }
 
     /// 显式 Tombstone 或 Superseded 转换。失效 Signal 不再进入 Context Snapshot，
@@ -391,25 +669,213 @@ impl Runtime {
     }
 }
 
+fn world_signal_from_fact(fact: &ExternalFact) -> WorldSignal {
+    WorldSignal {
+        id: else_protocol::ids::WorldSignalId::new(),
+        connector_id: fact.connector_id.clone(),
+        entity_ref: ExternalEntityRef {
+            provider: fact.source.clone(),
+            tenant: None,
+            account: None,
+            entity_kind: if fact.entity_kind.is_empty() {
+                "external".into()
+            } else {
+                fact.entity_kind.clone()
+            },
+            external_id: fact.entity_id.clone(),
+            canonical_url: fact.canonical_url.clone(),
+            source_version: Some(fact.source_version.clone()),
+        },
+        signal_type: fact.signal_type,
+        actor: fact.actor.clone(),
+        occurred_at: fact.occurred_at,
+        valid_from: Some(fact.occurred_at),
+        valid_until: fact.valid_until,
+        summary: fact.summary.clone(),
+        structured_facts: fact.structured_facts.clone(),
+        evidence_ref: fact.evidence_ref.clone(),
+        dedupe_key: fact.fact_id.clone(),
+        sensitivity: fact.sensitivity.clone(),
+        source_trust: fact.source_trust.clone(),
+        status: fact.status,
+    }
+}
+
+fn resolver_candidate(
+    intent_id: &IntentId,
+    source_spec: &else_protocol::intent::IntentSpec,
+    signal: &WorldSignal,
+    now: DateTime<Utc>,
+) -> Option<IntentCandidate> {
+    let (dedupe_prefix, origin, outcome, confidence, deadline, constraint) =
+        match signal.signal_type {
+            SignalType::CalendarEvent => {
+                let horizon = now + Duration::hours(24);
+                if signal.occurred_at < now
+                    || signal.occurred_at > horizon
+                    || signal
+                        .valid_until
+                        .is_some_and(|valid_until| valid_until < now)
+                {
+                    return None;
+                }
+                (
+                    "resolver:calendar-prep",
+                    IntentOriginKind::InferredNeed,
+                    format!("为日程「{}」准备必要材料", signal.summary),
+                    65,
+                    Some(signal.occurred_at),
+                    "只读解析日历；外部写入必须经 Tool Gateway",
+                )
+            }
+            SignalType::Commitment => (
+                "resolver:linear-commitment",
+                IntentOriginKind::Commitment,
+                format!("履行承诺：{}", signal.summary),
+                85,
+                structured_deadline(signal),
+                "只读解析外部工作项；修改状态必须经 Tool Gateway",
+            ),
+            SignalType::WaitingExternal => (
+                "resolver:linear-waiting",
+                IntentOriginKind::InferredNeed,
+                format!("跟进等待中的事项：{}", signal.summary),
+                80,
+                structured_deadline(signal),
+                "只读解析依赖；不得自动催促或修改外部工作项",
+            ),
+            SignalType::Issue | SignalType::ActionItem => (
+                "resolver:linear-work",
+                IntentOriginKind::InferredNeed,
+                format!("推进工作项：{}", signal.summary),
+                70,
+                structured_deadline(signal),
+                "只读解析工作项；状态变更必须经 Tool Gateway",
+            ),
+            SignalType::Message | SignalType::Page => return None,
+        };
+    let mut forbidden = source_spec.authority.forbidden.clone();
+    if !forbidden.iter().any(|rule| rule == constraint) {
+        forbidden.push(constraint.into());
+    }
+    Some(IntentCandidate {
+        id: else_protocol::ids::IntentCandidateId::new(),
+        origin,
+        proposed_outcome: outcome,
+        done_when: vec![Criterion::manual("确认外部工作项推进完成")],
+        constraints: vec![constraint.into()],
+        authority: Authority {
+            max_autonomous_effect: SideEffectKind::ReadOnly,
+            forbidden,
+        },
+        attention_policy: AttentionPolicy {
+            allow_interrupt: false,
+            batch_interval_minutes: 60,
+        },
+        deadline,
+        related_signal_ids: vec![signal.id.clone()],
+        related_intent_id: Some(intent_id.clone()),
+        confidence,
+        dedupe_key: format!("{dedupe_prefix}:{}", signal.dedupe_key),
+        state: IntentCandidateState::Proposed,
+        accepted_intent_id: None,
+        accepted_by: None,
+    })
+}
+
+fn structured_deadline(signal: &WorldSignal) -> Option<DateTime<Utc>> {
+    signal
+        .structured_facts
+        .get("due_at")
+        .and_then(Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+}
+
+fn policy_accepts(policy: &ConnectorPolicy, candidate: &IntentCandidate) -> bool {
+    policy.auto_accept_low_risk
+        && policy.allowed_origins.contains(&candidate.origin)
+        && candidate.confidence >= policy.min_confidence
+        && candidate.authority.max_autonomous_effect <= policy.max_autonomous_effect
+        && candidate.authority.max_autonomous_effect != SideEffectKind::Unknown
+}
+
 fn candidate_state_event(
     runtime: &Runtime,
     intent_id: &IntentId,
     candidate_id: &else_protocol::ids::IntentCandidateId,
     state: IntentCandidateState,
     accepted_intent_id: Option<IntentId>,
+    accepted_by: Option<IntentAcceptedBy>,
 ) -> Result<()> {
     let (root, generation, revision) = runtime.kernel_context(intent_id)?;
+    let actor = if accepted_by == Some(IntentAcceptedBy::User) {
+        Actor::User
+    } else {
+        Actor::System
+    };
     runtime.ledger.append(&EventEnvelope::new(
         intent_id.clone(),
         root,
         generation,
         revision,
-        Actor::User,
+        actor,
         EventPayload::IntentCandidateStateChanged {
             candidate_id: candidate_id.clone(),
             state,
             intent_id: accepted_intent_id,
+            accepted_by,
         },
     ))?;
     Ok(())
+}
+
+fn validate_connector_source(source: &str) -> Result<()> {
+    if !source.starts_with("https://") && !std::path::Path::new(source).is_file() {
+        return Err(ApiError::NotFound(format!(
+            "connector source is not an existing file or HTTPS URL: {source}"
+        )));
+    }
+    Ok(())
+}
+
+fn calendar_manifest() -> ConnectorManifest {
+    ConnectorManifest {
+        provider: "calendar".into(),
+        auth_mode: ConnectorAuthMode::None,
+        scopes: vec!["calendar.read".into()],
+        read_capabilities: vec!["calendar.event.read".into()],
+        write_capabilities: vec!["calendar.event.update".into()],
+        sync_modes: vec![ConnectorSyncMode::Pull],
+        data_sensitivity: "internal".into(),
+        retention_policy: "metadata_only".into(),
+        health: ConnectorHealth::Healthy,
+    }
+}
+
+fn linear_manifest() -> ConnectorManifest {
+    ConnectorManifest {
+        provider: "linear".into(),
+        auth_mode: ConnectorAuthMode::None,
+        scopes: vec!["issues:read".into()],
+        read_capabilities: vec![
+            "linear.issue.read".into(),
+            "linear.milestone.read".into(),
+            "linear.blocker.read".into(),
+        ],
+        write_capabilities: vec!["linear.issue.comment".into(), "linear.issue.update".into()],
+        sync_modes: vec![ConnectorSyncMode::Pull, ConnectorSyncMode::Webhook],
+        data_sensitivity: "internal".into(),
+        retention_policy: "metadata_only".into(),
+        health: ConnectorHealth::Healthy,
+    }
+}
+
+fn stable_hash(value: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }

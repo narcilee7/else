@@ -3,13 +3,59 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::effect::SideEffectKind;
 use crate::ids::{ConnectorId, IntentCandidateId, IntentId, WorldSignalId};
 use crate::intent::{AttentionPolicy, Authority, Criterion};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectorKind {
+    #[default]
     CalendarReadOnly,
+    LinearReadOnly,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorAuthMode {
+    #[default]
+    None,
+    ApiToken,
+    OAuth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorSyncMode {
+    Pull,
+    Webhook,
+    Hybrid,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorHealth {
+    #[default]
+    Healthy,
+    Degraded,
+    Error,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectorManifest {
+    pub provider: String,
+    pub auth_mode: ConnectorAuthMode,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub read_capabilities: Vec<String>,
+    #[serde(default)]
+    pub write_capabilities: Vec<String>,
+    #[serde(default)]
+    pub sync_modes: Vec<ConnectorSyncMode>,
+    pub data_sensitivity: String,
+    pub retention_policy: String,
+    pub health: ConnectorHealth,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -20,6 +66,11 @@ pub struct ConnectorRegistration {
     /// 本地文件路径或 HTTPS URL。
     pub source: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub manifest: ConnectorManifest,
+    /// Provider Webhook 使用的独立 Session Token，不暴露 daemon 管理 Token。
+    #[serde(default)]
+    pub webhook_session: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,23 +88,40 @@ pub struct ExternalFact {
     pub summary: String,
     pub occurred_at: DateTime<Utc>,
     pub valid_until: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub entity_kind: String,
+    pub canonical_url: Option<String>,
+    #[serde(default)]
+    pub signal_type: SignalType,
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub structured_facts: serde_json::Value,
+    pub evidence_ref: Option<String>,
+    #[serde(default = "default_sensitivity")]
+    pub sensitivity: String,
+    #[serde(default = "default_source_trust")]
+    pub source_trust: String,
+    #[serde(default)]
+    pub status: SignalStatus,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SignalType {
+    #[default]
+    CalendarEvent,
     Message,
     Issue,
     Page,
-    CalendarEvent,
     Commitment,
     ActionItem,
     WaitingExternal,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SignalStatus {
+    #[default]
     Active,
     Deleted,
     Superseded,
@@ -149,6 +217,58 @@ pub struct IntentCandidate {
     pub dedupe_key: String,
     pub state: IntentCandidateState,
     pub accepted_intent_id: Option<IntentId>,
+    #[serde(default)]
+    pub accepted_by: Option<IntentAcceptedBy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncCursor {
+    pub connector_id: ConnectorId,
+    pub stream_id: String,
+    pub opaque_cursor: String,
+    pub overlap_until: Option<DateTime<Utc>>,
+    pub checkpointed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorldSignalRecord {
+    pub seq: u64,
+    pub intent_id: IntentId,
+    pub signal: WorldSignal,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IntentCandidateRecord {
+    pub seq: u64,
+    pub intent_id: IntentId,
+    pub candidate: IntentCandidate,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectorPullPage {
+    pub stream_id: String,
+    pub opaque_cursor: String,
+    pub overlap_until: Option<DateTime<Utc>>,
+    pub facts: Vec<ExternalFact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectorPolicy {
+    pub auto_accept_low_risk: bool,
+    pub allowed_origins: Vec<IntentOriginKind>,
+    pub min_confidence: u8,
+    pub max_autonomous_effect: SideEffectKind,
+}
+
+impl Default for ConnectorPolicy {
+    fn default() -> Self {
+        Self {
+            auto_accept_low_risk: false,
+            allowed_origins: vec![IntentOriginKind::Commitment, IntentOriginKind::InferredNeed],
+            min_confidence: 80,
+            max_autonomous_effect: SideEffectKind::ReadOnly,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,4 +277,15 @@ pub struct ConnectorSyncResult {
     pub inserted: u64,
     pub skipped: u64,
     pub candidates_proposed: u64,
+    pub auto_accepted: u64,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+fn default_sensitivity() -> String {
+    "internal".into()
+}
+
+fn default_source_trust() -> String {
+    "provider_read_only".into()
 }

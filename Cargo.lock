@@ -577,6 +577,7 @@ dependencies = [
  "chrono",
  "else-protocol",
  "ical",
+ "serde_json",
  "thiserror 2.0.21",
  "ureq",
 ]

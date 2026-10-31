@@ -7,7 +7,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::connector::IntentOrigin;
+use crate::connector::{ConnectorPolicy, IntentOrigin};
 use crate::effect::SideEffectKind;
 use crate::ids::IntentId;
 
@@ -135,6 +135,9 @@ pub struct IntentSpec {
     /// 来源血缘；旧事件缺省为未知，新 Intent 创建时显式记录。
     #[serde(default)]
     pub origin: Option<IntentOrigin>,
+    /// Connector Resolver 的受限自动接受策略；默认完全关闭。
+    #[serde(default)]
+    pub connector_policy: ConnectorPolicy,
 }
 
 /// IntentState：由 Runtime 根据执行事件持续更新的投影状态。

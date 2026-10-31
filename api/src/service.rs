@@ -11,8 +11,9 @@ use else_protocol::attention::{AttentionRequest, DecisionChoice};
 use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, AgentBindingState, AgentTransport, CapabilityRegistration,
 };
-use else_protocol::connector::IntentCandidate;
-use else_protocol::connector::{ConnectorRegistration, ConnectorSyncResult};
+use else_protocol::connector::{
+    ConnectorPolicy, ConnectorRegistration, ConnectorSyncResult, IntentCandidate,
+};
 use else_protocol::ids::{
     AgentBindingId, AgentId, AttentionId, CapabilityId, ConnectorId, IntentCandidateId, IntentId,
     RunId, ScopeId, TimerId,
@@ -102,10 +103,38 @@ enum Command {
         source: String,
         reply: Reply<ConnectorRegistration>,
     },
+    RegisterLinear {
+        intent_id: IntentId,
+        name: String,
+        source: String,
+        reply: Reply<ConnectorRegistration>,
+    },
     SyncConnector {
         intent_id: IntentId,
         connector_id: ConnectorId,
         reply: Reply<ConnectorSyncResult>,
+    },
+    IngestConnectorWebhook {
+        intent_id: IntentId,
+        connector_id: ConnectorId,
+        session_token: String,
+        payload: serde_json::Value,
+        reply: Reply<ConnectorSyncResult>,
+    },
+    ConfigureConnectorPolicy {
+        intent_id: IntentId,
+        policy: ConnectorPolicy,
+        reply: Reply<IntentSpec>,
+    },
+    WorldSignals {
+        cursor: u64,
+        provider: Option<String>,
+        entity: Option<String>,
+        reply: Reply<Vec<else_protocol::connector::WorldSignalRecord>>,
+    },
+    IntentCandidates {
+        cursor: u64,
+        reply: Reply<Vec<else_protocol::connector::IntentCandidateRecord>>,
     },
     ResolveSignals {
         intent_id: IntentId,
@@ -339,6 +368,20 @@ impl RuntimeHandle {
         })
     }
 
+    pub fn register_linear_connector(
+        &self,
+        intent_id: &IntentId,
+        name: &str,
+        source: &str,
+    ) -> Result<ConnectorRegistration> {
+        self.request(|reply| Command::RegisterLinear {
+            intent_id: intent_id.clone(),
+            name: name.into(),
+            source: source.into(),
+            reply,
+        })
+    }
+
     pub fn sync_connector(
         &self,
         intent_id: &IntentId,
@@ -349,6 +392,55 @@ impl RuntimeHandle {
             connector_id: connector_id.clone(),
             reply,
         })
+    }
+
+    pub fn ingest_connector_webhook(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+        session_token: &str,
+        payload: serde_json::Value,
+    ) -> Result<ConnectorSyncResult> {
+        self.request(|reply| Command::IngestConnectorWebhook {
+            intent_id: intent_id.clone(),
+            connector_id: connector_id.clone(),
+            session_token: session_token.into(),
+            payload,
+            reply,
+        })
+    }
+
+    pub fn configure_connector_policy(
+        &self,
+        intent_id: &IntentId,
+        policy: ConnectorPolicy,
+    ) -> Result<IntentSpec> {
+        self.request(|reply| Command::ConfigureConnectorPolicy {
+            intent_id: intent_id.clone(),
+            policy,
+            reply,
+        })
+    }
+
+    pub fn world_signals(
+        &self,
+        cursor: u64,
+        provider: Option<&str>,
+        entity: Option<&str>,
+    ) -> Result<Vec<else_protocol::connector::WorldSignalRecord>> {
+        self.request(|reply| Command::WorldSignals {
+            cursor,
+            provider: provider.map(str::to_string),
+            entity: entity.map(str::to_string),
+            reply,
+        })
+    }
+
+    pub fn intent_candidates(
+        &self,
+        cursor: u64,
+    ) -> Result<Vec<else_protocol::connector::IntentCandidateRecord>> {
+        self.request(|reply| Command::IntentCandidates { cursor, reply })
     }
 
     pub fn resolve_signals(&self, intent_id: &IntentId) -> Result<Vec<IntentCandidate>> {
@@ -656,12 +748,53 @@ fn handle_command(runtime: &Runtime, command: Command) {
         } => {
             let _ = reply.send(runtime.register_calendar_connector(&intent_id, &name, &source));
         }
+        Command::RegisterLinear {
+            intent_id,
+            name,
+            source,
+            reply,
+        } => {
+            let _ = reply.send(runtime.register_linear_connector(&intent_id, &name, &source));
+        }
         Command::SyncConnector {
             intent_id,
             connector_id,
             reply,
         } => {
             let _ = reply.send(runtime.sync_connector(&intent_id, &connector_id));
+        }
+        Command::IngestConnectorWebhook {
+            intent_id,
+            connector_id,
+            session_token,
+            payload,
+            reply,
+        } => {
+            let _ = reply.send(runtime.ingest_connector_webhook(
+                &intent_id,
+                &connector_id,
+                &session_token,
+                payload,
+            ));
+        }
+        Command::ConfigureConnectorPolicy {
+            intent_id,
+            policy,
+            reply,
+        } => {
+            let _ = reply.send(runtime.configure_connector_policy(&intent_id, policy));
+        }
+        Command::WorldSignals {
+            cursor,
+            provider,
+            entity,
+            reply,
+        } => {
+            let _ =
+                reply.send(runtime.world_signals(cursor, provider.as_deref(), entity.as_deref()));
+        }
+        Command::IntentCandidates { cursor, reply } => {
+            let _ = reply.send(runtime.intent_candidates(cursor));
         }
         Command::ResolveSignals { intent_id, reply } => {
             let _ = reply.send(runtime.resolve_signals(&intent_id));

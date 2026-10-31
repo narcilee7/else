@@ -10,7 +10,9 @@ use else_protocol::attention::{
 use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, CapabilityRegistration, McpServerRegistration,
 };
-use else_protocol::connector::{ConnectorRegistration, IntentCandidate, SignalStatus, WorldSignal};
+use else_protocol::connector::{
+    ConnectorRegistration, IntentCandidate, SignalStatus, SyncCursor, WorldSignal,
+};
 use else_protocol::event::{Actor, EventPayload, ScopeState};
 use else_protocol::failure::ScopeFailure;
 use else_protocol::ids::{ArtifactId, AttentionId, AttentionWindowId, LeaseId, ScopeId, TimerId};
@@ -109,10 +111,13 @@ pub struct IntentProjection {
     pub mcp_servers: BTreeMap<else_protocol::ids::McpServerId, McpServerRegistration>,
     pub dirty_mcp_servers: std::collections::BTreeSet<else_protocol::ids::McpServerId>,
     pub connectors: BTreeMap<else_protocol::ids::ConnectorId, ConnectorRegistration>,
+    pub connector_cursors: BTreeMap<(else_protocol::ids::ConnectorId, String), SyncCursor>,
     pub external_fact_keys: std::collections::BTreeSet<String>,
     pub world_signals: BTreeMap<else_protocol::ids::WorldSignalId, WorldSignal>,
+    pub signal_seqs: BTreeMap<else_protocol::ids::WorldSignalId, u64>,
     pub signal_dedupe: BTreeMap<String, else_protocol::ids::WorldSignalId>,
     pub intent_candidates: BTreeMap<else_protocol::ids::IntentCandidateId, IntentCandidate>,
+    pub candidate_seqs: BTreeMap<else_protocol::ids::IntentCandidateId, u64>,
     pub candidate_dedupe: BTreeMap<String, else_protocol::ids::IntentCandidateId>,
     pub artifacts: Vec<Artifact>,
     pub artifact_scopes: BTreeMap<ArtifactId, ScopeId>,
@@ -258,6 +263,12 @@ impl Projection for IntentProjection {
                 self.connectors
                     .insert(connector.id.clone(), connector.clone());
             }
+            EventPayload::ConnectorSyncCheckpointed { cursor } => {
+                self.connector_cursors.insert(
+                    (cursor.connector_id.clone(), cursor.stream_id.clone()),
+                    cursor.clone(),
+                );
+            }
             EventPayload::ExternalFactIngested { fact }
                 if self.external_fact_keys.insert(fact.fact_id.clone()) =>
             {
@@ -288,6 +299,8 @@ impl Projection for IntentProjection {
                 for id in superseded {
                     self.external_events
                         .retain(|event| event.event_id != id.to_string());
+                    self.signal_seqs.insert(id.clone(), event.seq);
+                    let mut superseded_candidates = Vec::new();
                     for candidate in self.intent_candidates.values_mut() {
                         if candidate.state
                             == else_protocol::connector::IntentCandidateState::Proposed
@@ -295,11 +308,16 @@ impl Projection for IntentProjection {
                         {
                             candidate.state =
                                 else_protocol::connector::IntentCandidateState::Superseded;
+                            superseded_candidates.push(candidate.id.clone());
                         }
+                    }
+                    for candidate_id in superseded_candidates {
+                        self.candidate_seqs.insert(candidate_id, event.seq);
                     }
                 }
                 self.signal_dedupe
                     .insert(signal.dedupe_key.clone(), signal.id.clone());
+                self.signal_seqs.insert(signal.id.clone(), event.seq);
                 self.world_signals.insert(signal.id.clone(), signal.clone());
                 if signal.status == SignalStatus::Active {
                     self.external_events.push(ExternalEventProjection {
@@ -315,9 +333,11 @@ impl Projection for IntentProjection {
             EventPayload::WorldSignalStatusChanged { signal_id, status } => {
                 if let Some(signal) = self.world_signals.get_mut(signal_id) {
                     signal.status = *status;
+                    self.signal_seqs.insert(signal_id.clone(), event.seq);
                     if !matches!(status, SignalStatus::Active) {
                         self.external_events
                             .retain(|event| event.event_id != signal_id.to_string());
+                        let mut superseded_candidates = Vec::new();
                         for candidate in self.intent_candidates.values_mut() {
                             if candidate.state
                                 == else_protocol::connector::IntentCandidateState::Proposed
@@ -325,7 +345,11 @@ impl Projection for IntentProjection {
                             {
                                 candidate.state =
                                     else_protocol::connector::IntentCandidateState::Superseded;
+                                superseded_candidates.push(candidate.id.clone());
                             }
+                        }
+                        for candidate_id in superseded_candidates {
+                            self.candidate_seqs.insert(candidate_id, event.seq);
                         }
                     } else if !self
                         .external_events
@@ -348,6 +372,7 @@ impl Projection for IntentProjection {
             {
                 self.candidate_dedupe
                     .insert(candidate.dedupe_key.clone(), candidate.id.clone());
+                self.candidate_seqs.insert(candidate.id.clone(), event.seq);
                 self.intent_candidates
                     .insert(candidate.id.clone(), candidate.clone());
             }
@@ -355,9 +380,12 @@ impl Projection for IntentProjection {
                 candidate_id,
                 state,
                 intent_id,
+                accepted_by,
             } => {
                 if let Some(candidate) = self.intent_candidates.get_mut(candidate_id) {
                     candidate.state = *state;
+                    candidate.accepted_by = *accepted_by;
+                    self.candidate_seqs.insert(candidate_id.clone(), event.seq);
                     if intent_id.is_some() {
                         candidate.accepted_intent_id = intent_id.clone();
                     }

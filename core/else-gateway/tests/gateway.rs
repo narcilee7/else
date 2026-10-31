@@ -30,6 +30,7 @@ fn ctx(spec_id: &IntentId) -> ExecContext {
             assumptions: vec![],
             project: None,
             origin: None,
+            connector_policy: Default::default(),
         },
         scope_id: ScopeId::new(),
         run_id: RunId::new(),

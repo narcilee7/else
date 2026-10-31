@@ -35,6 +35,7 @@ fn spec(intent_id: &IntentId) -> IntentSpec {
         assumptions: vec![],
         project: None,
         origin: None,
+        connector_policy: Default::default(),
     }
 }
 

@@ -53,6 +53,8 @@ pub enum ApiError {
     NotFound(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
     #[error("runtime worker stopped")]
     WorkerStopped,
     #[error("subagent authority exceeds parent: {0}")]
@@ -168,6 +170,7 @@ impl Runtime {
             }],
             project: draft.project,
             origin: draft.origin,
+            connector_policy: else_protocol::connector::ConnectorPolicy::default(),
         };
         self.ledger.append(&EventEnvelope::new(
             spec.id.clone(),
