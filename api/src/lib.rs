@@ -72,6 +72,8 @@ pub struct Runtime {
     store: else_workspace::Store,
     branches: PathBuf,
     default_budget: else_protocol::resource::ResourceBudget,
+    connector_adapters: else_connector::AdapterRegistry,
+    signal_interpreter: else_connector::SignalInterpreter,
 }
 
 pub(crate) struct IntentDraft {
@@ -89,6 +91,20 @@ impl Runtime {
     /// 打开本地 Runtime：`dir/else.db`（事件库）+ `dir/workspace/`（工作区）
     /// + `dir/store/`（CAS 工件存储）+ `dir/branches/`（分支工作区）。
     pub fn open(dir: &Path) -> Result<Self> {
+        Self::open_with_connector_runtime(
+            dir,
+            else_connector::AdapterRegistry::builtin(),
+            else_connector::SignalInterpreter::builtin(),
+        )
+    }
+
+    /// 使用外部注入的 Adapter Registry / Interpreter 打开 Runtime。
+    /// 新 Provider 可通过组合根注入，无需修改 Intent Kernel。
+    pub fn open_with_connector_runtime(
+        dir: &Path,
+        connector_adapters: else_connector::AdapterRegistry,
+        signal_interpreter: else_connector::SignalInterpreter,
+    ) -> Result<Self> {
         let workspace = dir.join("workspace");
         std::fs::create_dir_all(&workspace)?;
         let harness_private = dir.join("harness-private");
@@ -100,6 +116,8 @@ impl Runtime {
             store: else_workspace::Store::new(dir.join("store"))?,
             branches: dir.join("branches"),
             default_budget: resources::budget_from_env(),
+            connector_adapters,
+            signal_interpreter,
         };
         // 上次进程可能死在 Abort 的任意事件边界；重开后先完成安全收敛。
         runtime.recover_aborts()?;

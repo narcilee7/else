@@ -15,7 +15,7 @@ use crate::capability::{
 };
 use crate::connector::{
     ConnectorRegistration, ExternalFact, IntentAcceptedBy, IntentCandidate, IntentCandidateState,
-    SyncCursor, WorldSignal,
+    SignalInterpretation, SyncCursor, WorldSignal,
 };
 use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
 use crate::egress::EgressDecision;
@@ -193,6 +193,9 @@ pub enum EventPayload {
     WorldSignalStatusChanged {
         signal_id: WorldSignalId,
         status: crate::connector::SignalStatus,
+    },
+    SignalInterpreted {
+        interpretation: SignalInterpretation,
     },
     IntentCandidateProposed {
         candidate: IntentCandidate,
@@ -504,6 +507,48 @@ mod tests {
             EventPayload::ConnectorRegistered { connector } => {
                 assert_eq!(connector.manifest, Default::default());
                 assert!(connector.webhook_session.is_none());
+            }
+            other => panic!("unexpected payload: {other:?}"),
+        }
+
+        let legacy_signal = serde_json::json!({
+            "type": "world_signal_ingested",
+            "data": {
+                "signal": {
+                    "id": "signal-legacy",
+                    "connector_id": "connector-legacy",
+                    "entity_ref": {
+                        "provider": "linear",
+                        "tenant": null,
+                        "account": null,
+                        "entity_kind": "linear_issue",
+                        "external_id": "issue-legacy",
+                        "canonical_url": null,
+                        "source_version": "1"
+                    },
+                    "signal_type": "waiting_external",
+                    "actor": null,
+                    "occurred_at": "2026-10-31T00:00:00Z",
+                    "valid_from": null,
+                    "valid_until": null,
+                    "summary": "legacy waiting",
+                    "structured_facts": {},
+                    "evidence_ref": null,
+                    "dedupe_key": "legacy-signal",
+                    "sensitivity": "internal",
+                    "source_trust": "provider_read_only",
+                    "status": "active"
+                }
+            }
+        });
+        let payload: EventPayload = serde_json::from_value(legacy_signal).unwrap();
+        match payload {
+            EventPayload::WorldSignalIngested { signal } => {
+                assert_eq!(
+                    signal.legacy_signal_type,
+                    Some(crate::connector::SignalType::WaitingExternal)
+                );
+                assert_eq!(signal.object_kind, crate::connector::ObjectKind::Other);
             }
             other => panic!("unexpected payload: {other:?}"),
         }

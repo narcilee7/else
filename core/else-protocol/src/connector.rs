@@ -9,14 +9,6 @@ use crate::intent::{AttentionPolicy, Authority, Criterion};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ConnectorKind {
-    #[default]
-    CalendarReadOnly,
-    LinearReadOnly,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ConnectorAuthMode {
     #[default]
     None,
@@ -43,6 +35,8 @@ pub enum ConnectorHealth {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectorManifest {
+    #[serde(default)]
+    pub adapter: String,
     pub provider: String,
     pub auth_mode: ConnectorAuthMode,
     #[serde(default)]
@@ -62,7 +56,9 @@ pub struct ConnectorManifest {
 pub struct ConnectorRegistration {
     pub id: ConnectorId,
     pub name: String,
-    pub kind: ConnectorKind,
+    /// Adapter Registry 中的稳定标识；`kind` 是旧事件兼容别名。
+    #[serde(default, alias = "kind")]
+    pub adapter: String,
     /// 本地文件路径或 HTTPS URL。
     pub source: String,
     pub enabled: bool,
@@ -105,6 +101,51 @@ pub struct ExternalFact {
     pub status: SignalStatus,
 }
 
+/// Provider 原始事件的规范化观察。Adapter 只能产出这一层，不解释业务语义。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectorObservation {
+    pub connector_id: ConnectorId,
+    pub entity_id: String,
+    pub source_version: String,
+    pub dedupe_key: String,
+    pub source: String,
+    pub summary: String,
+    pub occurred_at: DateTime<Utc>,
+    pub valid_until: Option<DateTime<Utc>>,
+    pub entity_kind: String,
+    pub canonical_url: Option<String>,
+    pub object_kind: ObjectKind,
+    pub change: ObservationChange,
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub attributes: serde_json::Value,
+    pub evidence_ref: Option<String>,
+    pub sensitivity: String,
+    pub source_trust: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectKind {
+    CalendarEvent,
+    WorkItem,
+    Milestone,
+    Message,
+    Document,
+    #[default]
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationChange {
+    #[default]
+    Upsert,
+    Delete,
+    Supersede,
+}
+
+/// 仅用于读取 Phase 1/2 历史事件；新 Adapter 不再产出业务语义类型。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SignalType {
@@ -143,7 +184,17 @@ pub struct WorldSignal {
     pub id: WorldSignalId,
     pub connector_id: ConnectorId,
     pub entity_ref: ExternalEntityRef,
-    pub signal_type: SignalType,
+    #[serde(default)]
+    pub object_kind: ObjectKind,
+    #[serde(default)]
+    pub change: ObservationChange,
+    /// 历史兼容字段，新 Signal 不再序列化业务语义。
+    #[serde(
+        default,
+        rename = "signal_type",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub legacy_signal_type: Option<SignalType>,
     pub actor: Option<String>,
     pub occurred_at: DateTime<Utc>,
     pub valid_from: Option<DateTime<Utc>>,
@@ -221,6 +272,28 @@ pub struct IntentCandidate {
     pub accepted_by: Option<IntentAcceptedBy>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalMeaning {
+    ActionItem,
+    Commitment,
+    WaitingExternal,
+    Risk,
+    Context,
+}
+
+/// 对中性 WorldSignal 的确定性业务解释。Resolver 只消费这一层。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SignalInterpretation {
+    pub signal_id: WorldSignalId,
+    pub meaning: SignalMeaning,
+    pub confidence: u8,
+    #[serde(default)]
+    pub basis: Vec<String>,
+    pub deadline: Option<DateTime<Utc>>,
+    pub ruleset_version: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncCursor {
     pub connector_id: ConnectorId,
@@ -249,7 +322,7 @@ pub struct ConnectorPullPage {
     pub stream_id: String,
     pub opaque_cursor: String,
     pub overlap_until: Option<DateTime<Utc>>,
-    pub facts: Vec<ExternalFact>,
+    pub observations: Vec<ConnectorObservation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

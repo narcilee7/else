@@ -386,6 +386,10 @@ fn route(
         candidates.sort_by_key(|record| record.seq);
         return Ok((200, json_string(&candidates)?));
     }
+    if segments == ["v1", "connector-adapters"] && request.method() == &Method::Get {
+        let manifests = state.handle.connector_manifests()?;
+        return Ok((200, json_string(&manifests)?));
+    }
     if segments.len() >= 3 && segments[0..2] == ["v1", "intents"] {
         let intent_id = else_protocol::ids::IntentId::from(segments[2]);
         if segments.len() == 3 && request.method() == &Method::Get {
@@ -484,19 +488,13 @@ fn route(
                     let source = value["source"]
                         .as_str()
                         .ok_or_else(|| DaemonError::InvalidRequest("missing source".into()))?;
-                    let connector = match value["kind"].as_str().unwrap_or("calendar") {
-                        "linear" | "linear_read_only" => state
-                            .handle
-                            .register_linear_connector(&intent_id, name, source)?,
-                        "calendar" | "calendar_read_only" => state
-                            .handle
-                            .register_calendar_connector(&intent_id, name, source)?,
-                        kind => {
-                            return Err(DaemonError::InvalidRequest(format!(
-                                "unsupported connector kind {kind}"
-                            )));
-                        }
-                    };
+                    let adapter = value["adapter"]
+                        .as_str()
+                        .or_else(|| value["kind"].as_str())
+                        .unwrap_or("calendar.ics");
+                    let connector = state
+                        .handle
+                        .register_connector_adapter(&intent_id, name, source, adapter)?;
                     return Ok((200, json_string(&connector)?));
                 }
                 _ => {}
@@ -1424,7 +1422,12 @@ mod tests {
         let connector: Value = serde_json::from_str(&connector).unwrap();
         let connector_id = connector["id"].as_str().unwrap();
         let session = connector["webhook_session"].as_str().unwrap();
+        assert_eq!(connector["adapter"].as_str(), Some("linear.graphql"));
         assert_eq!(connector["manifest"]["provider"].as_str(), Some("linear"));
+        let (status, adapters) = request(&daemon, "GET", "/v1/connector-adapters", "", None, None);
+        assert_eq!(status, 200, "{adapters}");
+        assert!(adapters.contains("calendar.ics"));
+        assert!(adapters.contains("linear.graphql"));
 
         let payload = json!({
             "id": "issue-webhook",

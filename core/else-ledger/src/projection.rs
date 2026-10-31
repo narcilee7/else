@@ -11,7 +11,8 @@ use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, CapabilityRegistration, McpServerRegistration,
 };
 use else_protocol::connector::{
-    ConnectorRegistration, IntentCandidate, SignalStatus, SyncCursor, WorldSignal,
+    ConnectorRegistration, IntentCandidate, SignalInterpretation, SignalStatus, SyncCursor,
+    WorldSignal,
 };
 use else_protocol::event::{Actor, EventPayload, ScopeState};
 use else_protocol::failure::ScopeFailure;
@@ -116,6 +117,8 @@ pub struct IntentProjection {
     pub world_signals: BTreeMap<else_protocol::ids::WorldSignalId, WorldSignal>,
     pub signal_seqs: BTreeMap<else_protocol::ids::WorldSignalId, u64>,
     pub signal_dedupe: BTreeMap<String, else_protocol::ids::WorldSignalId>,
+    pub signal_interpretations:
+        BTreeMap<else_protocol::ids::WorldSignalId, Vec<SignalInterpretation>>,
     pub intent_candidates: BTreeMap<else_protocol::ids::IntentCandidateId, IntentCandidate>,
     pub candidate_seqs: BTreeMap<else_protocol::ids::IntentCandidateId, u64>,
     pub candidate_dedupe: BTreeMap<String, else_protocol::ids::IntentCandidateId>,
@@ -366,6 +369,12 @@ impl Projection for IntentProjection {
                         self.external_wait_reason = None;
                     }
                 }
+            }
+            EventPayload::SignalInterpreted { interpretation } => {
+                self.signal_interpretations
+                    .entry(interpretation.signal_id.clone())
+                    .or_default()
+                    .push(interpretation.clone());
             }
             EventPayload::IntentCandidateProposed { candidate }
                 if !self.candidate_dedupe.contains_key(&candidate.dedupe_key) =>

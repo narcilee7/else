@@ -12,7 +12,7 @@ use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, AgentBindingState, AgentTransport, CapabilityRegistration,
 };
 use else_protocol::connector::{
-    ConnectorPolicy, ConnectorRegistration, ConnectorSyncResult, IntentCandidate,
+    ConnectorManifest, ConnectorPolicy, ConnectorRegistration, ConnectorSyncResult, IntentCandidate,
 };
 use else_protocol::ids::{
     AgentBindingId, AgentId, AttentionId, CapabilityId, ConnectorId, IntentCandidateId, IntentId,
@@ -108,6 +108,16 @@ enum Command {
         name: String,
         source: String,
         reply: Reply<ConnectorRegistration>,
+    },
+    RegisterConnectorAdapter {
+        intent_id: IntentId,
+        name: String,
+        source: String,
+        adapter: String,
+        reply: Reply<ConnectorRegistration>,
+    },
+    ConnectorAdapters {
+        reply: Reply<Vec<ConnectorManifest>>,
     },
     SyncConnector {
         intent_id: IntentId,
@@ -380,6 +390,26 @@ impl RuntimeHandle {
             source: source.into(),
             reply,
         })
+    }
+
+    pub fn register_connector_adapter(
+        &self,
+        intent_id: &IntentId,
+        name: &str,
+        source: &str,
+        adapter: &str,
+    ) -> Result<ConnectorRegistration> {
+        self.request(|reply| Command::RegisterConnectorAdapter {
+            intent_id: intent_id.clone(),
+            name: name.into(),
+            source: source.into(),
+            adapter: adapter.into(),
+            reply,
+        })
+    }
+
+    pub fn connector_manifests(&self) -> Result<Vec<ConnectorManifest>> {
+        self.request(|reply| Command::ConnectorAdapters { reply })
     }
 
     pub fn sync_connector(
@@ -755,6 +785,19 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.register_linear_connector(&intent_id, &name, &source));
+        }
+        Command::RegisterConnectorAdapter {
+            intent_id,
+            name,
+            source,
+            adapter,
+            reply,
+        } => {
+            let _ = reply
+                .send(runtime.register_connector_adapter(&intent_id, &name, &source, &adapter));
+        }
+        Command::ConnectorAdapters { reply } => {
+            let _ = reply.send(Ok(runtime.connector_manifests()));
         }
         Command::SyncConnector {
             intent_id,

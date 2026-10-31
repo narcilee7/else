@@ -220,6 +220,8 @@ enum Command {
     },
     /// 查看已注册连接器
     Connectors { intent_id: String },
+    /// 列出 Runtime 已注册的 Connector Adapter 与能力
+    ConnectorAdapters,
     /// 查看标准化 World Signal 及失效状态
     Signals { intent_id: String },
     /// 跨 Intent 按事件水位读取 Signal
@@ -818,7 +820,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 println!(
                     "{} {:?} enabled={} health={:?} provider={} sync={:?} read={:?} write={:?} source={}",
                     connector.id,
-                    connector.kind,
+                    connector.adapter,
                     connector.enabled,
                     connector.manifest.health,
                     connector.manifest.provider,
@@ -829,13 +831,28 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 );
             }
         }
+        Command::ConnectorAdapters => {
+            for manifest in runtime.connector_manifests() {
+                println!(
+                    "{} provider={} auth={:?} sync={:?} read={:?} write={:?} health={:?}",
+                    manifest.adapter,
+                    manifest.provider,
+                    manifest.auth_mode,
+                    manifest.sync_modes,
+                    manifest.read_capabilities,
+                    manifest.write_capabilities,
+                    manifest.health
+                );
+            }
+        }
         Command::Signals { intent_id } => {
             let projection = runtime.projection(&IntentId::from(intent_id))?;
             for signal in projection.world_signals.values() {
                 println!(
-                    "{} {:?} {:?} occurred={} valid_until={} trust={} summary={}",
+                    "{} {:?} {:?} {:?} occurred={} valid_until={} trust={} summary={}",
                     signal.id,
-                    signal.signal_type,
+                    signal.object_kind,
+                    signal.change,
                     signal.status,
                     signal.occurred_at.to_rfc3339(),
                     signal
@@ -854,11 +871,12 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         } => {
             for record in runtime.world_signals(cursor, provider.as_deref(), entity.as_deref())? {
                 println!(
-                    "#{} intent={} {} {:?} {:?} {}",
+                    "#{} intent={} {} {:?} {:?} {:?} {}",
                     record.seq,
                     record.intent_id,
                     record.signal.id,
-                    record.signal.signal_type,
+                    record.signal.object_kind,
+                    record.signal.change,
                     record.signal.status,
                     record.signal.summary
                 );

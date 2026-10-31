@@ -2,9 +2,12 @@
 
 use chrono::{DateTime, Duration, Utc};
 use else_api::{ApiError, Runtime};
+use else_connector::{AdapterRegistry, ConnectorAdapter, InterpretationRule, SignalInterpreter};
 use else_protocol::connector::{
-    ConnectorKind, ConnectorPolicy, ConnectorSyncMode, IntentAcceptedBy, IntentCandidate,
-    IntentCandidateState, IntentOriginKind, SignalStatus, SignalType,
+    ConnectorAuthMode, ConnectorHealth, ConnectorManifest, ConnectorObservation, ConnectorPolicy,
+    ConnectorPullPage, ConnectorSyncMode, IntentAcceptedBy, IntentCandidate, IntentCandidateState,
+    IntentOriginKind, ObjectKind, ObservationChange, SignalInterpretation, SignalMeaning,
+    SignalStatus, SyncCursor, WorldSignal,
 };
 use else_protocol::effect::SideEffectKind;
 use else_protocol::intent::{AttentionPolicy, Authority, Criterion};
@@ -137,10 +140,7 @@ fn calendar_signals_are_versioned_deduplicated_and_resolved() {
     assert_eq!(projection.world_signals.len(), 1);
     assert_eq!(projection.external_events.len(), 1);
     assert_eq!(projection.intent_candidates.len(), 1);
-    assert_eq!(
-        projection.connectors[&connector.id].kind,
-        else_protocol::connector::ConnectorKind::CalendarReadOnly
-    );
+    assert_eq!(projection.connectors[&connector.id].adapter, "calendar.ics");
     let snapshot = runtime
         .compile_snapshot(&spec.id, SnapshotAudience::Planner)
         .unwrap();
@@ -394,13 +394,20 @@ fn linear_pull_classifies_work_and_persists_cursor() {
     let connector = runtime
         .register_linear_connector(&spec.id, "engineering", path.to_str().unwrap())
         .unwrap();
-    assert_eq!(connector.kind, ConnectorKind::LinearReadOnly);
+    assert_eq!(connector.adapter, "linear.graphql");
     assert_eq!(connector.manifest.provider, "linear");
     assert!(connector
         .manifest
         .sync_modes
         .contains(&ConnectorSyncMode::Webhook));
     assert!(connector.webhook_session.is_some());
+    let adapters = runtime.connector_manifests();
+    assert!(adapters
+        .iter()
+        .any(|manifest| manifest.adapter == "calendar.ics"));
+    assert!(adapters
+        .iter()
+        .any(|manifest| manifest.adapter == "linear.graphql"));
     runtime
         .wait_for_external(&spec.id, "等待 Linear 工作项变化")
         .unwrap();
@@ -419,20 +426,27 @@ fn linear_pull_classifies_work_and_persists_cursor() {
     assert_eq!(projection.external_events.len(), 3);
     assert_eq!(
         projection
-            .world_signals
+            .signal_interpretations
             .values()
-            .filter(|signal| signal.signal_type == SignalType::Commitment)
+            .flatten()
+            .filter(|interpretation| interpretation.meaning == SignalMeaning::Commitment)
             .count(),
         1
     );
     assert_eq!(
         projection
-            .world_signals
+            .signal_interpretations
             .values()
-            .filter(|signal| signal.signal_type == SignalType::WaitingExternal)
+            .flatten()
+            .filter(|interpretation| { interpretation.meaning == SignalMeaning::WaitingExternal })
             .count(),
         1
     );
+    assert!(projection
+        .world_signals
+        .values()
+        .filter(|signal| signal.status == SignalStatus::Active)
+        .all(|signal| signal.object_kind == ObjectKind::WorkItem));
     assert_eq!(
         projection
             .world_signals
@@ -442,6 +456,10 @@ fn linear_pull_classifies_work_and_persists_cursor() {
         1
     );
     assert_eq!(projection.connector_cursors.len(), 1);
+    assert_eq!(
+        projection.signal_interpretations.values().flatten().count(),
+        3
+    );
     let cursor = projection
         .connector_cursors
         .values()
@@ -482,6 +500,16 @@ fn linear_pull_classifies_work_and_persists_cursor() {
             .values()
             .next(),
         Some(&cursor)
+    );
+    assert_eq!(
+        reopened
+            .projection(&spec.id)
+            .unwrap()
+            .signal_interpretations
+            .values()
+            .flatten()
+            .count(),
+        3
     );
 }
 
@@ -587,5 +615,123 @@ fn connector_policy_only_auto_accepts_explicit_low_risk_origins() {
             .filter(|candidate| candidate.state == IntentCandidateState::Proposed)
             .count(),
         2
+    );
+}
+
+struct FixtureAdapter;
+
+impl ConnectorAdapter for FixtureAdapter {
+    fn id(&self) -> &'static str {
+        "fixture.v1"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["fixture"]
+    }
+
+    fn manifest(&self) -> ConnectorManifest {
+        ConnectorManifest {
+            adapter: self.id().into(),
+            provider: "fixture".into(),
+            auth_mode: ConnectorAuthMode::None,
+            scopes: vec!["fixture.read".into()],
+            read_capabilities: vec!["fixture.item.read".into()],
+            write_capabilities: vec![],
+            sync_modes: vec![ConnectorSyncMode::Pull],
+            data_sensitivity: "internal".into(),
+            retention_policy: "metadata_only".into(),
+            health: ConnectorHealth::Healthy,
+        }
+    }
+
+    fn pull_stream_id(&self) -> &'static str {
+        "fixture-items"
+    }
+
+    fn pull(
+        &self,
+        connector_id: else_protocol::ids::ConnectorId,
+        _source: &str,
+        _cursor: Option<&SyncCursor>,
+        now: DateTime<Utc>,
+    ) -> else_connector::Result<ConnectorPullPage> {
+        Ok(ConnectorPullPage {
+            stream_id: self.pull_stream_id().into(),
+            opaque_cursor: "fixture:1".into(),
+            overlap_until: None,
+            observations: vec![ConnectorObservation {
+                connector_id,
+                entity_id: "fixture-1".into(),
+                source_version: "1".into(),
+                dedupe_key: "fixture:item:1".into(),
+                source: "fixture".into(),
+                summary: "外部承诺".into(),
+                occurred_at: now,
+                valid_until: None,
+                entity_kind: "fixture_item".into(),
+                canonical_url: None,
+                object_kind: ObjectKind::Other,
+                change: ObservationChange::Upsert,
+                actor: None,
+                attributes: serde_json::json!({}),
+                evidence_ref: None,
+                sensitivity: "internal".into(),
+                source_trust: "test".into(),
+            }],
+        })
+    }
+}
+
+struct FixtureRule;
+
+impl InterpretationRule for FixtureRule {
+    fn id(&self) -> &'static str {
+        "fixture-test-rule"
+    }
+
+    fn interpret(&self, signal: &WorldSignal, _now: DateTime<Utc>) -> Option<SignalInterpretation> {
+        (signal.entity_ref.provider == "fixture").then(|| SignalInterpretation {
+            signal_id: signal.id.clone(),
+            meaning: SignalMeaning::Commitment,
+            confidence: 90,
+            basis: vec!["fixture_contract".into()],
+            deadline: None,
+            ruleset_version: "fixture-v1".into(),
+        })
+    }
+}
+
+#[test]
+fn injected_adapter_and_interpreter_do_not_require_runtime_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("fixture.json");
+    std::fs::write(&source, "{}").unwrap();
+    let runtime = Runtime::open_with_connector_runtime(
+        dir.path(),
+        AdapterRegistry::new(vec![Box::new(FixtureAdapter)]),
+        SignalInterpreter::with_rules(vec![Box::new(FixtureRule)]),
+    )
+    .unwrap();
+    let spec = runtime.create_intent("处理外部承诺", None).unwrap();
+    let connector = runtime
+        .register_connector_adapter(&spec.id, "fixture", source.to_str().unwrap(), "fixture")
+        .unwrap();
+    let result = runtime.sync_connector(&spec.id, &connector.id).unwrap();
+    assert_eq!(result.inserted, 1);
+    assert_eq!(result.candidates_proposed, 1);
+    let projection = runtime.projection(&spec.id).unwrap();
+    assert_eq!(
+        projection
+            .signal_interpretations
+            .values()
+            .flatten()
+            .next()
+            .unwrap()
+            .meaning,
+        SignalMeaning::Commitment
+    );
+    assert_eq!(
+        projection.intent_candidates.values().next().unwrap().origin,
+        IntentOriginKind::Commitment
     );
 }

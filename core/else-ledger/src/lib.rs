@@ -230,6 +230,7 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::ExternalFactIngested { .. } => "external_fact_ingested",
         P::WorldSignalIngested { .. } => "world_signal_ingested",
         P::WorldSignalStatusChanged { .. } => "world_signal_status_changed",
+        P::SignalInterpreted { .. } => "signal_interpreted",
         P::IntentCandidateProposed { .. } => "intent_candidate_proposed",
         P::IntentCandidateStateChanged { .. } => "intent_candidate_state_changed",
         P::RunStarted { .. } => "run_started",
