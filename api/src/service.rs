@@ -6,7 +6,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use else_ledger::IntentProjection;
+use else_ledger::{IntentProjection, StoredEvent};
 use else_protocol::attention::{AttentionRequest, DecisionChoice};
 use else_protocol::ids::{AttentionId, IntentId, ScopeId, TimerId};
 use else_protocol::intent::IntentSpec;
@@ -26,6 +26,13 @@ enum Command {
     Projection {
         intent_id: IntentId,
         reply: Reply<IntentProjection>,
+    },
+    ListIntents {
+        reply: Reply<Vec<IntentSpec>>,
+    },
+    Events {
+        intent_id: IntentId,
+        reply: Reply<Vec<StoredEvent>>,
     },
     RecordExternalEvent {
         intent_id: IntentId,
@@ -93,6 +100,17 @@ impl RuntimeHandle {
 
     pub fn projection(&self, intent_id: &IntentId) -> Result<IntentProjection> {
         self.request(|reply| Command::Projection {
+            intent_id: intent_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn list_intents(&self) -> Result<Vec<IntentSpec>> {
+        self.request(|reply| Command::ListIntents { reply })
+    }
+
+    pub fn events(&self, intent_id: &IntentId) -> Result<Vec<StoredEvent>> {
+        self.request(|reply| Command::Events {
             intent_id: intent_id.clone(),
             reply,
         })
@@ -274,6 +292,12 @@ fn handle_command(runtime: &Runtime, command: Command) {
         }
         Command::Projection { intent_id, reply } => {
             let _ = reply.send(runtime.projection(&intent_id));
+        }
+        Command::ListIntents { reply } => {
+            let _ = reply.send(runtime.list_intents());
+        }
+        Command::Events { intent_id, reply } => {
+            let _ = reply.send(runtime.events(&intent_id));
         }
         Command::RecordExternalEvent {
             intent_id,

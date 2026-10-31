@@ -35,11 +35,11 @@ swift run ElseMac --demo
 open .build/Else.app --args --demo
 ```
 
-正式模式默认连接 `http://127.0.0.1:4180`，可通过 `ELSE_RUNTIME_URL` 覆盖。`ELSE_DEMO=1` 或 `--demo` 只用于开发与视觉验收。
+正式模式默认连接 `http://127.0.0.1:4180`，可通过 `ELSE_RUNTIME_URL` 覆盖；Bearer Token 从 `ELSE_RUNTIME_TOKEN` 读取。`ELSE_DEMO=1` 或 `--demo` 只用于开发与视觉验收。
 
 ## Runtime API v1
 
-当前 Rust `api` crate 仍是进程内接口，以下 HTTP 契约是客户端与 daemon 的边界，需要由后续 `else-api` daemon 实现：
+以下 HTTP 契约由 `else serve` / `else-daemon` 实现。除健康检查外均要求 `Authorization: Bearer <token>`；POST 要求 `Idempotency-Key`，run/Decision/Abort 还要求 `If-Match: <intent_revision>`：
 
 | Method | Path | Response |
 | --- | --- | --- |
@@ -49,6 +49,8 @@ open .build/Else.app --args --demo
 | `POST` | `/v1/intents/{intent_id}/run` | `IntentSnapshot` |
 | `POST` | `/v1/intents/{intent_id}/decisions/{decision_id}/resolve` | `IntentSnapshot` |
 | `POST` | `/v1/intents/{intent_id}/abort` | `IntentSnapshot` |
+| `GET` | `/v1/operations/{operation_id}` | `Operation` |
+| `GET` | `/v1/events?cursor=42` | `[Event]` |
 
 `IntentSnapshot` 是 UI 投影，不是 Runtime 权威状态：
 
@@ -75,4 +77,4 @@ open .build/Else.app --args --demo
 - SwiftUI 只消费投影并提交命令，不持有 Runtime 执行状态。
 - 网络客户端、DTO 与 Demo 实现属于 `ElseClientCore`；UI 不直接拼 JSON。
 - Web 不强行复用 Swift。Web 继续使用 TypeScript，与 Apple 客户端共享同一套 Runtime API。
-- 当前没有 SSE。需要实时刷新时再增加 `/v1/events/stream`，不要先让每个视图自己轮询。
+- 当前提供事件游标增量读取；需要更低延迟时再增加 `/v1/events/stream`，不要先让每个视图各自轮询全量状态。

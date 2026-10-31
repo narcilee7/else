@@ -8,6 +8,7 @@ enum AppDependencies {
         if CommandLine.arguments.contains("--demo") {
             configuration = ClientConfiguration(
                 runtimeURL: configuration.runtimeURL,
+                runtimeToken: configuration.runtimeToken,
                 usesDemoRuntime: true
             )
         }
@@ -26,6 +27,7 @@ enum AppDependencies {
         sessionConfiguration.timeoutIntervalForResource = 20
         return HTTPRuntimeClient(
             baseURL: configuration.runtimeURL,
+            token: configuration.runtimeToken,
             session: URLSession(configuration: sessionConfiguration)
         )
     }

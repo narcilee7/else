@@ -2,10 +2,17 @@ import Foundation
 
 public struct HTTPRuntimeClient: RuntimeClient {
     private let baseURL: URL
+    private let token: String?
     private let session: URLSession
+    private let revisions = RevisionStore()
 
-    public init(baseURL: URL, session: URLSession = .shared) {
+    public init(
+        baseURL: URL,
+        token: String? = nil,
+        session: URLSession = .shared
+    ) {
         self.baseURL = baseURL
+        self.token = token
         self.session = session
     }
 
@@ -32,7 +39,8 @@ public struct HTTPRuntimeClient: RuntimeClient {
     public func runIntent(id: IntentID) async throws -> IntentSnapshot {
         try await send(
             method: "POST",
-            path: ["v1", "intents", id.rawValue, "run"]
+            path: ["v1", "intents", id.rawValue, "run"],
+            intentID: id
         )
     }
 
@@ -51,7 +59,8 @@ public struct HTTPRuntimeClient: RuntimeClient {
                 decisionID.rawValue,
                 "resolve",
             ],
-            body: ResolveDecisionRequest(choice: choice)
+            body: ResolveDecisionRequest(choice: choice),
+            intentID: intentID
         )
     }
 
@@ -59,21 +68,29 @@ public struct HTTPRuntimeClient: RuntimeClient {
         try await send(
             method: "POST",
             path: ["v1", "intents", id.rawValue, "abort"],
-            body: AbortIntentRequest(reason: reason)
+            body: AbortIntentRequest(reason: reason),
+            intentID: id
         )
     }
 
     private func send<Response: Decodable>(
         method: String,
-        path: [String]
+        path: [String],
+        intentID: IntentID? = nil
     ) async throws -> Response {
-        try await send(method: method, path: path, body: Optional<EmptyBody>.none)
+        try await send(
+            method: method,
+            path: path,
+            body: Optional<EmptyBody>.none,
+            intentID: intentID
+        )
     }
 
     private func send<Response: Decodable, Body: Encodable>(
         method: String,
         path: [String],
-        body: Body?
+        body: Body?,
+        intentID: IntentID? = nil
     ) async throws -> Response {
         let url = path.reduce(baseURL) { partial, component in
             partial.appendingPathComponent(component)
@@ -82,6 +99,15 @@ public struct HTTPRuntimeClient: RuntimeClient {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 20
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        if method == "POST" {
+            request.setValue(UUID().uuidString, forHTTPHeaderField: "Idempotency-Key")
+        }
+        if let intentID, let revision = await revisions.revision(for: intentID) {
+            request.setValue("\(revision)", forHTTPHeaderField: "If-Match")
+        }
 
         if let body {
             request.httpBody = try RuntimeJSON.encoder().encode(body)
@@ -111,10 +137,26 @@ public struct HTTPRuntimeClient: RuntimeClient {
         }
 
         do {
-            return try RuntimeJSON.decoder().decode(Response.self, from: data)
+            let decoded = try RuntimeJSON.decoder().decode(Response.self, from: data)
+            if let snapshot = decoded as? IntentSnapshot {
+                await revisions.record(snapshot.spec.revision, for: snapshot.spec.id)
+            }
+            return decoded
         } catch {
             throw RuntimeClientError.decoding(error.localizedDescription)
         }
+    }
+}
+
+private actor RevisionStore {
+    private var revisions: [IntentID: UInt64] = [:]
+
+    func revision(for id: IntentID) -> UInt64? {
+        revisions[id]
+    }
+
+    func record(_ revision: UInt64, for id: IntentID) {
+        revisions[id] = revision
     }
 }
 

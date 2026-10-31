@@ -182,6 +182,14 @@ enum Command {
         #[arg(long)]
         idempotency_key: Option<String>,
     },
+    /// 启动 loopback HTTP daemon，供 Apple/Web/远程 CLI 共用
+    Serve {
+        #[arg(long, default_value = "127.0.0.1:4180")]
+        bind: String,
+        /// 固定 Bearer Token；缺省生成并写入 daemon-token。
+        #[arg(long)]
+        token: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -230,6 +238,19 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
     {
         run_tool_call(tool, input, idempotency_key.as_deref())?;
         return Ok(());
+    }
+    if let Command::Serve { bind, token } = &cli.command {
+        let daemon = else_daemon::Daemon::start(else_daemon::DaemonConfig {
+            dir: cli.dir.clone(),
+            bind: bind.clone(),
+            token: token.clone(),
+        })
+        .map_err(|error| else_api::ApiError::NotFound(error.to_string()))?;
+        println!("runtime: {}", daemon.url);
+        println!("token: {}", daemon.token);
+        loop {
+            std::thread::park_timeout(std::time::Duration::from_secs(60));
+        }
     }
     let runtime = Runtime::open(&cli.dir)?;
     match cli.command {
@@ -640,6 +661,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             }
         }
         Command::ToolCall { .. } => unreachable!("handled before Runtime::open"),
+        Command::Serve { .. } => unreachable!("handled before Runtime::open"),
     }
     Ok(())
 }

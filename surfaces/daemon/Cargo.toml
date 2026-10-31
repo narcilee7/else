@@ -1,0 +1,20 @@
+[package]
+name = "else-daemon"
+version = "0.1.0"
+edition.workspace = true
+description = "Loopback HTTP daemon for the else Intent Runtime"
+
+[dependencies]
+else-api = { path = "../../api" }
+else-ledger = { path = "../../core/else-ledger" }
+else-protocol = { path = "../../core/else-protocol" }
+chrono.workspace = true
+fs2 = "0.4"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tiny_http = "0.12"
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

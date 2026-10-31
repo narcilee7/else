@@ -10,6 +10,7 @@ members = [
     "core/else-workspace",
     "core/else-environment",
     "api",
+    "surfaces/daemon",
     "surfaces/cli",
 ]
 
