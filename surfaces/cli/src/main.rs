@@ -234,6 +234,23 @@ enum Command {
     ConnectorAdapters,
     /// 查看标准化 World Signal 及失效状态
     Signals { intent_id: String },
+    /// 查看承诺、等待外部、行动项与风险聚合出的 Personal World
+    World {
+        intent_id: String,
+        #[arg(long)]
+        include_resolved: bool,
+    },
+    /// 将 Personal World 条目标记完成或忽略
+    WorldResolve {
+        intent_id: String,
+        item_id: String,
+        #[arg(value_parser = ["completed", "dismissed"])]
+        state: String,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// 跨 Intent 生成 Personal Brief
+    Brief,
     /// 跨 Intent 按事件水位读取 Signal
     SignalFeed {
         #[arg(long, default_value_t = 0)]
@@ -896,6 +913,42 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 );
             }
         }
+        Command::World {
+            intent_id,
+            include_resolved,
+        } => {
+            for item in runtime.world_items(&IntentId::from(intent_id), include_resolved)? {
+                print_world_item(&item);
+            }
+        }
+        Command::WorldResolve {
+            intent_id,
+            item_id,
+            state,
+            note,
+        } => {
+            let kind = match state.as_str() {
+                "dismissed" => else_protocol::world::WorldItemResolutionKind::Dismissed,
+                _ => else_protocol::world::WorldItemResolutionKind::Completed,
+            };
+            let item = runtime.resolve_world_item(
+                &IntentId::from(intent_id),
+                &else_protocol::ids::WorldItemId::from(item_id),
+                kind,
+                note,
+            )?;
+            print_world_item(&item);
+        }
+        Command::Brief => {
+            let brief = runtime.personal_brief()?;
+            println!("generated_at: {}", brief.generated_at.to_rfc3339());
+            print_world_section("overdue", &brief.overdue);
+            print_world_section("commitments", &brief.open_commitments);
+            print_world_section("waiting_external", &brief.waiting_external);
+            print_world_section("action_items_due_soon", &brief.action_items_due_soon);
+            print_world_section("upcoming_calendar", &brief.upcoming_calendar);
+            print_world_section("risks", &brief.risks);
+        }
         Command::SignalFeed {
             cursor,
             provider,
@@ -1070,6 +1123,40 @@ fn print_candidate(candidate: &else_protocol::connector::IntentCandidate) {
         candidate.confidence,
         candidate.related_signal_ids.len(),
         candidate.proposed_outcome
+    );
+}
+
+fn print_world_section(name: &str, records: &[else_protocol::world::WorldItemRecord]) {
+    println!("{name}: {}", records.len());
+    for record in records {
+        println!(
+            "  intent={} {} {:?} {:?} due={} {}",
+            record.intent_id,
+            record.item.id,
+            record.item.kind,
+            record.item.state,
+            record
+                .item
+                .deadline
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| "none".into()),
+            record.item.title
+        );
+    }
+}
+
+fn print_world_item(item: &else_protocol::world::WorldItem) {
+    println!(
+        "{} {:?} {:?} due={} signals={} connectors={} {}",
+        item.id,
+        item.kind,
+        item.state,
+        item.deadline
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "none".into()),
+        item.signal_ids.len(),
+        item.connector_ids.len(),
+        item.title
     );
 }
 

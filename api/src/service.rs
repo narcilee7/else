@@ -146,6 +146,21 @@ enum Command {
         cursor: u64,
         reply: Reply<Vec<else_protocol::connector::IntentCandidateRecord>>,
     },
+    WorldItems {
+        intent_id: IntentId,
+        include_resolved: bool,
+        reply: Reply<Vec<else_protocol::world::WorldItem>>,
+    },
+    PersonalBrief {
+        reply: Reply<else_protocol::world::PersonalBrief>,
+    },
+    ResolveWorldItem {
+        intent_id: IntentId,
+        item_id: else_protocol::ids::WorldItemId,
+        kind: else_protocol::world::WorldItemResolutionKind,
+        note: Option<String>,
+        reply: Reply<else_protocol::world::WorldItem>,
+    },
     ResolveSignals {
         intent_id: IntentId,
         reply: Reply<Vec<IntentCandidate>>,
@@ -471,6 +486,38 @@ impl RuntimeHandle {
         cursor: u64,
     ) -> Result<Vec<else_protocol::connector::IntentCandidateRecord>> {
         self.request(|reply| Command::IntentCandidates { cursor, reply })
+    }
+
+    pub fn world_items(
+        &self,
+        intent_id: &IntentId,
+        include_resolved: bool,
+    ) -> Result<Vec<else_protocol::world::WorldItem>> {
+        self.request(|reply| Command::WorldItems {
+            intent_id: intent_id.clone(),
+            include_resolved,
+            reply,
+        })
+    }
+
+    pub fn personal_brief(&self) -> Result<else_protocol::world::PersonalBrief> {
+        self.request(|reply| Command::PersonalBrief { reply })
+    }
+
+    pub fn resolve_world_item(
+        &self,
+        intent_id: &IntentId,
+        item_id: &else_protocol::ids::WorldItemId,
+        kind: else_protocol::world::WorldItemResolutionKind,
+        note: Option<String>,
+    ) -> Result<else_protocol::world::WorldItem> {
+        self.request(|reply| Command::ResolveWorldItem {
+            intent_id: intent_id.clone(),
+            item_id: item_id.clone(),
+            kind,
+            note,
+            reply,
+        })
     }
 
     pub fn resolve_signals(&self, intent_id: &IntentId) -> Result<Vec<IntentCandidate>> {
@@ -838,6 +885,25 @@ fn handle_command(runtime: &Runtime, command: Command) {
         }
         Command::IntentCandidates { cursor, reply } => {
             let _ = reply.send(runtime.intent_candidates(cursor));
+        }
+        Command::WorldItems {
+            intent_id,
+            include_resolved,
+            reply,
+        } => {
+            let _ = reply.send(runtime.world_items(&intent_id, include_resolved));
+        }
+        Command::PersonalBrief { reply } => {
+            let _ = reply.send(runtime.personal_brief());
+        }
+        Command::ResolveWorldItem {
+            intent_id,
+            item_id,
+            kind,
+            note,
+            reply,
+        } => {
+            let _ = reply.send(runtime.resolve_world_item(&intent_id, &item_id, kind, note));
         }
         Command::ResolveSignals { intent_id, reply } => {
             let _ = reply.send(runtime.resolve_signals(&intent_id));

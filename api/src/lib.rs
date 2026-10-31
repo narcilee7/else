@@ -21,6 +21,7 @@ mod scope;
 mod service;
 mod tool_gateway;
 mod wake;
+mod world;
 
 pub use context::IntentRevision;
 pub use kernel::{KernelAction, KernelDrive, KernelDriveStop};

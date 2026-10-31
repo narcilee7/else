@@ -828,6 +828,13 @@ impl InterpretationRule for WorkItemRule {
             .any(|label| label.eq_ignore_ascii_case("commitment"))
         {
             SignalMeaning::Commitment
+        } else if labels.iter().any(|label| {
+            matches!(
+                label.to_ascii_lowercase().as_str(),
+                "risk" | "at_risk" | "urgent"
+            )
+        }) {
+            SignalMeaning::Risk
         } else {
             SignalMeaning::ActionItem
         };
@@ -840,6 +847,14 @@ impl InterpretationRule for WorkItemRule {
             .any(|label| label.eq_ignore_ascii_case("commitment"))
         {
             basis.push("label=commitment".into());
+        }
+        if labels.iter().any(|label| {
+            matches!(
+                label.to_ascii_lowercase().as_str(),
+                "risk" | "at_risk" | "urgent"
+            )
+        }) {
+            basis.push("label=risk".into());
         }
         if state_type.is_some() {
             basis.push("work_item_state".into());

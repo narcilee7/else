@@ -20,6 +20,7 @@ use else_protocol::ids::{ArtifactId, AttentionId, AttentionWindowId, LeaseId, Sc
 use else_protocol::intent::{IntentSpec, IntentState};
 use else_protocol::plan::{Plan, PlanImpact, PlanStepStatus};
 use else_protocol::resource::{ResourceBudget, ResourceUsage, SandboxUsage, SandboxUsageBasis};
+use else_protocol::world::WorldItemResolution;
 
 use crate::{Projection, StoredEvent};
 
@@ -122,6 +123,7 @@ pub struct IntentProjection {
     pub intent_candidates: BTreeMap<else_protocol::ids::IntentCandidateId, IntentCandidate>,
     pub candidate_seqs: BTreeMap<else_protocol::ids::IntentCandidateId, u64>,
     pub candidate_dedupe: BTreeMap<String, else_protocol::ids::IntentCandidateId>,
+    pub world_item_resolutions: BTreeMap<else_protocol::ids::WorldItemId, WorldItemResolution>,
     pub artifacts: Vec<Artifact>,
     pub artifact_scopes: BTreeMap<ArtifactId, ScopeId>,
     pub checkpoints: Vec<Checkpoint>,
@@ -271,6 +273,10 @@ impl Projection for IntentProjection {
                     (cursor.connector_id.clone(), cursor.stream_id.clone()),
                     cursor.clone(),
                 );
+            }
+            EventPayload::WorldItemResolved { resolution } => {
+                self.world_item_resolutions
+                    .insert(resolution.item_id.clone(), resolution.clone());
             }
             EventPayload::ExternalFactIngested { fact }
                 if self.external_fact_keys.insert(fact.fact_id.clone()) =>

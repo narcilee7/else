@@ -390,6 +390,10 @@ fn route(
         let manifests = state.handle.connector_manifests()?;
         return Ok((200, json_string(&manifests)?));
     }
+    if segments == ["v1", "world", "brief"] && request.method() == &Method::Get {
+        let brief = state.handle.personal_brief()?;
+        return Ok((200, json_string(&brief)?));
+    }
     if segments.len() >= 3 && segments[0..2] == ["v1", "intents"] {
         let intent_id = else_protocol::ids::IntentId::from(segments[2]);
         if segments.len() == 3 && request.method() == &Method::Get {
@@ -520,6 +524,32 @@ fn route(
                 .into_values()
                 .collect::<Vec<_>>();
             return Ok((200, json_string(&signals)?));
+        }
+        if segments.len() == 4 && segments[3] == "world" && request.method() == &Method::Get {
+            let include_resolved = query_value(request.url(), "include_resolved")
+                .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
+            let items = state.handle.world_items(&intent_id, include_resolved)?;
+            return Ok((200, json_string(&items)?));
+        }
+        if segments.len() == 5
+            && segments[3] == "world"
+            && segments[4] == "resolve"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).map_err(json_error)?;
+            let item_id = else_protocol::ids::WorldItemId::from(
+                value["item_id"]
+                    .as_str()
+                    .ok_or_else(|| DaemonError::InvalidRequest("missing item_id".into()))?,
+            );
+            let kind: else_protocol::world::WorldItemResolutionKind =
+                serde_json::from_value(value["kind"].clone()).map_err(json_error)?;
+            let note = value["note"].as_str().map(str::to_string);
+            let item = state
+                .handle
+                .resolve_world_item(&intent_id, &item_id, kind, note)?;
+            return Ok((200, json_string(&item)?));
         }
         if segments.len() == 5
             && segments[3] == "signals"
@@ -1498,6 +1528,36 @@ mod tests {
                 .len(),
             1
         );
+        let world_path = format!("/v1/intents/{intent_id}/world");
+        let (status, world) = request(&daemon, "GET", &world_path, "", None, None);
+        assert_eq!(status, 200, "{world}");
+        assert_eq!(serde_json::from_str::<Vec<Value>>(&world).unwrap().len(), 1);
+        let (status, brief) = request(&daemon, "GET", "/v1/world/brief", "", None, None);
+        assert_eq!(status, 200, "{brief}");
+        let brief: Value = serde_json::from_str(&brief).unwrap();
+        assert_eq!(brief["waiting_external"].as_array().unwrap().len(), 1);
+        let world_items: Vec<Value> = serde_json::from_str(&world).unwrap();
+        let item_id = world_items[0]["id"].as_str().unwrap();
+        let resolve_path = format!("/v1/intents/{intent_id}/world/resolve");
+        let resolve_body = json!({
+            "item_id": item_id,
+            "kind": "completed",
+            "note": "surface resolved"
+        })
+        .to_string();
+        let (status, resolved) = request(
+            &daemon,
+            "POST",
+            &resolve_path,
+            &resolve_body,
+            Some("world-resolve"),
+            Some(revision),
+        );
+        assert_eq!(status, 200, "{resolved}");
+        let (status, brief) = request(&daemon, "GET", "/v1/world/brief", "", None, None);
+        assert_eq!(status, 200, "{brief}");
+        let brief: Value = serde_json::from_str(&brief).unwrap();
+        assert!(brief["waiting_external"].as_array().unwrap().is_empty());
         daemon.shutdown();
     }
 }

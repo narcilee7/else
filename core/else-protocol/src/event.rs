@@ -24,6 +24,7 @@ use crate::ids::*;
 use crate::intent::{IntentSpec, IntentState};
 use crate::plan::{Plan, PlanImpact};
 use crate::resource::{ResourceBudget, ResourceLease, SandboxUsage};
+use crate::world::WorldItemResolution;
 use crate::PROTOCOL_VERSION;
 
 /// 事件的来源。
@@ -209,6 +210,9 @@ pub enum EventPayload {
     },
     ConnectorSyncCheckpointed {
         cursor: SyncCursor,
+    },
+    WorldItemResolved {
+        resolution: WorldItemResolution,
     },
 
     RunStarted {

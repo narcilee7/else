@@ -77,3 +77,4 @@ define_id!(McpServerId, "一个可重连的 MCP Server 注册。");
 define_id!(ConnectorId, "只读或受 Gateway 管控的外部世界连接器。");
 define_id!(WorldSignalId, "外部世界的一条标准化、可去重事实。");
 define_id!(IntentCandidateId, "根据 World Signal 提出的 Intent 候选。");
+define_id!(WorldItemId, "跨 Signal 版本聚合出的 Personal World 条目。");
