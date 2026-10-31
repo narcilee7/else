@@ -577,6 +577,19 @@ pub struct ConnectorSyncResult {
     pub hydrated: bool,
 }
 
+/// 重建游标并重新同步的结果。
+///
+/// 修复会清零退避、丢弃损坏的游标，然后重走 Adapter Pull / Backfill / Health。
+/// `error` 非空表示修复没有完全成功 —— surface 必须把它显示出来，
+/// 不能假装连接已经恢复。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectorRepairReport {
+    pub connector_id: ConnectorId,
+    pub reset_cursors: usize,
+    pub sync: Option<ConnectorSyncResult>,
+    pub error: Option<String>,
+}
+
 fn default_sensitivity() -> String {
     "internal".into()
 }

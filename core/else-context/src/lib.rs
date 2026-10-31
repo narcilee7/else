@@ -8,9 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 use else_ledger::{Projection, StoredEvent};
+use else_protocol::api::MemoryView;
 use else_protocol::event::EventPayload;
 use else_protocol::ids::{IntentId, MemoryId, SnapshotId};
-use else_protocol::memory::{ContextSnapshot, MemoryRecord, MemoryScope, MemoryTier};
+use else_protocol::memory::{ContextSnapshot, MemoryRecord, MemoryTier};
 
 /// Memory 投影：已晋升记忆、待确认候选与 Context Snapshot，全部来自事件。
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -25,6 +26,22 @@ pub struct MemoryProjection {
     pub snapshots: BTreeMap<SnapshotId, ContextSnapshot>,
     /// 已重放到的事件水位。
     pub cursor: u64,
+}
+
+impl MemoryProjection {
+    /// 契约视图：跨进程传输用的记忆快照。
+    ///
+    /// 投影本身实现了 Ledger 的 `Projection` 契约，因此留在本 crate；
+    /// 线上形状由 `else-protocol` 定义，这里只做一次受编译器检查的转换。
+    pub fn view(&self) -> MemoryView {
+        MemoryView {
+            promoted: self.promoted.clone(),
+            candidates: self.candidates.clone(),
+            revoked: self.revoked.clone(),
+            snapshots: self.snapshots.clone(),
+            cursor: self.cursor,
+        }
+    }
 }
 
 impl Projection for MemoryProjection {
@@ -65,17 +82,13 @@ impl MemoryProjection {
         tiers: &[MemoryTier],
         now: DateTime<Utc>,
     ) -> Vec<MemoryRecord> {
-        self.promoted
-            .values()
-            .filter(|record| tiers.contains(&record.tier))
-            .filter(|record| record.valid_until.is_none_or(|until| until > now))
-            .filter(|record| match &record.scope {
-                MemoryScope::Global => true,
-                MemoryScope::Project(name) => Some(name.as_str()) == project,
-                MemoryScope::Intent(id) => Some(id) == intent_id,
-            })
-            .cloned()
-            .collect()
+        else_protocol::memory::recall_memories(
+            self.promoted.values(),
+            project,
+            intent_id,
+            tiers,
+            now,
+        )
     }
 }
 

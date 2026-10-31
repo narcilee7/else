@@ -7,8 +7,11 @@
 mod projection;
 
 pub use projection::{
-    AttentionMetrics, AttentionRecordProjection, IntentProjection, ScopeProjection, TimerProjection,
+    AttentionRecordProjection, IntentProjection, ScopeProjection, TimerProjection,
 };
+
+/// 注意力成本指标的定义在协议层：所有 surface 用同一份形状解释打断成本。
+pub use else_protocol::attention::AttentionMetrics;
 
 use std::cell::Cell;
 

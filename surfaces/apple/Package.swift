@@ -24,7 +24,10 @@ let package = Package(
         ),
         .testTarget(
             name: "ElseClientCoreTests",
-            dependencies: ["ElseClientCore"]
+            dependencies: ["ElseClientCore"],
+            // 契约 fixture 由 Rust 契约测试共用（core/else-protocol/tests/contract.rs），
+            // 两边读同一份 JSON，形状漂移会同时打断两边。
+            resources: [.copy("Fixtures")]
         ),
     ],
     swiftLanguageModes: [.v5]

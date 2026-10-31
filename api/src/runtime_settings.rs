@@ -6,16 +6,10 @@ use std::path::Path;
 use chrono::{DateTime, Duration, Utc};
 use else_protocol::event::EventPayload;
 use else_protocol::intent::IntentState;
-use serde::{Deserialize, Serialize};
 
 use crate::{ApiError, IntentDeletionReport, Result, Runtime};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeSettings {
-    /// `None` disables automatic retention.
-    #[serde(default)]
-    pub retention_days: Option<u64>,
-}
+pub use else_protocol::runtime::RuntimeSettings;
 
 impl Runtime {
     pub fn runtime_settings(&self) -> Result<RuntimeSettings> {

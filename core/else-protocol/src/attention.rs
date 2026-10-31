@@ -66,6 +66,27 @@ pub struct AttentionRequest {
     pub related_call_key: Option<String>,
 }
 
+/// 从事件投影计算的注意力成本指标。误打断率只统计用户明确 Dismiss 的
+/// Interrupt 请求，不用拒绝选项猜测。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct AttentionMetrics {
+    pub requested: u64,
+    pub resolved: u64,
+    pub interventions: u64,
+    pub batch_notifications: u64,
+    pub defer_notifications: u64,
+    pub interrupt_notifications: u64,
+    pub batched_requests: u64,
+    pub deferred_requests: u64,
+    pub silent_requests: u64,
+    pub open_critical: u64,
+    pub missed_critical: u64,
+    pub resolved_interrupts: u64,
+    pub dismissed_interrupts: u64,
+    pub batch_rate: Option<f64>,
+    pub misinterrupt_rate: Option<f64>,
+}
+
 /// Attention Kernel 的四种裁决。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "ruling", rename_all = "snake_case")]

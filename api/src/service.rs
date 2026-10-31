@@ -6,6 +6,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use else_context::MemoryProjection;
 use else_ledger::{IntentProjection, StoredEvent};
 use else_protocol::attention::{AttentionRequest, DecisionChoice};
 use else_protocol::capability::{
@@ -16,17 +17,20 @@ use else_protocol::connector::{
     ConnectorHealthReport, ConnectorManifest, ConnectorPolicy, ConnectorRegistration,
     ConnectorSyncResult, IntentCandidate,
 };
+use else_protocol::effect::SideEffectKind;
 use else_protocol::ids::{
-    AgentBindingId, AgentId, AttentionId, CapabilityId, ConnectorActionId, ConnectorId,
-    IntentCandidateId, IntentId, RunId, ScopeId, TimerId,
+    AgentBindingId, AgentId, AttentionId, CapabilityId, CheckpointId, ConnectorActionId,
+    ConnectorId, IntentCandidateId, IntentId, MemoryId, RunId, ScopeId, TimerId,
 };
-use else_protocol::intent::IntentSpec;
-use else_protocol::plan::Plan;
+use else_protocol::intent::{IntentSpec, OpaqueHarnessPolicy};
+use else_protocol::memory::{MemoryRecord, MemoryScope};
+use else_protocol::plan::{Plan, PlanImpact};
 
 use crate::kernel::KernelDrive;
+use crate::resources::ResourceReport;
 use crate::{
-    ApiError, ConnectorRepairReport, IntentDeletionReport, LeaseCleanupReport, Result, Runtime,
-    RuntimeDataExport, RuntimeDiagnosticReport, RuntimeSettings,
+    ApiError, ConnectorRepairReport, IntentDeletionReport, IntentRevision, LeaseCleanupReport,
+    Result, Runtime, RuntimeDataExport, RuntimeDiagnosticReport, RuntimeSettings,
 };
 
 type Reply<T> = SyncSender<Result<T>>;
@@ -323,6 +327,85 @@ enum Command {
         harness_hint: Option<String>,
         max_steps: u64,
         reply: Reply<KernelDrive>,
+    },
+    Advance {
+        intent_id: IntentId,
+        harness_hint: Option<String>,
+        reply: Reply<IntentProjection>,
+    },
+    DispatchScope {
+        intent_id: IntentId,
+        scope_id: ScopeId,
+        harness_hint: Option<String>,
+        reply: Reply<IntentProjection>,
+    },
+    SpawnSubagent {
+        intent_id: IntentId,
+        parent_scope: ScopeId,
+        task: String,
+        max_autonomous_effect: SideEffectKind,
+        depends_on: Vec<ScopeId>,
+        reply: Reply<ScopeId>,
+    },
+    PlanHistory {
+        intent_id: IntentId,
+        reply: Reply<Vec<Plan>>,
+    },
+    AnalyzePlanImpact {
+        intent_id: IntentId,
+        source_event_id: String,
+        source: String,
+        summary: String,
+        reply: Reply<Option<PlanImpact>>,
+    },
+    MemoryProjection {
+        reply: Reply<MemoryProjection>,
+    },
+    PromoteMemory {
+        memory_id: MemoryId,
+        scope: Option<MemoryScope>,
+        reply: Reply<MemoryRecord>,
+    },
+    RevokeMemory {
+        memory_id: MemoryId,
+        reason: String,
+        reply: Reply<()>,
+    },
+    CorrectMemory {
+        scope: MemoryScope,
+        subject: String,
+        predicate: String,
+        value: String,
+        reply: Reply<MemoryRecord>,
+    },
+    Checkpoint {
+        intent_id: IntentId,
+        reply: Reply<else_protocol::artifact::Checkpoint>,
+    },
+    Rerun {
+        intent_id: IntentId,
+        checkpoint_id: CheckpointId,
+        alternative: bool,
+        reply: Reply<(ScopeId, u64)>,
+    },
+    Compare {
+        intent_id: IntentId,
+        reply: Reply<String>,
+    },
+    ConfigureOpaqueHarness {
+        intent_id: IntentId,
+        policy: OpaqueHarnessPolicy,
+        reply: Reply<IntentSpec>,
+    },
+    Resources {
+        intent_id: IntentId,
+        reply: Reply<ResourceReport>,
+    },
+    ReviseIntent {
+        intent_id: IntentId,
+        update: IntentRevision,
+        unaffected_scopes: Vec<ScopeId>,
+        reply: Reply<IntentSpec>,
     },
     Shutdown {
         reply: Reply<()>,
@@ -972,6 +1055,174 @@ impl RuntimeHandle {
         })
     }
 
+    pub fn advance(
+        &self,
+        intent_id: &IntentId,
+        harness_hint: Option<&str>,
+    ) -> Result<IntentProjection> {
+        self.request(|reply| Command::Advance {
+            intent_id: intent_id.clone(),
+            harness_hint: harness_hint.map(str::to_string),
+            reply,
+        })
+    }
+
+    pub fn dispatch_scope(
+        &self,
+        intent_id: &IntentId,
+        scope_id: &ScopeId,
+        harness_hint: Option<&str>,
+    ) -> Result<IntentProjection> {
+        self.request(|reply| Command::DispatchScope {
+            intent_id: intent_id.clone(),
+            scope_id: scope_id.clone(),
+            harness_hint: harness_hint.map(str::to_string),
+            reply,
+        })
+    }
+
+    pub fn spawn_subagent_with_dependencies(
+        &self,
+        intent_id: &IntentId,
+        parent_scope: &ScopeId,
+        task: &str,
+        max_autonomous_effect: SideEffectKind,
+        depends_on: Vec<ScopeId>,
+    ) -> Result<ScopeId> {
+        self.request(|reply| Command::SpawnSubagent {
+            intent_id: intent_id.clone(),
+            parent_scope: parent_scope.clone(),
+            task: task.to_string(),
+            max_autonomous_effect,
+            depends_on,
+            reply,
+        })
+    }
+
+    pub fn plan_history(&self, intent_id: &IntentId) -> Result<Vec<Plan>> {
+        self.request(|reply| Command::PlanHistory {
+            intent_id: intent_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn analyze_plan_impact(
+        &self,
+        intent_id: &IntentId,
+        source_event_id: &str,
+        source: &str,
+        summary: &str,
+    ) -> Result<Option<PlanImpact>> {
+        self.request(|reply| Command::AnalyzePlanImpact {
+            intent_id: intent_id.clone(),
+            source_event_id: source_event_id.to_string(),
+            source: source.to_string(),
+            summary: summary.to_string(),
+            reply,
+        })
+    }
+
+    pub fn memory_projection(&self) -> Result<MemoryProjection> {
+        self.request(|reply| Command::MemoryProjection { reply })
+    }
+
+    pub fn promote_memory(
+        &self,
+        memory_id: &MemoryId,
+        scope: Option<MemoryScope>,
+    ) -> Result<MemoryRecord> {
+        self.request(|reply| Command::PromoteMemory {
+            memory_id: memory_id.clone(),
+            scope,
+            reply,
+        })
+    }
+
+    pub fn revoke_memory(&self, memory_id: &MemoryId, reason: &str) -> Result<()> {
+        self.request(|reply| Command::RevokeMemory {
+            memory_id: memory_id.clone(),
+            reason: reason.to_string(),
+            reply,
+        })
+    }
+
+    pub fn correct_memory(
+        &self,
+        scope: MemoryScope,
+        subject: &str,
+        predicate: &str,
+        value: &str,
+    ) -> Result<MemoryRecord> {
+        self.request(|reply| Command::CorrectMemory {
+            scope,
+            subject: subject.to_string(),
+            predicate: predicate.to_string(),
+            value: value.to_string(),
+            reply,
+        })
+    }
+
+    pub fn checkpoint(&self, intent_id: &IntentId) -> Result<else_protocol::artifact::Checkpoint> {
+        self.request(|reply| Command::Checkpoint {
+            intent_id: intent_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn rerun(
+        &self,
+        intent_id: &IntentId,
+        checkpoint_id: &CheckpointId,
+        alternative: bool,
+    ) -> Result<(ScopeId, u64)> {
+        self.request(|reply| Command::Rerun {
+            intent_id: intent_id.clone(),
+            checkpoint_id: checkpoint_id.clone(),
+            alternative,
+            reply,
+        })
+    }
+
+    pub fn compare(&self, intent_id: &IntentId) -> Result<String> {
+        self.request(|reply| Command::Compare {
+            intent_id: intent_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn configure_opaque_harness(
+        &self,
+        intent_id: &IntentId,
+        policy: OpaqueHarnessPolicy,
+    ) -> Result<IntentSpec> {
+        self.request(|reply| Command::ConfigureOpaqueHarness {
+            intent_id: intent_id.clone(),
+            policy,
+            reply,
+        })
+    }
+
+    pub fn resources(&self, intent_id: &IntentId) -> Result<ResourceReport> {
+        self.request(|reply| Command::Resources {
+            intent_id: intent_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn revise_intent(
+        &self,
+        intent_id: &IntentId,
+        update: IntentRevision,
+        unaffected_scopes: &[ScopeId],
+    ) -> Result<IntentSpec> {
+        self.request(|reply| Command::ReviseIntent {
+            intent_id: intent_id.clone(),
+            update,
+            unaffected_scopes: unaffected_scopes.to_vec(),
+            reply,
+        })
+    }
+
     pub fn shutdown(&self) -> Result<()> {
         self.request(|reply| Command::Shutdown { reply })
     }
@@ -1451,6 +1702,113 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.drive(&intent_id, harness_hint.as_deref(), max_steps));
+        }
+        Command::Advance {
+            intent_id,
+            harness_hint,
+            reply,
+        } => {
+            let _ = reply.send(runtime.advance(&intent_id, harness_hint.as_deref()));
+        }
+        Command::DispatchScope {
+            intent_id,
+            scope_id,
+            harness_hint,
+            reply,
+        } => {
+            let _ =
+                reply.send(runtime.dispatch_scope(&intent_id, &scope_id, harness_hint.as_deref()));
+        }
+        Command::SpawnSubagent {
+            intent_id,
+            parent_scope,
+            task,
+            max_autonomous_effect,
+            depends_on,
+            reply,
+        } => {
+            let _ = reply.send(runtime.spawn_subagent_with_dependencies(
+                &intent_id,
+                &parent_scope,
+                &task,
+                max_autonomous_effect,
+                depends_on,
+            ));
+        }
+        Command::PlanHistory { intent_id, reply } => {
+            let _ = reply.send(runtime.plan_history(&intent_id));
+        }
+        Command::AnalyzePlanImpact {
+            intent_id,
+            source_event_id,
+            source,
+            summary,
+            reply,
+        } => {
+            let _ = reply.send(runtime.analyze_plan_impact(
+                &intent_id,
+                &source_event_id,
+                &source,
+                &summary,
+            ));
+        }
+        Command::MemoryProjection { reply } => {
+            let _ = reply.send(runtime.memory_projection());
+        }
+        Command::PromoteMemory {
+            memory_id,
+            scope,
+            reply,
+        } => {
+            let _ = reply.send(runtime.promote_memory(&memory_id, scope));
+        }
+        Command::RevokeMemory {
+            memory_id,
+            reason,
+            reply,
+        } => {
+            let _ = reply.send(runtime.revoke_memory(&memory_id, &reason));
+        }
+        Command::CorrectMemory {
+            scope,
+            subject,
+            predicate,
+            value,
+            reply,
+        } => {
+            let _ = reply.send(runtime.correct_memory(scope, &subject, &predicate, &value));
+        }
+        Command::Checkpoint { intent_id, reply } => {
+            let _ = reply.send(runtime.checkpoint(&intent_id));
+        }
+        Command::Rerun {
+            intent_id,
+            checkpoint_id,
+            alternative,
+            reply,
+        } => {
+            let _ = reply.send(runtime.rerun(&intent_id, &checkpoint_id, alternative));
+        }
+        Command::Compare { intent_id, reply } => {
+            let _ = reply.send(runtime.compare(&intent_id));
+        }
+        Command::ConfigureOpaqueHarness {
+            intent_id,
+            policy,
+            reply,
+        } => {
+            let _ = reply.send(runtime.configure_opaque_harness(&intent_id, policy));
+        }
+        Command::Resources { intent_id, reply } => {
+            let _ = reply.send(runtime.resources(&intent_id));
+        }
+        Command::ReviseIntent {
+            intent_id,
+            update,
+            unaffected_scopes,
+            reply,
+        } => {
+            let _ = reply.send(runtime.revise_intent(&intent_id, update, &unaffected_scopes));
         }
         Command::Shutdown { reply } => {
             let _ = reply.send(Ok(()));

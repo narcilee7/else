@@ -10,11 +10,16 @@ path = "src/main.rs"
 
 [dependencies]
 else-api = { path = "../../api" }
+else-client = { path = "../../core/else-client" }
 else-harness = { path = "../../core/else-harness" }
 else-protocol = { path = "../../core/else-protocol" }
 else-ledger = { path = "../../core/else-ledger" }
 else-context = { path = "../../core/else-context" }
 else-daemon = { path = "../daemon" }
 clap = { version = "4", features = ["derive"] }
+ratatui.workspace = true
+crossterm.workspace = true
 chrono.workspace = true
+libc.workspace = true
+serde.workspace = true
 serde_json.workspace = true

@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 use else_gateway::{resource::ensure_capacity, ExecContext};
 use else_ledger::StoredEvent;
+use else_protocol::api::ResourceView;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::ids::IntentId;
 use else_protocol::resource::{
@@ -25,6 +26,17 @@ pub struct ResourceReport {
     pub budget: ResourceBudget,
     pub usage: ResourceUsage,
     pub sandboxes: Vec<SandboxUsage>,
+}
+
+impl ResourceReport {
+    /// 契约视图：跨进程传输用的资源账快照。
+    pub fn view(&self) -> ResourceView {
+        ResourceView {
+            budget: self.budget,
+            usage: self.usage,
+            sandboxes: self.sandboxes.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

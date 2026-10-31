@@ -6,7 +6,7 @@ import Testing
 struct RuntimeContractTests {
     @Test
     func decodesIntentSnapshotUsingRuntimeWireFormat() throws {
-        let data = Data(Self.snapshotJSON.utf8)
+        let data = try Self.sharedContractFixture()
         let snapshot = try RuntimeJSON.decoder().decode(IntentSnapshot.self, from: data)
 
         #expect(snapshot.id.rawValue == "C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
@@ -18,6 +18,29 @@ struct RuntimeContractTests {
         #expect(snapshot.resourceBudget.maxModelTokens == 1_000_000)
         #expect(snapshot.resourceUsage.toolCalls == 4)
         #expect(snapshot.cursor == 17)
+    }
+
+    /// fixture 与 Rust 契约测试共用：`core/else-protocol/tests/contract.rs` 读同一份 JSON。
+    /// Rust 侧改了线上形状，这里会先失败，而不是等到运行时解不出来。
+    @Test
+    func decodesSharedContractFixture() throws {
+        let url = try #require(
+            Bundle.module.url(
+                forResource: "intent_snapshot",
+                withExtension: "json",
+                subdirectory: "Fixtures"
+            ),
+            "共享契约 fixture 缺失"
+        )
+        let data = try Data(contentsOf: url)
+        let snapshot = try RuntimeJSON.decoder().decode(IntentSnapshot.self, from: data)
+
+        #expect(snapshot.spec.outcome == "完成客户端基础设施")
+        #expect(snapshot.spec.constraints == ["不绕过 API"])
+        #expect(snapshot.spec.assumptions.first?.text == "依赖可用")
+        #expect(snapshot.decisions.first?.defaultOption == "approve")
+        #expect(snapshot.decisions.first?.relatedCallKey == "shell:42")
+        #expect(snapshot.spec.authority.forbidden == ["不对外发送"])
     }
 
     @Test
@@ -69,58 +92,17 @@ struct RuntimeContractTests {
         #expect(action.outcome?.effect == .unknown)
     }
 
-    private static let snapshotJSON = """
-    {
-      "spec": {
-        "id": "C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D",
-        "revision": 2,
-        "outcome": "完成客户端基础设施",
-        "done_when": [{"description": "预算内完成"}],
-        "constraints": ["不绕过 API"],
-        "authority": {
-          "max_autonomous_effect": "reversible",
-          "forbidden": ["不对外发送"]
-        },
-        "attention_policy": {
-          "allow_interrupt": true,
-          "batch_interval_minutes": 30
-        },
-        "deadline": "2026-10-30T12:00:00.123Z",
-        "assumptions": [],
-        "project": "else"
-      },
-      "state": "needs_decision",
-      "decisions": [{
-        "id": "DFD1A78E",
-        "kind": "authorization",
-        "summary": "允许执行？",
-        "blocked_reason": "需要一次性授权",
-        "expected_loss": "high",
-        "blocking": true,
-        "reversible": true,
-        "decide_by": "2026-10-30T13:00:00Z",
-        "options": [
-          {"id": "approve", "label": "允许", "recommended": true}
-        ],
-        "default_option": "approve",
-        "related_call_key": "shell:42"
-      }],
-      "artifacts": [],
-      "resource_budget": {
-        "max_model_tokens": 1000000,
-        "max_model_spend_usd_micros": 1000000,
-        "max_tool_calls": 10000,
-        "max_sandbox_seconds": 86400
-      },
-      "resource_usage": {
-        "model_tokens": 1234,
-        "model_spend_usd_micros": 500,
-        "tool_calls": 4,
-        "sandbox_seconds": 32
-      },
-      "cursor": 17
+    private static func sharedContractFixture() throws -> Data {
+        let url = try #require(
+            Bundle.module.url(
+                forResource: "intent_snapshot",
+                withExtension: "json",
+                subdirectory: "Fixtures"
+            ),
+            "共享契约 fixture 缺失"
+        )
+        return try Data(contentsOf: url)
     }
-    """
 
     private static let actionJSON = """
     {

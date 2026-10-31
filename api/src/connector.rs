@@ -19,18 +19,11 @@ use else_protocol::effect::SideEffectKind;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::ids::{CapabilityId, ConnectorId, IntentId};
 use else_protocol::intent::{AttentionPolicy, Authority, Criterion};
-use serde::Serialize;
 use serde_json::Value;
 
 use crate::{ApiError, IntentDraft, Result, Runtime};
 
-#[derive(Debug, Serialize)]
-pub struct ConnectorRepairReport {
-    pub connector_id: ConnectorId,
-    pub reset_cursors: usize,
-    pub sync: Option<ConnectorSyncResult>,
-    pub error: Option<String>,
-}
+pub use else_protocol::connector::ConnectorRepairReport;
 
 impl Runtime {
     pub fn register_calendar_connector(

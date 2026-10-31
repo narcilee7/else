@@ -23,6 +23,31 @@ pub enum MemoryTier {
     Semantic,
 }
 
+/// 规则式召回：Global + 匹配的 Project / Intent，再按层级与有效期过滤。
+///
+/// 召回是纯函数：同一批记忆、同一组条件，任何 surface 都得到同一批结果。
+/// 定义放在协议层是为了让 CLI、TUI 与 App 用同一套规则，不各自实现一遍。
+///
+/// 记忆只是上下文，不是权威：召回结果不会改写授权。
+pub fn recall_memories<'a>(
+    promoted: impl Iterator<Item = &'a MemoryRecord>,
+    project: Option<&str>,
+    intent_id: Option<&IntentId>,
+    tiers: &[MemoryTier],
+    now: DateTime<Utc>,
+) -> Vec<MemoryRecord> {
+    promoted
+        .filter(|record| tiers.contains(&record.tier))
+        .filter(|record| record.valid_until.is_none_or(|until| until > now))
+        .filter(|record| match &record.scope {
+            MemoryScope::Global => true,
+            MemoryScope::Project(name) => Some(name.as_str()) == project,
+            MemoryScope::Intent(id) => Some(id) == intent_id,
+        })
+        .cloned()
+        .collect()
+}
+
 /// 记忆作用域。召回按作用域匹配：Global + 匹配的 Project。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]

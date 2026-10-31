@@ -27,6 +27,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 - [MVP](./MVP.md) — the no-scale MVP cutline: Memory, Codex / Claude Code harnesses, local dispatch, shared context and resources, followed by a separate Scale phase.（中文）
 - [ARCHITECTURE](./ARCHITECTURE.md) — system design, invariants, and technology choices: Rust core, event sourcing on SQLite, pluggable artifact backends (CAS / Git), MCP + model gateways, local & cloud environments.（中文）
 - [CURRENT_ARCHITECTURE](./CURRENT_ARCHITECTURE.md) — 当前实现快照：Agent 通信与调度、NativeSandbox 上云路径、macOS 产品化状态与剩余缺口。（中文）
+- [PRODUCT_SURFACE](./PRODUCT_SURFACE.md) — 终端产品面：CLI/TUI 共用一条 HTTP 链路、界面架构、跨平台安装与后台服务。（中文）
 - [PRODUCT_READINESS](./PRODUCT_READINESS.md) — Personal Agent 产品化差距、验证边界、发布阻塞与推荐实施顺序。（中文）
 - [DESIGN](./DESIGN.md) — visual language, Motion grammar, component rules, accessibility, and the three-surface experience.（中文）
 - [GAPS](./GAPS.md) — prioritized product, kernel, release, and scale-readiness gaps.（中文）
@@ -49,6 +50,10 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 - **Dependency convergence**: bounded retries, classified terminal failures, one same-authority replacement, explicit downstream rewiring, and replayable Superseded convergence.
 - **Explicit Opaque Profile**: user-approved observed effects, provider-domain egress proxying, optional read-only Harness Workspaces with loopback Tool Gateway routing, effect ceilings, and observed events kept separate from Gateway authorization.
 - **Loopback daemon**: single-instance runtime, Bearer authentication, idempotent commands, revision preconditions, asynchronous operations, and cursor-based event streaming for CLI, Apple, and future surfaces.
+- **One contract, many surfaces**: the HTTP wire shapes live in `else-protocol::api` — defined once, consumed by the daemon, the CLI, and the TUI. A shared JSON fixture is read by both the Rust and Swift contract tests, so a shape change breaks both sides at once instead of at runtime.
+- **One runtime, one world**: the CLI and the macOS App now speak the same HTTP API against the same daemon. `else` in a terminal and the App's Daily Brief show the same Brief, because there is only one ledger. The CLI attaches to an already-running daemon when there is one (the App's background one, typically) and otherwise starts a short-lived embedded daemon — either way, exactly one writer.
+- **Terminal product**: `else` with no arguments opens a full-screen terminal interface (ratatui + crossterm) built on the Codex CLI's event-bus architecture: widgets never call the backend, they emit events and the top-level app reacts. Screens are Overview (Daily Brief), Intents, World, Decisions, Connectors, plus an inline intent composer. Piped or redirected, `else` prints the Brief instead of hanging.
+- **Installable product**: `install.sh` / Homebrew / `cargo install`, cross-platform background service registration (`else daemon install` → LaunchAgent on macOS, systemd user unit on Linux), `else doctor` for a one-shot health report, and `else onboard` for first-run setup.
 - **Unified capabilities and bindings**: Builtin tools, MCP tools, and Skills share one Gateway contract; MCP tools can be discovered from `tools/list`, while LocalProcess, McpStdio, and HTTPS RemoteHttp Agent bindings dispatch outbound work through the existing verifier and resource lifecycle.
 - **Binding lifecycle closure**: MCP sessions support `list_changed` refresh and persisted restart recovery; Agent bindings expose explicit lifecycle states, RemoteHttp callbacks, and SSE event streams.
 - **Personal world signal foundation**: an Adapter Registry isolates Calendar, Linear, and Notion provider details behind neutral Observations; a separate Interpreter derives ActionItem / Commitment / WaitingExternal interpretations before Resolver sees them. Notion Pages enter Document Context while Database Rows reuse the WorkItem pipeline. Connectors retain manifests, persistent cursors, tombstones, and session-scoped webhooks.
@@ -60,9 +65,15 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 ### Quickstart
 
 ```bash
-cargo install --path surfaces/cli        # one-command install, zero external services
+# 装好（一条命令：二进制 + runtime 目录 + 后台常驻服务）
+curl -fsSL https://raw.githubusercontent.com/narcilee7/else/main/install.sh | sh
+# 或者：brew install narcilee7/tap/else
+# 或者：cargo install else-cli
 
-else serve --bind 127.0.0.1:4180          # shared loopback Runtime for Apple/Web/remote CLI
+else                                      # 打开终端界面（Daily Brief 在第一屏）
+else doctor                               # 这台机器上的 else 现在是什么状态
+else serve --bind 127.0.0.1:4180          # 前台跑一个共享 Runtime（Apple/Web/远程 CLI 连它）
+
 else intent "把项目推进到可发布状态" --project myproj
 else intent "实现发布修复" --harness codex --allow-opaque --opaque-network --tool-gateway --opaque-max-effect reversible
 else advance <intent-id> --harness auto     # one event-derived kernel step
@@ -113,6 +124,11 @@ else memory --project myproj             # scoped recall, never permission
 else resources <intent-id>               # tokens / spend / tool calls / sandbox seconds
 else checkpoint <intent-id> && else rerun --alternative <intent-id> <checkpoint>
 else compare <intent-id> <scope-a> <scope-b>
+
+else doctor                               # 诊断报告
+else daemon install|uninstall|status      # 后台常驻 Runtime
+else onboard                              # 首次运行准备
+else brief --json                         # 机器可读的输出
 ```
 
 ### Honest limits (Opaque capabilities & non-promises)

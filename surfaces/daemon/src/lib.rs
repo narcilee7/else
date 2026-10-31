@@ -13,7 +13,8 @@ use std::time::Instant;
 use chrono::Utc;
 use else_api::{ApiError, RuntimeHandle, RuntimeService};
 use else_ledger::{IntentProjection, StoredEvent};
-use else_protocol::attention::{AttentionRequest, AttentionWindow, DecisionChoice};
+use else_protocol::api::{AttentionWindowSnapshot, EventResponse, IntentSnapshot};
+use else_protocol::attention::DecisionChoice;
 use else_protocol::intent::{IntentSpec, IntentState};
 use fs2::FileExt;
 use serde::Serialize;
@@ -71,10 +72,11 @@ impl Daemon {
             .token
             .or_else(|| std::env::var("ELSE_RUNTIME_TOKEN").ok())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        write_token(&config.dir, &token)?;
 
-        let service = RuntimeService::start(&config.dir)?;
-        let handle = service.handle();
+        // 先监听，再开账本，最后写令牌。
+        //
+        // 顺序很重要：绑定失败时不能已经把令牌写进 runtime 目录 ——
+        // 否则那份令牌对谁都不成立，却会让下一次连接拿着错令牌来敲门。
         let server =
             Server::http(&config.bind).map_err(|error| DaemonError::Bind(error.to_string()))?;
         let addr = server
@@ -82,6 +84,11 @@ impl Daemon {
             .to_ip()
             .ok_or_else(|| DaemonError::Bind("daemon requires a TCP listener".into()))?;
         let url = format!("http://{addr}");
+
+        let service = RuntimeService::start(&config.dir)?;
+        let handle = service.handle();
+        write_token(&config.dir, &token)?;
+
         let state = Arc::new(AppState {
             token: token.clone(),
             handle: handle.clone(),
@@ -146,39 +153,9 @@ struct Operation {
     kind: String,
     status: String,
     error: Option<String>,
-}
-
-#[derive(Serialize)]
-struct IntentSnapshot {
-    spec: IntentSpec,
-    state: IntentState,
-    decisions: Vec<else_protocol::attention::AttentionRequest>,
-    artifacts: Vec<else_protocol::artifact::Artifact>,
-    resource_budget: else_protocol::resource::ResourceBudget,
-    resource_usage: else_protocol::resource::ResourceUsage,
-    cursor: u64,
+    /// 操作产出的结果。drive 会带上停止原因与步数。
     #[serde(skip_serializing_if = "Option::is_none")]
-    operation_id: Option<String>,
-}
-
-#[derive(Serialize)]
-struct EventResponse {
-    seq: u64,
-    event_id: String,
-    intent_id: String,
-    scope_id: String,
-    run_id: Option<String>,
-    generation: u64,
-    intent_revision: u64,
-    occurred_at: String,
-    payload: Value,
-}
-
-#[derive(Serialize)]
-struct AttentionWindowSnapshot {
-    intent_id: else_protocol::ids::IntentId,
-    window: AttentionWindow,
-    requests: Vec<AttentionRequest>,
+    result: Option<Value>,
 }
 
 fn handle_http(mut request: Request, state: &AppState) {
@@ -293,6 +270,29 @@ fn handle_http(mut request: Request, state: &AppState) {
         let _ = request.respond(response);
         return;
     }
+    if path_segments.len() == 3
+        && path_segments[0] == "v1"
+        && path_segments[1] == "events"
+        && path_segments[2] == "stream"
+        && request.method() == &Method::Get
+    {
+        let cursor = query_value(request.url(), "cursor")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let reader = EventStream::new(state.handle.clone(), cursor);
+        let response = Response::new(
+            StatusCode(200),
+            vec![
+                Header::from_bytes("Content-Type", "text/event-stream").expect("static header"),
+                Header::from_bytes("Cache-Control", "no-cache").expect("static header"),
+            ],
+            reader,
+            None,
+            None,
+        );
+        let _ = request.respond(response);
+        return;
+    }
     let idempotency_key = header(&request, "Idempotency-Key");
     if request.method() != &Method::Get && idempotency_key.is_none() {
         respond_json(
@@ -355,6 +355,16 @@ fn route(
     segments: &[&str],
     body: &str,
 ) -> Result<(u16, String)> {
+    if segments == ["v1", "version"] && request.method() == &Method::Get {
+        // 鉴权端点：客户端用它确认「连上的这个 Runtime 用的是这份契约」。
+        return Ok((
+            200,
+            json_string(&json!({
+                "contract_version": else_protocol::api::CONTRACT_VERSION,
+                "protocol_version": else_protocol::PROTOCOL_VERSION,
+            }))?,
+        ));
+    }
     if segments == ["v1", "export"] && request.method() == &Method::Get {
         return Ok((200, json_string(&state.handle.export_data()?)?));
     }
@@ -427,6 +437,17 @@ fn route(
         let manifests = state.handle.connector_manifests()?;
         return Ok((200, json_string(&manifests)?));
     }
+    if segments == ["v1", "harnesses"] && request.method() == &Method::Get {
+        let views: Vec<_> = else_harness::builtin_adapters()
+            .iter()
+            .map(|adapter| else_protocol::api::HarnessView {
+                name: adapter.name().to_string(),
+                capabilities: adapter.capabilities(),
+                network_access: adapter.network_access(),
+            })
+            .collect();
+        return Ok((200, json_string(&views)?));
+    }
     if segments == ["v1", "world", "brief"] && request.method() == &Method::Get {
         let brief = state.handle.personal_brief()?;
         return Ok((200, json_string(&brief)?));
@@ -498,11 +519,22 @@ fn route(
         }
         if segments.len() == 4 && segments[3] == "run" && request.method() == &Method::Post {
             check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
+            let harness = value["harness"].as_str().map(str::to_string);
             let mut current = snapshot(&state.handle.projection(&intent_id)?);
             current.operation_id = Some(spawn_operation(state, "run", &intent_id, {
                 let handle = state.handle.clone();
                 let intent_id = intent_id.clone();
-                move || handle.drive(&intent_id, None, 16).map(|_| ())
+                move || {
+                    handle
+                        .drive(&intent_id, harness.as_deref(), 16)
+                        .map(|driven| {
+                            json!({
+                                "stopped": format!("{:?}", driven.stopped),
+                                "steps": driven.steps,
+                            })
+                        })
+                }
             }));
             return Ok((202, json_string(&current)?));
         }
@@ -985,7 +1017,11 @@ fn route(
             current.operation_id = Some(spawn_operation(state, "decision", &intent_id, {
                 let handle = state.handle.clone();
                 let intent_id = intent_id.clone();
-                move || handle.decide(&intent_id, &decision_id, choice).map(|_| ())
+                move || {
+                    handle
+                        .decide(&intent_id, &decision_id, choice)
+                        .map(|_| json!({}))
+                }
             }));
             return Ok((202, json_string(&current)?));
         }
@@ -995,6 +1031,333 @@ fn route(
             let reason = value["reason"].as_str().unwrap_or("surface abort");
             let projection = state.handle.abort(&intent_id, reason)?;
             return Ok((200, json_string(&snapshot(&projection))?));
+        }
+        if segments.len() == 4 && segments[3] == "advance" && request.method() == &Method::Post {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
+            let harness = value["harness"].as_str().map(str::to_string);
+            let mut current = snapshot(&state.handle.projection(&intent_id)?);
+            current.operation_id = Some(spawn_operation(state, "advance", &intent_id, {
+                let handle = state.handle.clone();
+                let intent_id = intent_id.clone();
+                move || {
+                    handle
+                        .advance(&intent_id, harness.as_deref())
+                        .map(|_| json!({}))
+                }
+            }));
+            return Ok((202, json_string(&current)?));
+        }
+        if segments.len() == 4 && segments[3] == "drive" && request.method() == &Method::Post {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
+            let harness = value["harness"].as_str().map(str::to_string);
+            let max_steps = value["max_steps"].as_u64().unwrap_or(8);
+            let mut current = snapshot(&state.handle.projection(&intent_id)?);
+            current.operation_id = Some(spawn_operation(state, "drive", &intent_id, {
+                let handle = state.handle.clone();
+                let intent_id = intent_id.clone();
+                move || {
+                    handle
+                        .drive(&intent_id, harness.as_deref(), max_steps)
+                        .map(|driven| {
+                            json!({
+                                "stopped": format!("{:?}", driven.stopped),
+                                "steps": driven.steps,
+                            })
+                        })
+                }
+            }));
+            return Ok((202, json_string(&current)?));
+        }
+        if segments.len() == 4 && segments[3] == "scopes" {
+            match request.method() {
+                Method::Get => {
+                    let projection = state.handle.projection(&intent_id)?;
+                    let root = projection.spec.as_ref();
+                    let views: Vec<_> = projection
+                        .scopes
+                        .iter()
+                        .map(|(scope_id, scope)| scope.view(scope_id, root))
+                        .collect();
+                    return Ok((200, json_string(&views)?));
+                }
+                Method::Post => {
+                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    let value: Value = serde_json::from_str(body).map_err(json_error)?;
+                    let parent_scope = value["parent_scope"]
+                        .as_str()
+                        .map(else_protocol::ids::ScopeId::from)
+                        .or_else(|| {
+                            state
+                                .handle
+                                .projection(&intent_id)
+                                .ok()
+                                .and_then(|projection| projection.root_scope_id)
+                        })
+                        .ok_or_else(|| {
+                            DaemonError::InvalidRequest("missing parent_scope".into())
+                        })?;
+                    let task = value["task"]
+                        .as_str()
+                        .ok_or_else(|| DaemonError::InvalidRequest("missing task".into()))?;
+                    let depends_on = value["depends_on"]
+                        .as_array()
+                        .map(|ids| {
+                            ids.iter()
+                                .filter_map(Value::as_str)
+                                .map(else_protocol::ids::ScopeId::from)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let max_effect = parse_side_effect(value["max_effect"].as_str());
+                    let scope_id = state.handle.spawn_subagent_with_dependencies(
+                        &intent_id,
+                        &parent_scope,
+                        task,
+                        max_effect,
+                        depends_on,
+                    )?;
+                    return Ok((
+                        200,
+                        json_string(&json!({ "scope_id": scope_id.to_string() }))?,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if segments.len() == 6
+            && segments[3] == "scopes"
+            && segments[5] == "run"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let scope_id = else_protocol::ids::ScopeId::from(segments[4]);
+            let value: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
+            let harness = value["harness"].as_str().map(str::to_string);
+            let mut current = snapshot(&state.handle.projection(&intent_id)?);
+            current.operation_id = Some(spawn_operation(state, "run_scope", &intent_id, {
+                let handle = state.handle.clone();
+                let intent_id = intent_id.clone();
+                move || {
+                    handle
+                        .dispatch_scope(&intent_id, &scope_id, harness.as_deref())
+                        .map(|_| json!({}))
+                }
+            }));
+            return Ok((202, json_string(&current)?));
+        }
+        if segments.len() == 4
+            && segments[3] == "wait-external"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
+            let reason = value["reason"]
+                .as_str()
+                .unwrap_or("waiting for external event");
+            let projection = state.handle.wait_for_external(&intent_id, reason)?;
+            return Ok((200, json_string(&snapshot(&projection))?));
+        }
+        if segments.len() == 4 && segments[3] == "events" && request.method() == &Method::Post {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).map_err(json_error)?;
+            let source = value["source"].as_str().unwrap_or("external");
+            let summary = value["summary"].as_str().unwrap_or("");
+            let projection = state
+                .handle
+                .record_external_event(&intent_id, source, summary)?;
+            return Ok((200, json_string(&snapshot(&projection))?));
+        }
+        if segments.len() == 4 && segments[3] == "timers" && request.method() == &Method::Post {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).map_err(json_error)?;
+            let seconds = value["seconds"].as_i64().unwrap_or(3600);
+            let reason = value["reason"].as_str().unwrap_or("follow up");
+            let fire_at = Utc::now() + chrono::Duration::seconds(seconds);
+            let timer_id = state.handle.schedule_timer(&intent_id, fire_at, reason)?;
+            return Ok((
+                200,
+                json_string(&json!({ "timer_id": timer_id.to_string() }))?,
+            ));
+        }
+        if segments.len() == 4 && segments[3] == "plan" && request.method() == &Method::Get {
+            let projection = state.handle.projection(&intent_id)?;
+            let current = projection
+                .current_plan_id
+                .as_ref()
+                .and_then(|plan_id| projection.plans.get(plan_id))
+                .cloned();
+            let view = else_protocol::api::PlanView {
+                current,
+                history: state.handle.plan_history(&intent_id)?,
+                impacts: projection.plan_impacts.clone(),
+            };
+            return Ok((200, json_string(&view)?));
+        }
+        if segments.len() == 5
+            && segments[3] == "plan"
+            && segments[4] == "impact"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).map_err(json_error)?;
+            let source_event_id = value["source_event_id"].as_str().unwrap_or("");
+            let source = value["source"].as_str().unwrap_or("");
+            let summary = value["summary"].as_str().unwrap_or("");
+            let impact =
+                state
+                    .handle
+                    .analyze_plan_impact(&intent_id, source_event_id, source, summary)?;
+            return Ok((200, json_string(&impact)?));
+        }
+        if segments.len() == 4 && segments[3] == "attention" && request.method() == &Method::Get {
+            let projection = state.handle.projection(&intent_id)?;
+            let now = Utc::now();
+            let view = else_protocol::api::AttentionView {
+                metrics: projection.attention_metrics(now),
+                windows: projection.attention_windows.values().cloned().collect(),
+                requests: projection
+                    .actionable_requests(now)
+                    .into_iter()
+                    .cloned()
+                    .collect(),
+            };
+            return Ok((200, json_string(&view)?));
+        }
+        if segments.len() == 4 && segments[3] == "memory" && request.method() == &Method::Get {
+            let view = state.handle.memory_projection()?.view();
+            return Ok((200, json_string(&view)?));
+        }
+        if segments.len() == 5 && segments[3] == "memory" && request.method() == &Method::Post {
+            let value: Value = serde_json::from_str(body).map_err(json_error)?;
+            match segments[4] {
+                "promote" => {
+                    let candidate_id = else_protocol::ids::MemoryId::from(
+                        value["candidate_id"].as_str().ok_or_else(|| {
+                            DaemonError::InvalidRequest("missing candidate_id".into())
+                        })?,
+                    );
+                    let scope = match value["scope"].as_str() {
+                        Some("global") => Some(else_protocol::memory::MemoryScope::Global),
+                        Some(raw) if raw.starts_with("project:") => {
+                            Some(else_protocol::memory::MemoryScope::Project(
+                                raw.trim_start_matches("project:").to_string(),
+                            ))
+                        }
+                        Some(raw) if raw.starts_with("intent:") => {
+                            Some(else_protocol::memory::MemoryScope::Intent(
+                                else_protocol::ids::IntentId::from(
+                                    raw.trim_start_matches("intent:"),
+                                ),
+                            ))
+                        }
+                        _ => None,
+                    };
+                    let record = state.handle.promote_memory(&candidate_id, scope)?;
+                    return Ok((200, json_string(&record)?));
+                }
+                "revoke" => {
+                    let memory_id = else_protocol::ids::MemoryId::from(
+                        value["memory_id"].as_str().ok_or_else(|| {
+                            DaemonError::InvalidRequest("missing memory_id".into())
+                        })?,
+                    );
+                    let reason = value["reason"].as_str().unwrap_or("用户撤销");
+                    state.handle.revoke_memory(&memory_id, reason)?;
+                    return Ok((
+                        200,
+                        json_string(&json!({ "revoked": memory_id.to_string() }))?,
+                    ));
+                }
+                "correct" => {
+                    let project = value["project"]
+                        .as_str()
+                        .ok_or_else(|| DaemonError::InvalidRequest("missing project".into()))?;
+                    let subject = value["subject"]
+                        .as_str()
+                        .ok_or_else(|| DaemonError::InvalidRequest("missing subject".into()))?;
+                    let predicate = value["predicate"].as_str().unwrap_or("user_correction");
+                    let record = value["value"].as_str().unwrap_or("");
+                    let memory = state.handle.correct_memory(
+                        else_protocol::memory::MemoryScope::Project(project.to_string()),
+                        subject,
+                        predicate,
+                        record,
+                    )?;
+                    return Ok((200, json_string(&memory)?));
+                }
+                _ => {}
+            }
+        }
+        if segments.len() == 4 && segments[3] == "checkpoints" && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let checkpoint = state.handle.checkpoint(&intent_id)?;
+            return Ok((200, json_string(&checkpoint)?));
+        }
+        if segments.len() == 4 && segments[3] == "rerun" && request.method() == &Method::Post {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).map_err(json_error)?;
+            let checkpoint_id = else_protocol::ids::CheckpointId::from(
+                value["checkpoint_id"]
+                    .as_str()
+                    .ok_or_else(|| DaemonError::InvalidRequest("missing checkpoint_id".into()))?,
+            );
+            let alternative = value["alternative"].as_bool().unwrap_or(false);
+            let (scope_id, generation) =
+                state
+                    .handle
+                    .rerun(&intent_id, &checkpoint_id, alternative)?;
+            return Ok((
+                200,
+                json_string(&json!({
+                    "scope_id": scope_id.to_string(),
+                    "generation": generation,
+                }))?,
+            ));
+        }
+        if segments.len() == 4 && segments[3] == "compare" && request.method() == &Method::Get {
+            let comparison = state.handle.compare(&intent_id)?;
+            return Ok((200, json_string(&json!({ "comparison": comparison }))?));
+        }
+        if segments.len() == 4 && segments[3] == "opaque" && request.method() == &Method::Post {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).map_err(json_error)?;
+            let policy = else_protocol::intent::OpaqueHarnessPolicy {
+                enabled: value["enabled"].as_bool().unwrap_or(true),
+                allow_native_provider_network: value["allow_native_provider_network"]
+                    .as_bool()
+                    .unwrap_or(false),
+                use_tool_gateway: value["use_tool_gateway"].as_bool().unwrap_or(false),
+                max_observed_effect: parse_side_effect(value["max_observed_effect"].as_str()),
+            };
+            let spec = state.handle.configure_opaque_harness(&intent_id, policy)?;
+            return Ok((200, json_string(&spec)?));
+        }
+        if segments.len() == 4 && segments[3] == "resources" && request.method() == &Method::Get {
+            let report = state.handle.resources(&intent_id)?;
+            return Ok((200, json_string(&report.view())?));
+        }
+        if segments.len() == 4 && segments[3] == "revise" && request.method() == &Method::Post {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let value: Value = serde_json::from_str(body).map_err(json_error)?;
+            let update = else_api::IntentRevision {
+                outcome: value["outcome"].as_str().map(str::to_string),
+                add_constraints: value["add_constraints"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                reason: value["reason"].as_str().unwrap_or("用户修订").to_string(),
+            };
+            let spec = state.handle.revise_intent(&intent_id, update, &[])?;
+            return Ok((200, json_string(&spec)?));
         }
         if segments.len() == 3 && segments[2].starts_with("operations") {
             // handled below
@@ -1039,7 +1402,7 @@ fn spawn_operation(
     state: &AppState,
     kind: &str,
     intent_id: &else_protocol::ids::IntentId,
-    operation: impl FnOnce() -> else_api::Result<()> + Send + 'static,
+    operation: impl FnOnce() -> else_api::Result<Value> + Send + 'static,
 ) -> String {
     let id = uuid::Uuid::new_v4().to_string();
     let record = Operation {
@@ -1048,6 +1411,7 @@ fn spawn_operation(
         kind: kind.into(),
         status: "running".into(),
         error: None,
+        result: None,
     };
     state
         .operations
@@ -1064,7 +1428,10 @@ fn spawn_operation(
             .get_mut(&thread_id)
         {
             match result {
-                Ok(()) => record.status = "completed".into(),
+                Ok(value) => {
+                    record.status = "completed".into();
+                    record.result = Some(value);
+                }
                 Err(error) => {
                     record.status = "failed".into();
                     record.error = Some(error.to_string());
@@ -1218,6 +1585,21 @@ fn json_error(error: serde_json::Error) -> DaemonError {
     DaemonError::InvalidRequest(error.to_string())
 }
 
+/// 解析 surface 传来的副作用等级。
+///
+/// 缺省是 `ReadOnly`：未知或缺失的等级一律按最保守的解释处理，
+/// 不因为解析失败而放大权限。
+fn parse_side_effect(raw: Option<&str>) -> else_protocol::effect::SideEffectKind {
+    match raw {
+        Some("read_only") => else_protocol::effect::SideEffectKind::ReadOnly,
+        Some("reversible") => else_protocol::effect::SideEffectKind::Reversible,
+        Some("compensatable") => else_protocol::effect::SideEffectKind::Compensatable,
+        Some("irreversible") => else_protocol::effect::SideEffectKind::Irreversible,
+        Some("unknown") => else_protocol::effect::SideEffectKind::Unknown,
+        _ => else_protocol::effect::SideEffectKind::ReadOnly,
+    }
+}
+
 struct BindingEventStream {
     handle: RuntimeHandle,
     intent_id: else_protocol::ids::IntentId,
@@ -1280,6 +1662,72 @@ impl Read for BindingEventStream {
                         continue;
                     }
                 }
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+}
+
+/// 全局事件流：把所有 Intent 的新事件按 `seq` 推给客户端。
+///
+/// surface（TUI、未来的 Web）用它做增量刷新：只重取变化的部分，
+/// 不必轮询整份快照。客户端用 `cursor` 续读；流在 60 秒后关闭，
+/// 客户端重连时带上新的 `cursor` 即可。
+struct EventStream {
+    handle: RuntimeHandle,
+    cursor: u64,
+    buffer: Vec<u8>,
+    position: usize,
+    deadline: Instant,
+}
+
+impl EventStream {
+    fn new(handle: RuntimeHandle, cursor: u64) -> Self {
+        Self {
+            handle,
+            cursor,
+            buffer: Vec::new(),
+            position: 0,
+            deadline: Instant::now() + Duration::from_secs(60),
+        }
+    }
+}
+
+impl Read for EventStream {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            if self.position < self.buffer.len() {
+                let available = &self.buffer[self.position..];
+                let count = available.len().min(output.len());
+                output[..count].copy_from_slice(&available[..count]);
+                self.position += count;
+                return Ok(count);
+            }
+            if Instant::now() >= self.deadline {
+                return Ok(0);
+            }
+            self.buffer.clear();
+            self.position = 0;
+            let mut events = Vec::new();
+            if let Ok(specs) = self.handle.list_intents() {
+                for spec in specs {
+                    if let Ok(mut intent_events) = self.handle.events(&spec.id) {
+                        events.append(&mut intent_events);
+                    }
+                }
+            }
+            events.sort_by_key(|event| event.seq);
+            let cursor = self.cursor;
+            for event in events.into_iter().filter(|event| event.seq > cursor) {
+                self.cursor = event.seq;
+                let payload =
+                    serde_json::to_string(&event_response(event)).unwrap_or_else(|_| "{}".into());
+                self.buffer.extend_from_slice(b"data: ");
+                self.buffer.extend_from_slice(payload.as_bytes());
+                self.buffer.extend_from_slice(b"\n\n");
+            }
+            if !self.buffer.is_empty() {
+                continue;
             }
             std::thread::sleep(Duration::from_millis(250));
         }
@@ -1858,6 +2306,304 @@ mod tests {
             std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
             0o700
         );
+        daemon.shutdown();
+    }
+
+    /// 读取 Intent 当前 Revision。
+    ///
+    /// 写操作都要求 `If-Match` 前置条件；测试里每一步重新读，
+    /// 避免把"Revision 变化"和"路由行为"两件事混在一起断言。
+    fn current_revision(daemon: &Daemon, intent_id: &str) -> u64 {
+        let (status, body) = request(
+            daemon,
+            "GET",
+            &format!("/v1/intents/{intent_id}"),
+            "",
+            None,
+            None,
+        );
+        assert_eq!(status, 200, "{body}");
+        serde_json::from_str::<Value>(&body).unwrap()["spec"]["revision"]
+            .as_u64()
+            .unwrap()
+    }
+
+    #[test]
+    fn daemon_exposes_execution_plan_memory_and_scope_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = Daemon::start(DaemonConfig {
+            dir: dir.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            token: Some("test-token".into()),
+        })
+        .unwrap();
+
+        let (status, body) = request(
+            &daemon,
+            "POST",
+            "/v1/intents",
+            r#"{"outcome":"daemon 路由覆盖","project":"test"}"#,
+            Some("create-routes"),
+            None,
+        );
+        assert_eq!(status, 200, "{body}");
+        let snapshot: Value = serde_json::from_str(&body).unwrap();
+        let intent_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
+
+        // Harness 清单：surface 用它解释执行器能力。
+        let (status, harnesses) = request(&daemon, "GET", "/v1/harnesses", "", None, None);
+        assert_eq!(status, 200, "{harnesses}");
+        let harnesses: Value = serde_json::from_str(&harnesses).unwrap();
+        let names: Vec<&str> = harnesses
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"codex"), "{names:?}");
+        assert!(names.contains(&"claude-code"), "{names:?}");
+
+        // Scope 树：根 Scope 是委托树的起点。
+        let scopes_path = format!("/v1/intents/{intent_id}/scopes");
+        let (status, scopes) = request(&daemon, "GET", &scopes_path, "", None, None);
+        assert_eq!(status, 200, "{scopes}");
+        let scopes: Value = serde_json::from_str(&scopes).unwrap();
+        assert_eq!(scopes.as_array().unwrap().len(), 1, "{scopes}");
+        assert_eq!(scopes[0]["outcome"].as_str(), Some("daemon 路由覆盖"));
+
+        // 委托子 Scope：权限只能低于或等于父级。
+        let revision = current_revision(&daemon, &intent_id);
+        let (status, child) = request(
+            &daemon,
+            "POST",
+            &scopes_path,
+            r#"{"task":"子任务","max_effect":"read_only"}"#,
+            Some("spawn-1"),
+            Some(revision),
+        );
+        assert_eq!(status, 200, "{child}");
+        let child: Value = serde_json::from_str(&child).unwrap();
+        assert!(child["scope_id"].as_str().is_some(), "{child}");
+
+        // 推进一个 Kernel 步：长操作走 operation_id，不阻塞响应。
+        let revision = current_revision(&daemon, &intent_id);
+        let (status, advanced) = request(
+            &daemon,
+            "POST",
+            &format!("/v1/intents/{intent_id}/advance"),
+            r#"{"harness":"scripted"}"#,
+            Some("advance-1"),
+            Some(revision),
+        );
+        assert_eq!(status, 202, "{advanced}");
+        let advanced: Value = serde_json::from_str(&advanced).unwrap();
+        assert!(advanced["operation_id"].as_str().is_some(), "{advanced}");
+
+        // 等待外部事件：停止空转执行。
+        let revision = current_revision(&daemon, &intent_id);
+        let (status, waiting) = request(
+            &daemon,
+            "POST",
+            &format!("/v1/intents/{intent_id}/wait-external"),
+            r#"{"reason":"等待合作方回复"}"#,
+            Some("wait-1"),
+            Some(revision),
+        );
+        assert_eq!(status, 200, "{waiting}");
+
+        // 持久 Timer：重启后仍可用同一 ID 补齐唤醒。
+        let revision = current_revision(&daemon, &intent_id);
+        let (status, timer) = request(
+            &daemon,
+            "POST",
+            &format!("/v1/intents/{intent_id}/timers"),
+            r#"{"seconds":3600,"reason":"follow up"}"#,
+            Some("timer-1"),
+            Some(revision),
+        );
+        assert_eq!(status, 200, "{timer}");
+        let timer: Value = serde_json::from_str(&timer).unwrap();
+        assert!(timer["timer_id"].as_str().is_some(), "{timer}");
+
+        // 计划 / 记忆 / 资源账：三个只读视图。
+        let (status, plan) = request(
+            &daemon,
+            "GET",
+            &format!("/v1/intents/{intent_id}/plan"),
+            "",
+            None,
+            None,
+        );
+        assert_eq!(status, 200, "{plan}");
+        let plan: Value = serde_json::from_str(&plan).unwrap();
+        assert!(plan.get("history").is_some(), "{plan}");
+
+        let (status, memory) = request(
+            &daemon,
+            "GET",
+            &format!("/v1/intents/{intent_id}/memory"),
+            "",
+            None,
+            None,
+        );
+        assert_eq!(status, 200, "{memory}");
+        let memory: Value = serde_json::from_str(&memory).unwrap();
+        assert!(memory.get("promoted").is_some(), "{memory}");
+        assert!(memory.get("candidates").is_some(), "{memory}");
+
+        let (status, resources) = request(
+            &daemon,
+            "GET",
+            &format!("/v1/intents/{intent_id}/resources"),
+            "",
+            None,
+            None,
+        );
+        assert_eq!(status, 200, "{resources}");
+        let resources: Value = serde_json::from_str(&resources).unwrap();
+        assert!(resources.get("budget").is_some(), "{resources}");
+        assert!(resources.get("usage").is_some(), "{resources}");
+
+        // Checkpoint 与 Compare：派生新 Scope 时不丢上下文。
+        let revision = current_revision(&daemon, &intent_id);
+        let (status, checkpoint) = request(
+            &daemon,
+            "POST",
+            &format!("/v1/intents/{intent_id}/checkpoints"),
+            "",
+            Some("checkpoint-1"),
+            Some(revision),
+        );
+        assert_eq!(status, 200, "{checkpoint}");
+        let checkpoint: Value = serde_json::from_str(&checkpoint).unwrap();
+        assert!(checkpoint["id"].as_str().is_some(), "{checkpoint}");
+
+        let (status, comparison) = request(
+            &daemon,
+            "GET",
+            &format!("/v1/intents/{intent_id}/compare"),
+            "",
+            None,
+            None,
+        );
+        assert_eq!(status, 200, "{comparison}");
+
+        // Opaque Profile：默认拒绝，必须显式放通。
+        let revision = current_revision(&daemon, &intent_id);
+        let (status, opaque) = request(
+            &daemon,
+            "POST",
+            &format!("/v1/intents/{intent_id}/opaque"),
+            r#"{"enabled":true,"allow_native_provider_network":false,"use_tool_gateway":true,"max_observed_effect":"reversible"}"#,
+            Some("opaque-1"),
+            Some(revision),
+        );
+        assert_eq!(status, 200, "{opaque}");
+        let opaque: Value = serde_json::from_str(&opaque).unwrap();
+        assert_eq!(
+            opaque["opaque_harness_policy"]["enabled"],
+            Value::Bool(true)
+        );
+
+        // 写操作缺 If-Match 时必须被拒绝：避免基于过期 Revision 写入。
+        let (status, rejected) = request(
+            &daemon,
+            "POST",
+            &format!("/v1/intents/{intent_id}/advance"),
+            r#"{"harness":"scripted"}"#,
+            Some("advance-no-revision"),
+            None,
+        );
+        assert_eq!(status, 400, "{rejected}");
+
+        daemon.shutdown();
+    }
+
+    #[test]
+    fn daemon_exposes_the_contract_version_on_an_authenticated_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = Daemon::start(DaemonConfig {
+            dir: dir.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            token: Some("test-token".into()),
+        })
+        .unwrap();
+
+        let (status, body) = request(&daemon, "GET", "/v1/version", "", None, None);
+        assert_eq!(status, 200, "{body}");
+        let version: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            version["contract_version"].as_str(),
+            Some(else_protocol::api::CONTRACT_VERSION)
+        );
+        assert_eq!(
+            version["protocol_version"].as_str(),
+            Some(else_protocol::PROTOCOL_VERSION)
+        );
+
+        daemon.shutdown();
+    }
+
+    #[test]
+    fn daemon_does_not_write_a_token_when_it_cannot_bind() {
+        // 端口被占时不能把令牌写进 runtime 目录 ——
+        // 那份令牌对谁都不成立，却会让下一次连接拿着错令牌来敲门。
+        let first_dir = tempfile::tempdir().unwrap();
+        let first = Daemon::start(DaemonConfig {
+            dir: first_dir.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            token: Some("first-token".into()),
+        })
+        .unwrap();
+        let bind = first.url.trim_start_matches("http://").to_string();
+
+        let second_dir = tempfile::tempdir().unwrap();
+        let second = Daemon::start(DaemonConfig {
+            dir: second_dir.path().to_path_buf(),
+            bind: bind.clone(),
+            token: Some("second-token".into()),
+        });
+        assert!(matches!(second, Err(DaemonError::Bind(_))));
+        assert!(
+            !second_dir.path().join("daemon-token").exists(),
+            "绑定失败时不应写出令牌文件"
+        );
+
+        first.shutdown();
+    }
+
+    #[test]
+    fn daemon_rejects_stale_revision_precondition() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = Daemon::start(DaemonConfig {
+            dir: dir.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            token: Some("test-token".into()),
+        })
+        .unwrap();
+
+        let (status, body) = request(
+            &daemon,
+            "POST",
+            "/v1/intents",
+            r#"{"outcome":"revision 冲突"}"#,
+            Some("create-rev"),
+            None,
+        );
+        assert_eq!(status, 200, "{body}");
+        let snapshot: Value = serde_json::from_str(&body).unwrap();
+        let intent_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
+
+        let (status, rejected) = request(
+            &daemon,
+            "POST",
+            &format!("/v1/intents/{intent_id}/advance"),
+            r#"{"harness":"scripted"}"#,
+            Some("advance-stale"),
+            Some(9999),
+        );
+        assert_eq!(status, 409, "{rejected}");
+
         daemon.shutdown();
     }
 }

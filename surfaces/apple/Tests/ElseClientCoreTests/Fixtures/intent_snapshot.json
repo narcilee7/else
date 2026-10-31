@@ -1,0 +1,58 @@
+{
+  "spec": {
+    "id": "C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D",
+    "revision": 2,
+    "outcome": "完成客户端基础设施",
+    "done_when": [
+      { "description": "预算内完成", "verification": { "kind": "manual" } }
+    ],
+    "constraints": ["不绕过 API"],
+    "authority": {
+      "max_autonomous_effect": "reversible",
+      "forbidden": ["不对外发送"]
+    },
+    "attention_policy": {
+      "allow_interrupt": true,
+      "batch_interval_minutes": 30
+    },
+    "opaque_harness_policy": {
+      "enabled": false,
+      "allow_native_provider_network": false,
+      "use_tool_gateway": false,
+      "max_observed_effect": "read_only"
+    },
+    "deadline": "2026-10-30T12:00:00.123Z",
+    "assumptions": [{ "text": "依赖可用", "confirmed": true }],
+    "project": "else"
+  },
+  "state": "needs_decision",
+  "decisions": [
+    {
+      "id": "DFD1A78E",
+      "kind": "authorization",
+      "summary": "允许执行？",
+      "blocked_reason": "需要一次性授权",
+      "expected_loss": "high",
+      "blocking": true,
+      "reversible": true,
+      "decide_by": "2026-10-30T13:00:00Z",
+      "options": [{ "id": "approve", "label": "允许", "recommended": true }],
+      "default_option": "approve",
+      "related_call_key": "shell:42"
+    }
+  ],
+  "artifacts": [],
+  "resource_budget": {
+    "max_model_tokens": 1000000,
+    "max_model_spend_usd_micros": 1000000,
+    "max_tool_calls": 10000,
+    "max_sandbox_seconds": 86400
+  },
+  "resource_usage": {
+    "model_tokens": 1234,
+    "model_spend_usd_micros": 500,
+    "tool_calls": 4,
+    "sandbox_seconds": 32
+  },
+  "cursor": 17
+}

@@ -9,6 +9,7 @@ members = [
     "core/else-attention",
     "core/else-gateway",
     "core/else-harness",
+    "core/else-client",
     "core/else-workspace",
     "core/else-environment",
     "api",
@@ -28,8 +29,11 @@ thiserror = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
 ical = "0.11"
-ureq = "2"
+ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
+libc = "0.2"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+crossterm = "0.29"
 
 [profile.release]
 lto = "thin"

@@ -3,9 +3,10 @@
 
 use std::collections::BTreeMap;
 
+use else_protocol::api::ScopeView;
 use else_protocol::artifact::{Artifact, Checkpoint};
 use else_protocol::attention::{
-    AttentionRequest, AttentionWindow, AttentionWindowKind, Decision, Ruling,
+    AttentionMetrics, AttentionRequest, AttentionWindow, AttentionWindowKind, Decision, Ruling,
 };
 use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, CapabilityRegistration, McpServerRegistration,
@@ -41,6 +42,27 @@ pub struct ScopeProjection {
     pub spec: Option<IntentSpec>,
 }
 
+impl ScopeProjection {
+    /// 契约视图：Scope 的可读快照。
+    ///
+    /// 根 Scope 没有自己的 spec，用 Intent 的 spec 兜底 —— 这样 surface
+    /// 渲染委托树时每一行都有可显示的目标。
+    pub fn view(&self, scope_id: &ScopeId, root: Option<&IntentSpec>) -> ScopeView {
+        let spec = self.spec.as_ref().or(root);
+        ScopeView {
+            scope_id: scope_id.clone(),
+            parent: self.parent.clone(),
+            state: self.state,
+            generation: self.generation,
+            depends_on: self.depends_on.clone(),
+            replaces: self.replaces.clone(),
+            failure_count: self.failure_count,
+            last_failure: self.last_failure.clone(),
+            outcome: spec.map(|spec| spec.outcome.clone()).unwrap_or_default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimerProjection {
     pub id: TimerId,
@@ -63,27 +85,6 @@ pub struct AttentionRecordProjection {
     pub request: AttentionRequest,
     pub ruling: Option<Ruling>,
     pub decision: Option<Decision>,
-}
-
-/// 从事件投影计算的注意力成本指标。误打断率只统计用户明确 Dismiss 的
-/// Interrupt 请求，不用拒绝选项猜测。
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct AttentionMetrics {
-    pub requested: u64,
-    pub resolved: u64,
-    pub interventions: u64,
-    pub batch_notifications: u64,
-    pub defer_notifications: u64,
-    pub interrupt_notifications: u64,
-    pub batched_requests: u64,
-    pub deferred_requests: u64,
-    pub silent_requests: u64,
-    pub open_critical: u64,
-    pub missed_critical: u64,
-    pub resolved_interrupts: u64,
-    pub dismissed_interrupts: u64,
-    pub batch_rate: Option<f64>,
-    pub misinterrupt_rate: Option<f64>,
 }
 
 /// Intent 的基础投影：目标契约、状态、待本人决策、产物、检查点与 Scope 树。

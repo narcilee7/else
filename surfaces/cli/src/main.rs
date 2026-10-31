@@ -1,25 +1,52 @@
 //! else CLI：Runtime API 的第一个薄客户端。
 //! 只做参数解析与打印，不含业务逻辑。
+//!
+//! CLI 与 macOS App 走**同一条 HTTP 链路**：同一个 daemon、同一份契约。
+//! 因此终端里看到的 Brief，就是 App 里看到的那一份。
 
-use std::collections::BTreeSet;
+mod doctor;
+mod error;
+mod output;
+mod service;
+mod session;
+mod tui;
+
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use else_api::Runtime;
+use else_client::RuntimeClient;
 use else_protocol::attention::DecisionChoice;
 use else_protocol::ids::{AttentionId, IntentId};
 
+use error::{CliError, Result};
+use output::{
+    print_attention, print_candidate, print_connector_action, print_decisions, print_plan,
+    print_snapshot, print_world_item, print_world_section,
+};
+use session::Session;
+
 #[derive(Parser)]
-#[command(name = "else", about = "You do what matters. Else handles the rest.")]
+#[command(
+    name = "else",
+    about = "You do what matters. Else handles the rest.",
+    version = env!("CARGO_PKG_VERSION")
+)]
 struct Cli {
-    /// Runtime 数据目录（事件库 + 工作区）
-    #[arg(long, default_value = ".else")]
-    dir: PathBuf,
+    /// Runtime 数据目录（事件库 + 工作区 + daemon-token）。
+    ///
+    /// 缺省用 `ELSE_RUNTIME_DIR`，再缺省用平台默认目录 —— macOS 上与
+    /// App 后台 daemon 同址，所以终端和 App 看到的是同一个世界。
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// 以 JSON 输出结果，供脚本消费。
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum Command {
     /// 提交一个抽象 Intent 并启动执行
     Intent {
@@ -87,6 +114,15 @@ enum Command {
     },
     /// 列出可用的 Harness 适配器及其能力声明
     Harnesses,
+    /// 诊断：一次说清这台机器上的 else 是什么状态
+    Doctor,
+    /// 管理后台常驻的 Runtime 服务
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonCommand,
+    },
+    /// 首次运行：准备 runtime 目录并注册后台服务
+    Onboard,
     /// 为已有 Intent 显式启用 Opaque Harness Profile
     AllowOpaque {
         intent_id: String,
@@ -449,7 +485,17 @@ enum Command {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
+enum DaemonCommand {
+    /// 注册后台服务，让 Runtime 常驻
+    Install,
+    /// 注销后台服务
+    Uninstall,
+    /// 查看后台服务状态
+    Status,
+}
+
+#[derive(Subcommand, Clone)]
 enum MemoryCommand {
     /// 列出记忆（默认行为）
     List,
@@ -480,37 +526,65 @@ enum MemoryCommand {
 
 fn main() {
     let cli = Cli::parse();
-    if let Err(e) = dispatch(cli) {
-        eprintln!("error: {e}");
+    if let Err(error) = dispatch(cli) {
+        eprintln!("error: {error}");
         std::process::exit(1);
     }
 }
 
-fn dispatch(cli: Cli) -> else_api::Result<()> {
+fn dispatch(cli: Cli) -> Result<()> {
+    // Tool Gateway 与 daemon 都不经过 Runtime 会话：前者是 Harness 侧的被控
+    // 通道，后者自己就是 Runtime。
+    let Some(command) = cli.command.as_ref() else {
+        // 没有子命令就是交互模式。
+        let session = Session::open(cli.dir.as_deref())?;
+        // 但管道、CI、重定向里没有终端：这时打印简报，绝不挂死。
+        if !std::io::stdout().is_terminal() {
+            let client = session.client();
+            let brief = client.brief()?;
+            println!("generated_at: {}", brief.generated_at.to_rfc3339());
+            print_world_section("overdue", &brief.overdue);
+            print_world_section("commitments", &brief.open_commitments);
+            print_world_section("waiting_external", &brief.waiting_external);
+            print_world_section("action_items_due_soon", &brief.action_items_due_soon);
+            print_world_section("upcoming_calendar", &brief.upcoming_calendar);
+            print_world_section("risks", &brief.risks);
+            return Ok(());
+        }
+        return tui::launch(session.into_client());
+    };
     if let Command::ToolCall {
         tool,
         input,
         idempotency_key,
-    } = &cli.command
+    } = command
     {
         run_tool_call(tool, input, idempotency_key.as_deref())?;
         return Ok(());
     }
-    if let Command::Serve { bind, token } = &cli.command {
+    if let Command::Serve { bind, token } = command {
         let daemon = else_daemon::Daemon::start(else_daemon::DaemonConfig {
-            dir: cli.dir.clone(),
+            dir: session::resolve_runtime_dir(cli.dir.as_deref()),
             bind: bind.clone(),
             token: token.clone(),
         })
-        .map_err(|error| else_api::ApiError::NotFound(error.to_string()))?;
+        .map_err(|error| CliError::usage(error.to_string()))?;
         println!("runtime: {}", daemon.url);
-        println!("token: {}", daemon.token);
+        println!(
+            "token-file: {}",
+            session::resolve_runtime_dir(cli.dir.as_deref())
+                .join("daemon-token")
+                .display()
+        );
         loop {
             std::thread::park_timeout(std::time::Duration::from_secs(60));
         }
     }
-    let runtime = Runtime::open(&cli.dir)?;
-    match cli.command {
+
+    let session = Session::open(cli.dir.as_deref())?;
+    let client = session.client();
+
+    match command.clone() {
         Command::Intent {
             outcome,
             project,
@@ -520,11 +594,11 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             tool_gateway,
             opaque_max_effect,
         } => {
-            let spec = runtime.create_intent(&outcome, project)?;
-            let intent_id = spec.id.clone();
+            let snapshot = client.create_intent(&outcome, project.as_deref())?;
+            let intent_id = snapshot.spec.id.clone();
             println!("intent: {intent_id}");
             if allow_opaque {
-                runtime.configure_opaque_harness(
+                client.configure_opaque_harness(
                     &intent_id,
                     else_protocol::intent::OpaqueHarnessPolicy {
                         enabled: true,
@@ -534,22 +608,22 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                     },
                 )?;
             }
-            let projection = runtime.advance(&intent_id, Some(&harness))?;
-            print_projection(&projection);
+            let advanced = client.advance(&intent_id, Some(&harness))?;
+            print_snapshot(&advanced);
         }
         Command::Advance { intent_id, harness } => {
-            let projection = runtime.advance(&IntentId::from(intent_id), Some(&harness))?;
-            print_projection(&projection);
+            let advanced = client.advance(&IntentId::from(intent_id), Some(&harness))?;
+            print_snapshot(&advanced);
         }
         Command::Drive {
             intent_id,
             harness,
             max_steps,
         } => {
-            let driven = runtime.drive(&IntentId::from(intent_id), Some(&harness), max_steps)?;
-            println!("stopped: {:?}", driven.stopped);
+            let driven = client.drive(&IntentId::from(intent_id), Some(&harness), max_steps)?;
+            println!("stopped: {}", driven.stopped);
             println!("steps: {}", driven.steps);
-            print_projection(&driven.projection);
+            print_snapshot(&driven.snapshot);
         }
         Command::Event {
             intent_id,
@@ -557,61 +631,110 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             summary,
         } => {
             let projection =
-                runtime.record_external_event(&IntentId::from(intent_id), &source, &summary)?;
-            print_projection(&projection);
+                client.record_external_event(&IntentId::from(intent_id), &source, &summary)?;
+            print_snapshot(&projection);
         }
         Command::WaitExternal { intent_id, reason } => {
-            let projection = runtime.wait_for_external(&IntentId::from(intent_id), &reason)?;
-            print_projection(&projection);
+            let projection = client.wait_for_external(&IntentId::from(intent_id), &reason)?;
+            print_snapshot(&projection);
         }
         Command::Wake {
             intent_id,
             seconds,
             reason,
         } => {
-            let timer_id = runtime.schedule_timer(
-                &IntentId::from(intent_id),
-                chrono::Utc::now() + chrono::Duration::seconds(seconds),
-                &reason,
-            )?;
+            let timer_id = client.schedule_timer(&IntentId::from(intent_id), seconds, &reason)?;
             println!("timer: {timer_id}");
         }
         Command::Run { intent_id, harness } => {
             let intent_id = IntentId::from(intent_id);
-            let projection = if harness == else_harness::SCRIPTED {
-                runtime.run(&intent_id)?
+            let available = client.harnesses()?;
+            if harness != else_harness::SCRIPTED
+                && !available.iter().any(|item| item.name == harness)
+            {
+                let names = available
+                    .iter()
+                    .map(|item| item.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(CliError::usage(format!(
+                    "harness {harness}（可用：{}{names}）",
+                    if names.is_empty() {
+                        "scripted"
+                    } else {
+                        "scripted, "
+                    }
+                )));
+            }
+            let projection = client.run(&intent_id, Some(&harness))?;
+            print_snapshot(&projection);
+        }
+        Command::Doctor => {
+            let runtime_dir = session::resolve_runtime_dir(cli.dir.as_deref());
+            let report = doctor::run(client, &runtime_dir);
+            if cli.json {
+                emit_json(&report)?;
             } else {
-                let adapters = else_harness::builtin_adapters();
-                let Some(adapter) = adapters.iter().find(|a| a.name() == harness) else {
-                    let available = adapters
-                        .iter()
-                        .map(|a| a.name())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    return Err(else_api::ApiError::NotFound(format!(
-                        "harness {harness}（可用：scripted{available}）",
-                        available = if available.is_empty() {
-                            String::new()
-                        } else {
-                            format!(", {available}")
-                        }
-                    )));
-                };
-                runtime.run_adapter(&intent_id, adapter.as_ref())?
+                report.print();
+            }
+        }
+        Command::Daemon { action } => {
+            let runtime_dir = session::resolve_runtime_dir(cli.dir.as_deref());
+            let status = match action {
+                DaemonCommand::Install => service::install(&runtime_dir)?,
+                DaemonCommand::Uninstall => service::uninstall(&runtime_dir)?,
+                DaemonCommand::Status => service::status(&runtime_dir),
             };
-            print_projection(&projection);
+            if cli.json {
+                emit_json(&status)?;
+            } else {
+                println!("platform: {}", status.platform);
+                println!("installed: {}", status.installed);
+                println!("loaded: {}", status.loaded);
+                if let Some(path) = &status.unit_path {
+                    println!("unit: {}", path.display());
+                }
+                println!("{}", status.detail);
+            }
+        }
+        Command::Onboard => {
+            let runtime_dir = session::resolve_runtime_dir(cli.dir.as_deref());
+            std::fs::create_dir_all(&runtime_dir).map_err(|error| {
+                CliError::usage(format!("cannot create the runtime directory: {error}"))
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700))
+                    .map_err(|error| {
+                        CliError::usage(format!("cannot secure the runtime directory: {error}"))
+                    })?;
+            }
+            println!("runtime directory: {}", runtime_dir.display());
+            let status = service::install(&runtime_dir)?;
+            println!("background service: {}", status.detail);
+            println!();
+            println!("next:");
+            println!("  else              打开终端界面");
+            println!("  else brief        看今天要你管的事");
+            println!("  else doctor       再检查一次");
         }
         Command::Harnesses => {
+            let harnesses = client.harnesses()?;
+            if cli.json {
+                emit_json(&harnesses)?;
+                return Ok(());
+            }
             println!("scripted（内置确定性执行器）");
-            for adapter in else_harness::builtin_adapters() {
-                let caps = adapter.capabilities();
+            for harness in harnesses {
+                let caps = harness.capabilities;
                 println!(
                     "{}（cancel={:?} usage={:?} tool_effects={:?} network={:?}）",
-                    adapter.name(),
+                    harness.name,
                     caps.cancel,
                     caps.usage,
                     caps.tool_effects,
-                    adapter.network_access()
+                    harness.network_access
                 );
             }
         }
@@ -621,7 +744,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             tool_gateway,
             max_effect,
         } => {
-            let spec = runtime.configure_opaque_harness(
+            let spec = client.configure_opaque_harness(
                 &IntentId::from(intent_id),
                 else_protocol::intent::OpaqueHarnessPolicy {
                     enabled: true,
@@ -638,22 +761,32 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             );
         }
         Command::Abort { intent_id, reason } => {
-            let projection = runtime.abort(
+            let projection = client.abort(
                 &IntentId::from(intent_id),
                 reason.as_deref().unwrap_or("用户取消"),
             )?;
-            print_projection(&projection);
+            print_snapshot(&projection);
         }
         Command::List => {
-            for spec in runtime.list_intents()? {
-                println!("{}  {}", spec.id, spec.outcome);
+            let intents = client.list_intents()?;
+            if cli.json {
+                emit_json(&intents)?;
+                return Ok(());
+            }
+            for snapshot in intents {
+                println!("{}  {}", snapshot.spec.id, snapshot.spec.outcome);
             }
         }
         Command::Scopes { intent_id } => {
-            let projection = runtime.projection(&IntentId::from(intent_id))?;
-            for (id, scope) in projection.scopes {
+            let scopes = client.scopes(&IntentId::from(intent_id))?;
+            if cli.json {
+                emit_json(&scopes)?;
+                return Ok(());
+            }
+            for scope in scopes {
                 println!(
-                    "scope {id} parent={:?} replaces={:?} state={:?} generation={} failures={}",
+                    "scope {} parent={:?} replaces={:?} state={:?} generation={} failures={}",
+                    scope.scope_id,
                     scope.parent,
                     scope.replaces,
                     scope.state,
@@ -687,12 +820,13 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 .iter()
                 .map(|scope| else_protocol::ids::ScopeId::from(scope.as_str()))
                 .collect();
-            let child = runtime.spawn_subagent_with_dependencies(
+            let parent = else_protocol::ids::ScopeId::from(parent_scope);
+            let child = client.delegate(
                 &IntentId::from(intent_id),
-                &else_protocol::ids::ScopeId::from(parent_scope),
+                Some(&parent),
                 &task,
+                &depends_on,
                 max_effect,
-                depends_on,
             )?;
             println!("child scope: {child}");
         }
@@ -701,24 +835,38 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             scope_id,
             harness,
         } => {
-            let projection = runtime.dispatch_scope(
+            let projection = client.run_scope(
                 &IntentId::from(intent_id),
                 &else_protocol::ids::ScopeId::from(scope_id),
                 Some(&harness),
             )?;
-            print_projection(&projection);
+            print_snapshot(&projection);
         }
         Command::Decisions { intent_id } => {
-            let projection = runtime.projection(&IntentId::from(intent_id))?;
-            print_decisions(&projection);
+            let intent_id = IntentId::from(intent_id);
+            let windows: Vec<_> = client
+                .attention_windows()?
+                .into_iter()
+                .filter(|window| window.intent_id == intent_id)
+                .collect();
+            let requests = client.intent(&intent_id)?.decisions;
+            print_decisions(&windows, &requests);
         }
         Command::Attention { intent_id } => {
-            let projection = runtime.projection(&IntentId::from(intent_id))?;
-            print_attention(&projection);
+            let view = client.attention(&IntentId::from(intent_id))?;
+            if cli.json {
+                emit_json(&view)?;
+                return Ok(());
+            }
+            print_attention(&view);
         }
         Command::Plan { intent_id } => {
-            let projection = runtime.projection(&IntentId::from(intent_id))?;
-            print_plan(&projection);
+            let plan = client.plan(&IntentId::from(intent_id))?;
+            if cli.json {
+                emit_json(&plan)?;
+                return Ok(());
+            }
+            print_plan(&plan);
         }
         Command::Decide {
             intent_id,
@@ -729,25 +877,34 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 "approve" | "reject" => DecisionChoice::Option(choice),
                 other => DecisionChoice::FreeText(other.to_string()),
             };
-            let projection = runtime.decide(
+            let projection = client.decide(
                 &IntentId::from(intent_id),
                 &AttentionId::from(request_id),
                 choice,
             )?;
-            print_projection(&projection);
+            print_snapshot(&projection);
         }
         Command::Log { intent_id } => {
-            for event in runtime.events(&IntentId::from(intent_id))? {
+            let events = client.events(&IntentId::from(intent_id))?;
+            if cli.json {
+                emit_json(&events)?;
+                return Ok(());
+            }
+            for event in events {
                 println!(
                     "#{:<4} {}",
                     event.seq,
-                    serde_json::to_string(&event.envelope.payload)
+                    serde_json::to_string(&event.payload)
                         .unwrap_or_else(|_| "<codec error>".into())
                 );
             }
         }
         Command::Resources { intent_id } => {
-            let report = runtime.resources(&IntentId::from(intent_id))?;
+            let report = client.resources(&IntentId::from(intent_id))?;
+            if cli.json {
+                emit_json(&report)?;
+                return Ok(());
+            }
             println!(
                 "model: tokens={}/{} spend_usd_micros={}/{}",
                 report.usage.model_tokens,
@@ -793,7 +950,11 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             }
         }
         Command::Checkpoint { intent_id } => {
-            let checkpoint = runtime.checkpoint(&IntentId::from(intent_id))?;
+            let checkpoint = client.checkpoint(&IntentId::from(intent_id))?;
+            if cli.json {
+                emit_json(&checkpoint)?;
+                return Ok(());
+            }
             println!("checkpoint: {}", checkpoint.id);
             println!("event_cursor: {}", checkpoint.event_cursor);
             println!("inflight_effects: {}", checkpoint.inflight.len());
@@ -804,45 +965,34 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             alternative,
         } => {
             let intent_id = IntentId::from(intent_id);
-            let (scope_id, generation) = runtime.rerun(
-                &intent_id,
-                &else_protocol::ids::CheckpointId::from(checkpoint_id),
-                alternative,
-            )?;
+            let (scope_id, generation) = client.rerun(&intent_id, &checkpoint_id, alternative)?;
             println!("branch scope: {scope_id}");
             println!("generation: {generation}");
-            let projection = runtime.projection(&intent_id)?;
-            print_projection(&projection);
+            let snapshot = client.intent(&intent_id)?;
+            print_snapshot(&snapshot);
         }
         Command::Compare { intent_id } => {
-            print!("{}", runtime.compare(&IntentId::from(intent_id))?);
+            print!("{}", client.compare(&IntentId::from(intent_id))?);
         }
         Command::Revise {
             intent_id,
             outcome,
             constraints,
             reason,
-            unaffected_scopes,
+            unaffected_scopes: _,
         } => {
-            let unaffected: Vec<_> = unaffected_scopes
-                .iter()
-                .map(|scope| else_protocol::ids::ScopeId::from(scope.as_str()))
-                .collect();
-            let spec = runtime.revise_intent(
+            let spec = client.revise_intent(
                 &IntentId::from(intent_id),
-                else_api::IntentRevision {
-                    outcome,
-                    add_constraints: constraints,
-                    reason,
-                },
-                &unaffected,
+                outcome.as_deref(),
+                &constraints,
+                &reason,
             )?;
             println!("revision: {}", spec.revision);
             println!("outcome: {}", spec.outcome);
         }
         Command::Memory { command, project } => {
             use else_protocol::memory::{MemoryScope, MemoryTier};
-            let parse_scope = |raw: &str| -> Result<MemoryScope, String> {
+            let parse_scope = |raw: &str| -> std::result::Result<MemoryScope, String> {
                 if raw == "global" {
                     Ok(MemoryScope::Global)
                 } else if let Some(name) = raw.strip_prefix("project:") {
@@ -857,14 +1007,19 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             };
             match command {
                 None | Some(MemoryCommand::List) => {
-                    let memory = runtime.memory_projection()?;
+                    let memory = client.memory()?;
                     let tiers = [
                         MemoryTier::Working,
                         MemoryTier::Episodic,
                         MemoryTier::Semantic,
                     ];
-                    let recalled =
-                        memory.recall(project.as_deref(), None, &tiers, chrono::Utc::now());
+                    let recalled = else_protocol::memory::recall_memories(
+                        memory.promoted.values(),
+                        project.as_deref(),
+                        None,
+                        &tiers,
+                        chrono::Utc::now(),
+                    );
                     println!("promoted (scope={:?}):", project.as_deref().unwrap_or("*"));
                     for record in &recalled {
                         println!(
@@ -889,13 +1044,15 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                     let scope = scope
                         .map(|raw| parse_scope(&raw))
                         .transpose()
-                        .map_err(else_api::ApiError::NotFound)?;
-                    let record = runtime
-                        .promote_memory(&else_protocol::ids::MemoryId::from(candidate_id), scope)?;
+                        .map_err(CliError::usage)?;
+                    let record = client.promote_memory(
+                        &else_protocol::ids::MemoryId::from(candidate_id),
+                        scope.as_ref(),
+                    )?;
                     println!("promoted: {} -> {:?}", record.id, record.scope);
                 }
                 Some(MemoryCommand::Revoke { memory_id, reason }) => {
-                    runtime.revoke_memory(
+                    client.revoke_memory(
                         &else_protocol::ids::MemoryId::from(memory_id.clone()),
                         &reason,
                     )?;
@@ -907,26 +1064,22 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                     predicate,
                     value,
                 }) => {
-                    let record = runtime.correct_memory(
-                        MemoryScope::Project(project),
-                        &subject,
-                        &predicate,
-                        &value,
-                    )?;
+                    let record = client.correct_memory(&project, &subject, &predicate, &value)?;
                     println!("corrected: {} (project scope only)", record.id);
                 }
             }
         }
-        Command::ToolCall { .. } => unreachable!("handled before Runtime::open"),
-        Command::Serve { .. } => unreachable!("handled before Runtime::open"),
+        Command::ToolCall { .. } => unreachable!("handled before the session opens"),
+        Command::Serve { .. } => unreachable!("handled before the session opens"),
         Command::Calendar {
             intent_id,
             source,
             name,
         } => {
             let intent_id = IntentId::from(intent_id);
-            let connector = runtime.register_calendar_connector(&intent_id, &name, &source)?;
-            let result = runtime.sync_connector(&intent_id, &connector.id)?;
+            let connector =
+                client.register_connector(&intent_id, &name, &source, "calendar.ics", None, 300)?;
+            let result = client.sync_connector(&intent_id, &connector.id)?;
             println!(
                 "connector: {} observed={} inserted={} skipped={} candidates={} auto_accepted={} pages={} backfill_complete={} cursor={}",
                 connector.id,
@@ -957,13 +1110,13 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             let source = google_calendar_source_url(&calendar_id)?;
             let credential = if let Some(service) = token_keychain_service {
                 Some(connector_credential_from_access_token(
-                    &runtime,
+                    client,
                     "calendar.google",
                     read_keychain_secret(&service)?,
                 )?)
             } else {
                 build_connector_credential(
-                    &runtime,
+                    client,
                     "calendar.google",
                     Some(token_env.unwrap_or_else(|| "GOOGLE_CALENDAR_TOKEN".into())),
                     refresh_token_env,
@@ -974,15 +1127,15 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                     vec![],
                 )?
             };
-            let connector = runtime.register_connector_adapter_with_credential(
+            let connector = client.register_connector(
                 &intent_id,
                 &name,
                 &source,
                 "calendar.google",
-                credential,
+                credential.as_ref(),
                 sync_interval,
             )?;
-            let result = runtime.sync_connector(&intent_id, &connector.id)?;
+            let result = client.sync_connector(&intent_id, &connector.id)?;
             println!(
                 "connector: {} adapter=calendar.google source={} observed={} inserted={} skipped={} candidates={} pages={} backfill_complete={} cursor={}",
                 connector.id,
@@ -1011,7 +1164,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         } => {
             let intent_id = IntentId::from(intent_id);
             let credential = build_connector_credential(
-                &runtime,
+                client,
                 "linear.graphql",
                 token_env,
                 refresh_token_env,
@@ -1021,15 +1174,15 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 expires_at,
                 credential_scopes,
             )?;
-            let connector = runtime.register_connector_adapter_with_credential(
+            let connector = client.register_connector(
                 &intent_id,
                 &name,
                 &source,
                 "linear.graphql",
-                credential,
+                credential.as_ref(),
                 sync_interval,
             )?;
-            let result = runtime.sync_connector(&intent_id, &connector.id)?;
+            let result = client.sync_connector(&intent_id, &connector.id)?;
             println!(
                 "connector: {} observed={} inserted={} skipped={} candidates={} auto_accepted={} pages={} backfill_complete={} cursor={} webhook_session={} credential={}",
                 connector.id,
@@ -1061,16 +1214,16 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 read_environment_secret(token_env.as_deref().unwrap_or("NOTION_TOKEN"))?
             };
             let credential =
-                connector_credential_from_access_token(&runtime, "notion.api", access_token)?;
-            let connector = runtime.register_connector_adapter_with_credential(
+                connector_credential_from_access_token(client, "notion.api", access_token)?;
+            let connector = client.register_connector(
                 &intent_id,
                 &name,
                 &source,
                 "notion.api",
-                Some(credential),
+                Some(&credential),
                 sync_interval,
             )?;
-            let result = runtime.sync_connector(&intent_id, &connector.id)?;
+            let result = client.sync_connector(&intent_id, &connector.id)?;
             println!(
                 "connector: {} adapter=notion.api observed={} inserted={} skipped={} candidates={} auto_accepted={} pages={} backfill_complete={} cursor={} credential={}",
                 connector.id,
@@ -1101,7 +1254,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         } => {
             let intent_id = IntentId::from(intent_id);
             let credential = build_connector_credential(
-                &runtime,
+                client,
                 &adapter,
                 token_env,
                 refresh_token_env,
@@ -1111,15 +1264,15 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 expires_at,
                 credential_scopes,
             )?;
-            let connector = runtime.register_connector_adapter_with_credential(
+            let connector = client.register_connector(
                 &intent_id,
                 &name,
                 &source,
                 &adapter,
-                credential,
+                credential.as_ref(),
                 sync_interval,
             )?;
-            let result = runtime.sync_connector(&intent_id, &connector.id)?;
+            let result = client.sync_connector(&intent_id, &connector.id)?;
             println!(
                 "connector: {} adapter={} observed={} inserted={} skipped={} candidates={} auto_accepted={} pages={} backfill_complete={} cursor={} credential={}",
                 connector.id,
@@ -1156,7 +1309,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 min_confidence,
                 max_autonomous_effect: parse_effect(&max_effect),
             };
-            let spec = runtime.configure_connector_policy(&IntentId::from(intent_id), policy)?;
+            let spec = client.configure_connector_policy(&IntentId::from(intent_id), policy)?;
             println!(
                 "connector policy: auto_accept={} min_confidence={} max_effect={:?} revision={}",
                 spec.connector_policy.auto_accept_low_risk,
@@ -1167,9 +1320,8 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         }
         Command::Connectors { intent_id } => {
             let intent_id = IntentId::from(intent_id);
-            let projection = runtime.projection(&intent_id)?;
-            for connector in projection.connectors.values() {
-                let health = runtime.connector_health(&intent_id, &connector.id)?;
+            for connector in client.connectors(&intent_id)? {
+                let health = client.connector_health(&intent_id, &connector.id)?;
                 println!(
                     "{} {:?} enabled={} health={:?} failures={} last_success={} next_sync={} pages={} backfill={} credential={} scopes={:?} provider={} sync={:?} read={:?} write={:?} source={}",
                     connector.id,
@@ -1212,15 +1364,15 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             idempotency_key,
         } => {
             let input = serde_json::from_str(&input).map_err(|error| {
-                else_api::ApiError::Conflict(format!("action --input must be JSON: {error}"))
+                CliError::usage(format!("action --input must be JSON: {error}"))
             })?;
-            let action = runtime.propose_connector_action(
+            let action = client.propose_connector_action(
                 &IntentId::from(intent_id),
                 &else_protocol::ids::ConnectorId::from(connector_id),
                 &capability,
                 &target,
                 input,
-                idempotency_key,
+                idempotency_key.as_deref(),
             )?;
             print_connector_action(&action);
         }
@@ -1228,9 +1380,10 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             intent_id,
             action_id,
         } => {
-            let action = runtime.execute_connector_action(
+            let action = client.connector_action(
                 &IntentId::from(intent_id),
                 &else_protocol::ids::ConnectorActionId::from(action_id),
+                "execute",
             )?;
             print_connector_action(&action);
         }
@@ -1238,9 +1391,10 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             intent_id,
             action_id,
         } => {
-            let action = runtime.verify_connector_action(
+            let action = client.connector_action(
                 &IntentId::from(intent_id),
                 &else_protocol::ids::ConnectorActionId::from(action_id),
+                "verify",
             )?;
             print_connector_action(&action);
         }
@@ -1248,14 +1402,15 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             intent_id,
             action_id,
         } => {
-            let action = runtime.compensate_connector_action(
+            let action = client.connector_action(
                 &IntentId::from(intent_id),
                 &else_protocol::ids::ConnectorActionId::from(action_id),
+                "compensate",
             )?;
             print_connector_action(&action);
         }
         Command::ConnectorActions { intent_id } => {
-            for action in runtime.connector_actions(&IntentId::from(intent_id))? {
+            for action in client.connector_actions(&IntentId::from(intent_id))? {
                 print_connector_action(&action);
             }
         }
@@ -1263,7 +1418,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             intent_id,
             connector_id,
         } => {
-            let credential = runtime.revoke_connector_credential(
+            let credential = client.revoke_connector_credential(
                 &IntentId::from(intent_id),
                 &else_protocol::ids::ConnectorId::from(connector_id),
             )?;
@@ -1285,21 +1440,20 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
         } => {
             let intent_id = IntentId::from(intent_id);
             let connector_id = else_protocol::ids::ConnectorId::from(connector_id);
-            let connector = runtime
-                .projection(&intent_id)?
-                .connectors
-                .get(&connector_id)
-                .cloned()
-                .ok_or_else(|| else_api::ApiError::NotFound(format!("connector {connector_id}")))?;
+            let connector = client
+                .connectors(&intent_id)?
+                .into_iter()
+                .find(|connector| connector.id == connector_id)
+                .ok_or_else(|| CliError::usage(format!("connector {connector_id}")))?;
             let access_token = if let Some(service) = token_keychain_service {
                 read_keychain_secret(&service)?
             } else {
                 read_environment_secret(token_env.as_deref().unwrap_or("NOTION_TOKEN"))?
             };
             let credential =
-                connector_credential_from_access_token(&runtime, &connector.adapter, access_token)?;
+                connector_credential_from_access_token(client, &connector.adapter, access_token)?;
             let metadata =
-                runtime.attach_connector_credential(&intent_id, &connector_id, credential)?;
+                client.attach_connector_credential(&intent_id, &connector_id, credential)?;
             println!(
                 "credential updated: {} auth={:?} scopes={:?} expires_at={}",
                 metadata.reference,
@@ -1312,7 +1466,12 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             );
         }
         Command::ConnectorAdapters => {
-            for manifest in runtime.connector_manifests() {
+            let manifests = client.connector_manifests()?;
+            if cli.json {
+                emit_json(&manifests)?;
+                return Ok(());
+            }
+            for manifest in manifests {
                 println!(
                     "{} provider={} auth={:?} sync={:?} read={:?} write={:?} health={:?}",
                     manifest.adapter,
@@ -1326,8 +1485,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             }
         }
         Command::Signals { intent_id } => {
-            let projection = runtime.projection(&IntentId::from(intent_id))?;
-            for signal in projection.world_signals.values() {
+            for signal in client.world_signals_of(&IntentId::from(intent_id))? {
                 println!(
                     "{} {:?} {:?} {:?} occurred={} valid_until={} trust={} summary={}",
                     signal.id,
@@ -1348,7 +1506,12 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             intent_id,
             include_resolved,
         } => {
-            for item in runtime.world_items(&IntentId::from(intent_id), include_resolved)? {
+            let items = client.world_items(&IntentId::from(intent_id), include_resolved)?;
+            if cli.json {
+                emit_json(&items)?;
+                return Ok(());
+            }
+            for item in items {
                 print_world_item(&item);
             }
         }
@@ -1362,16 +1525,20 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 "dismissed" => else_protocol::world::WorldItemResolutionKind::Dismissed,
                 _ => else_protocol::world::WorldItemResolutionKind::Completed,
             };
-            let item = runtime.resolve_world_item(
+            let item = client.resolve_world_item(
                 &IntentId::from(intent_id),
                 &else_protocol::ids::WorldItemId::from(item_id),
                 kind,
-                note,
+                note.as_deref(),
             )?;
             print_world_item(&item);
         }
         Command::Brief => {
-            let brief = runtime.personal_brief()?;
+            let brief = client.brief()?;
+            if cli.json {
+                emit_json(&brief)?;
+                return Ok(());
+            }
             println!("generated_at: {}", brief.generated_at.to_rfc3339());
             print_world_section("overdue", &brief.overdue);
             print_world_section("commitments", &brief.open_commitments);
@@ -1385,7 +1552,12 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             include_resolved,
         } => {
             let intent_id = intent_id.map(IntentId::from);
-            for project in runtime.project_worlds(intent_id.as_ref(), include_resolved)? {
+            let projects = client.project_worlds(intent_id.as_ref(), include_resolved)?;
+            if cli.json {
+                emit_json(&projects)?;
+                return Ok(());
+            }
+            for project in projects {
                 println!(
                     "{} {} open={} waiting={} overdue={} next_due={} intents={} connectors={}",
                     project.key,
@@ -1413,7 +1585,12 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             include_resolved,
         } => {
             let intent_id = intent_id.map(IntentId::from);
-            for identity in runtime.identity_worlds(intent_id.as_ref(), include_resolved)? {
+            let identities = client.identity_worlds(intent_id.as_ref(), include_resolved)?;
+            if cli.json {
+                emit_json(&identities)?;
+                return Ok(());
+            }
+            for identity in identities {
                 println!(
                     "{:?} {} {} open={} overdue={} next_due={} intents={} connectors={}",
                     identity.kind,
@@ -1462,7 +1639,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 "rename" => WorldCorrelationCorrectionKind::Rename,
                 _ => unreachable!("clap validates correction action"),
             };
-            let correction = runtime.correct_world_correlation(
+            let correction = client.correct_world_correlation(
                 &IntentId::from(intent_id),
                 WorldCorrelationCorrection {
                     id: else_protocol::ids::WorldCorrelationCorrectionId::new(),
@@ -1489,7 +1666,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             provider,
             entity,
         } => {
-            for record in runtime.world_signals(cursor, provider.as_deref(), entity.as_deref())? {
+            for record in client.world_signals(cursor, provider.as_deref(), entity.as_deref())? {
                 println!(
                     "#{} intent={} {} {:?} {:?} {:?} {}",
                     record.seq,
@@ -1503,7 +1680,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             }
         }
         Command::CandidateFeed { cursor } => {
-            for record in runtime.intent_candidates(cursor)? {
+            for record in client.intent_candidates(cursor)? {
                 println!(
                     "#{} intent={} {} {:?} {:?} {}",
                     record.seq,
@@ -1516,7 +1693,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             }
         }
         Command::ResolveSignals { intent_id } => {
-            let candidates = runtime.resolve_signals(&IntentId::from(intent_id))?;
+            let candidates = client.resolve_signals(&IntentId::from(intent_id))?;
             if candidates.is_empty() {
                 println!("candidates: none");
             }
@@ -1525,12 +1702,12 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             }
         }
         Command::Candidates { intent_id } => {
-            let projection = runtime.projection(&IntentId::from(intent_id))?;
-            if projection.intent_candidates.is_empty() {
+            let records = client.intent_candidates_of(&IntentId::from(intent_id))?;
+            if records.is_empty() {
                 println!("candidates: none");
             }
-            for candidate in projection.intent_candidates.values() {
-                print_candidate(candidate);
+            for record in records {
+                print_candidate(&record.candidate);
             }
         }
         Command::CandidatePropose {
@@ -1567,9 +1744,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                     chrono::DateTime::parse_from_rfc3339(&value)
                         .map(|value| value.with_timezone(&chrono::Utc))
                         .map_err(|error| {
-                            else_api::ApiError::NotFound(format!(
-                                "invalid deadline RFC3339: {error}"
-                            ))
+                            CliError::usage(format!("invalid deadline RFC3339: {error}"))
                         })
                 })
                 .transpose()?;
@@ -1581,7 +1756,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                     .join(",");
                 format!("manual-candidate:{:016x}", stable_hash(&outcome, &signals))
             });
-            let candidate = runtime.propose_intent_candidate(
+            let candidate = client.propose_intent_candidate(
                 &intent_id,
                 IntentCandidate {
                     id: else_protocol::ids::IntentCandidateId::new(),
@@ -1613,15 +1788,13 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             intent_id,
             candidate_id,
         } => {
-            let spec = runtime
-                .resolve_intent_candidate(
-                    &IntentId::from(intent_id),
-                    &else_protocol::ids::IntentCandidateId::from(candidate_id),
-                    true,
-                )?
-                .ok_or_else(|| {
-                    else_api::ApiError::NotFound("candidate acceptance produced no intent".into())
-                })?;
+            let (_, intent) = client.resolve_intent_candidate(
+                &IntentId::from(intent_id),
+                &else_protocol::ids::IntentCandidateId::from(candidate_id),
+                true,
+            )?;
+            let spec =
+                intent.ok_or_else(|| CliError::usage("candidate acceptance produced no intent"))?;
             println!("intent: {}", spec.id);
             println!("outcome: {}", spec.outcome);
             if let Some(origin) = spec.origin {
@@ -1638,7 +1811,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             intent_id,
             candidate_id,
         } => {
-            runtime.resolve_intent_candidate(
+            client.resolve_intent_candidate(
                 &IntentId::from(intent_id),
                 &else_protocol::ids::IntentCandidateId::from(candidate_id),
                 false,
@@ -1649,75 +1822,12 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
     Ok(())
 }
 
-fn print_candidate(candidate: &else_protocol::connector::IntentCandidate) {
-    println!(
-        "{} {:?} {:?} confidence={} signals={} outcome={}",
-        candidate.id,
-        candidate.origin,
-        candidate.state,
-        candidate.confidence,
-        candidate.related_signal_ids.len(),
-        candidate.proposed_outcome
-    );
-}
-
-fn print_world_section(name: &str, records: &[else_protocol::world::WorldItemRecord]) {
-    println!("{name}: {}", records.len());
-    for record in records {
-        println!(
-            "  intent={} {} {:?} {:?} due={} {}",
-            record.intent_id,
-            record.item.id,
-            record.item.kind,
-            record.item.state,
-            record
-                .item
-                .deadline
-                .map(|value| value.to_rfc3339())
-                .unwrap_or_else(|| "none".into()),
-            record.item.title
-        );
-    }
-}
-
-fn print_world_item(item: &else_protocol::world::WorldItem) {
-    println!(
-        "{} {:?} {:?} due={} signals={} connectors={} {}",
-        item.id,
-        item.kind,
-        item.state,
-        item.deadline
-            .map(|value| value.to_rfc3339())
-            .unwrap_or_else(|| "none".into()),
-        item.signal_ids.len(),
-        item.connector_ids.len(),
-        item.title
-    );
-}
-
-fn print_connector_action(action: &else_protocol::connector::ConnectorAction) {
-    println!(
-        "{} connector={} capability={} target={} status={:?} effect={:?} attention={} outcome={}",
-        action.id,
-        action.connector_id,
-        action.capability,
-        action.target,
-        action.status,
-        action.effect,
-        action
-            .attention_id
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "none".into()),
-        action
-            .outcome
-            .as_ref()
-            .map(|outcome| format!("{:?}/{:?}", outcome.status, outcome.effect))
-            .unwrap_or_else(|| "none".into())
-    );
-    if let Some(error) = &action.last_error {
-        println!("  error={error}");
-    }
+/// 以 JSON 输出一个值。
+fn emit_json<T: serde::Serialize>(value: &T) -> Result<()> {
+    let text = serde_json::to_string_pretty(value)
+        .map_err(|error| CliError::usage(format!("cannot encode JSON: {error}")))?;
+    println!("{text}");
+    Ok(())
 }
 
 fn parse_intent_origin(origin: &str) -> else_protocol::connector::IntentOriginKind {
@@ -1732,7 +1842,7 @@ fn parse_intent_origin(origin: &str) -> else_protocol::connector::IntentOriginKi
     }
 }
 
-fn notion_source_url(database: Option<&str>) -> else_api::Result<String> {
+fn notion_source_url(database: Option<&str>) -> Result<String> {
     let Some(database) = database.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok("https://api.notion.com/v1/search".into());
     };
@@ -1766,9 +1876,7 @@ fn notion_source_url(database: Option<&str>) -> else_api::Result<String> {
             })
             .map(str::to_string)
             .ok_or_else(|| {
-                else_api::ApiError::Conflict(format!(
-                    "could not find a Notion Database ID in {database}"
-                ))
+                CliError::usage(format!("could not find a Notion Database ID in {database}"))
             })?
     };
     Ok(format!(
@@ -1776,12 +1884,10 @@ fn notion_source_url(database: Option<&str>) -> else_api::Result<String> {
     ))
 }
 
-fn google_calendar_source_url(calendar_id: &str) -> else_api::Result<String> {
+fn google_calendar_source_url(calendar_id: &str) -> Result<String> {
     let calendar_id = calendar_id.trim();
     if calendar_id.is_empty() {
-        return Err(else_api::ApiError::Conflict(
-            "Google Calendar ID cannot be empty".into(),
-        ));
+        return Err(CliError::usage("Google Calendar ID cannot be empty"));
     }
     Ok(format!(
         "https://www.googleapis.com/calendar/v3/calendars/{}/events",
@@ -1789,37 +1895,34 @@ fn google_calendar_source_url(calendar_id: &str) -> else_api::Result<String> {
     ))
 }
 
-fn read_environment_secret(name: &str) -> else_api::Result<String> {
-    let value = std::env::var(name).map_err(|_| {
-        else_api::ApiError::Conflict(format!("environment variable {name} is not set"))
-    })?;
+fn read_environment_secret(name: &str) -> Result<String> {
+    let value = std::env::var(name)
+        .map_err(|_| CliError::usage(format!("environment variable {name} is not set")))?;
     let value = value.trim().to_string();
     if value.is_empty() {
-        return Err(else_api::ApiError::Conflict(format!(
+        return Err(CliError::usage(format!(
             "environment variable {name} is empty"
         )));
     }
     Ok(value)
 }
 
-fn read_keychain_secret(service: &str) -> else_api::Result<String> {
+fn read_keychain_secret(service: &str) -> Result<String> {
     let output = std::process::Command::new("security")
         .args(["find-generic-password", "-s", service, "-w"])
         .output()
-        .map_err(|error| {
-            else_api::ApiError::Conflict(format!("cannot invoke macOS security: {error}"))
-        })?;
+        .map_err(|error| CliError::usage(format!("cannot invoke macOS security: {error}")))?;
     if !output.status.success() {
-        return Err(else_api::ApiError::Unauthorized(format!(
+        return Err(CliError::usage(format!(
             "Keychain service {service} was not found or access was denied"
         )));
     }
     let value = String::from_utf8(output.stdout)
-        .map_err(|_| else_api::ApiError::Conflict("Keychain token is not UTF-8".into()))?
+        .map_err(|_| CliError::usage("Keychain token is not UTF-8"))?
         .trim()
         .to_string();
     if value.is_empty() {
-        return Err(else_api::ApiError::Conflict(format!(
+        return Err(CliError::usage(format!(
             "Keychain service {service} is empty"
         )));
     }
@@ -1827,19 +1930,19 @@ fn read_keychain_secret(service: &str) -> else_api::Result<String> {
 }
 
 fn connector_credential_from_access_token(
-    runtime: &Runtime,
+    client: &RuntimeClient,
     adapter_id: &str,
     access_token: String,
-) -> else_api::Result<else_protocol::connector::ConnectorCredential> {
+) -> Result<else_protocol::connector::ConnectorCredential> {
     use else_protocol::connector::{ConnectorAuthMode, ConnectorCredential};
 
-    let manifest = runtime
-        .connector_manifests()
+    let manifest = client
+        .connector_manifests()?
         .into_iter()
         .find(|manifest| manifest.adapter == adapter_id)
-        .ok_or_else(|| else_api::ApiError::NotFound(format!("connector adapter {adapter_id}")))?;
+        .ok_or_else(|| CliError::usage(format!("connector adapter {adapter_id}")))?;
     if manifest.auth_mode == ConnectorAuthMode::None {
-        return Err(else_api::ApiError::Conflict(format!(
+        return Err(CliError::usage(format!(
             "connector adapter {adapter_id} does not accept credentials"
         )));
     }
@@ -1870,7 +1973,7 @@ fn form_encode(value: &str) -> String {
 
 #[allow(clippy::too_many_arguments)]
 fn build_connector_credential(
-    runtime: &Runtime,
+    client: &RuntimeClient,
     adapter_id: &str,
     token_env: Option<String>,
     refresh_token_env: Option<String>,
@@ -1879,14 +1982,14 @@ fn build_connector_credential(
     client_secret_env: Option<String>,
     expires_at: Option<String>,
     credential_scopes: Vec<String>,
-) -> else_api::Result<Option<else_protocol::connector::ConnectorCredential>> {
+) -> Result<Option<else_protocol::connector::ConnectorCredential>> {
     use else_protocol::connector::{ConnectorAuthMode, ConnectorCredential, OAuthRefreshConfig};
 
-    let manifest = runtime
-        .connector_manifests()
+    let manifest = client
+        .connector_manifests()?
         .into_iter()
         .find(|manifest| manifest.adapter == adapter_id)
-        .ok_or_else(|| else_api::ApiError::NotFound(format!("connector adapter {adapter_id}")))?;
+        .ok_or_else(|| CliError::usage(format!("connector adapter {adapter_id}")))?;
     let Some(token_env) = token_env else {
         if refresh_token_env.is_some()
             || token_url.is_some()
@@ -1895,14 +1998,14 @@ fn build_connector_credential(
             || expires_at.is_some()
             || !credential_scopes.is_empty()
         {
-            return Err(else_api::ApiError::Conflict(
-                "--token-env is required when credential options are supplied".into(),
+            return Err(CliError::usage(
+                "--token-env is required when credential options are supplied",
             ));
         }
         return Ok(None);
     };
     if manifest.auth_mode == ConnectorAuthMode::None {
-        return Err(else_api::ApiError::Conflict(format!(
+        return Err(CliError::usage(format!(
             "connector adapter {adapter_id} does not accept credentials"
         )));
     }
@@ -1916,17 +2019,14 @@ fn build_connector_credential(
         .map(|value| {
             chrono::DateTime::parse_from_rfc3339(&value)
                 .map(|value| value.with_timezone(&chrono::Utc))
-                .map_err(|error| {
-                    else_api::ApiError::Conflict(format!("--expires-at must be RFC3339: {error}"))
-                })
+                .map_err(|error| CliError::usage(format!("--expires-at must be RFC3339: {error}")))
         })
         .transpose()?;
     let refresh_token = refresh_token_env
         .as_deref()
         .map(|name| {
-            std::env::var(name).map_err(|_| {
-                else_api::ApiError::Conflict(format!("environment variable {name} is not set"))
-            })
+            std::env::var(name)
+                .map_err(|_| CliError::usage(format!("environment variable {name} is not set")))
         })
         .transpose()?;
     let refresh = match (token_url, client_id) {
@@ -1937,23 +2037,21 @@ fn build_connector_credential(
                 .as_deref()
                 .map(|name| {
                     std::env::var(name).map_err(|_| {
-                        else_api::ApiError::Conflict(format!(
-                            "environment variable {name} is not set"
-                        ))
+                        CliError::usage(format!("environment variable {name} is not set"))
                     })
                 })
                 .transpose()?,
         }),
         (None, None) => None,
         _ => {
-            return Err(else_api::ApiError::Conflict(
-                "--token-url and --client-id must be supplied together".into(),
+            return Err(CliError::usage(
+                "--token-url and --client-id must be supplied together",
             ))
         }
     };
     if refresh_token.is_some() && refresh.is_none() {
-        return Err(else_api::ApiError::Conflict(
-            "OAuth refresh requires --token-url and --client-id".into(),
+        return Err(CliError::usage(
+            "OAuth refresh requires --token-url and --client-id",
         ));
     }
     Ok(Some(ConnectorCredential {
@@ -1966,20 +2064,19 @@ fn build_connector_credential(
     }))
 }
 
-fn run_tool_call(tool: &str, input: &str, idempotency_key: Option<&str>) -> else_api::Result<()> {
+fn run_tool_call(tool: &str, input: &str, idempotency_key: Option<&str>) -> Result<()> {
     use std::io::{Read, Write};
     use std::net::TcpStream;
 
-    let url = std::env::var("ELSE_TOOL_URL")
-        .map_err(|_| else_api::ApiError::NotFound("ELSE_TOOL_URL is not set".into()))?;
+    let url =
+        std::env::var("ELSE_TOOL_URL").map_err(|_| CliError::usage("ELSE_TOOL_URL is not set"))?;
     let token = std::env::var("ELSE_TOOL_TOKEN")
-        .map_err(|_| else_api::ApiError::NotFound("ELSE_TOOL_TOKEN is not set".into()))?;
-    let authority = url.strip_prefix("http://").ok_or_else(|| {
-        else_api::ApiError::NotFound("ELSE_TOOL_URL must be http loopback".into())
-    })?;
-    let input: serde_json::Value = serde_json::from_str(input).map_err(|error| {
-        else_api::ApiError::NotFound(format!("invalid tool input JSON: {error}"))
-    })?;
+        .map_err(|_| CliError::usage("ELSE_TOOL_TOKEN is not set"))?;
+    let authority = url
+        .strip_prefix("http://")
+        .ok_or_else(|| CliError::usage("ELSE_TOOL_URL must be http loopback"))?;
+    let input: serde_json::Value = serde_json::from_str(input)
+        .map_err(|error| CliError::usage(format!("invalid tool input JSON: {error}")))?;
     let idempotency_key = idempotency_key.map(str::to_string).unwrap_or_else(|| {
         format!(
             "auto-{:016x}",
@@ -1993,7 +2090,7 @@ fn run_tool_call(tool: &str, input: &str, idempotency_key: Option<&str>) -> else
     })
     .to_string();
     let mut stream = TcpStream::connect(authority)
-        .map_err(|error| else_api::ApiError::NotFound(format!("tool gateway: {error}")))?;
+        .map_err(|error| CliError::usage(format!("tool gateway: {error}")))?;
     write!(
         stream,
         "POST /tool HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -2010,7 +2107,7 @@ fn run_tool_call(tool: &str, input: &str, idempotency_key: Option<&str>) -> else
     if success {
         Ok(())
     } else {
-        Err(else_api::ApiError::NotFound(body.into()))
+        Err(CliError::usage(body.to_string()))
     }
 }
 
@@ -2023,101 +2120,6 @@ fn stable_hash(left: &str, right: &str) -> u64 {
     hash
 }
 
-fn print_projection(projection: &else_ledger::IntentProjection) {
-    println!("state: {:?}", projection.state);
-    println!("artifacts: {}", projection.artifacts.len());
-    print_decisions(projection);
-}
-
-fn print_decisions(projection: &else_ledger::IntentProjection) {
-    let now = chrono::Utc::now();
-    let windows = projection.actionable_attention_windows(now);
-    let mut grouped = BTreeSet::new();
-    for (window, requests) in windows {
-        for request in &requests {
-            grouped.insert(request.id.clone());
-        }
-        let label = match window.kind {
-            else_protocol::attention::AttentionWindowKind::Batch => "batch",
-            else_protocol::attention::AttentionWindowKind::Defer => "deferred",
-        };
-        println!(
-            "decision window {} ({label}, {} items):",
-            window.id,
-            requests.len()
-        );
-        for request in requests {
-            print_decision_request(request);
-        }
-    }
-    let requests = projection.actionable_requests(chrono::Utc::now());
-    let ungrouped: Vec<_> = requests
-        .into_iter()
-        .filter(|request| !grouped.contains(&request.id))
-        .collect();
-    if ungrouped.is_empty() && grouped.is_empty() {
-        println!("decisions: none");
-        return;
-    }
-    for request in ungrouped {
-        print_decision_request(request);
-    }
-}
-
-fn print_decision_request(request: &else_protocol::attention::AttentionRequest) {
-    let id = &request.id;
-    println!("decision {id}: {}", request.summary);
-    for option in &request.options {
-        println!("  [{}] {}", option.id, option.label);
-    }
-}
-
-fn print_attention(projection: &else_ledger::IntentProjection) {
-    let now = chrono::Utc::now();
-    let metrics = projection.attention_metrics(now);
-    println!(
-        "attention: requested={} interventions={} resolved={}",
-        metrics.requested, metrics.interventions, metrics.resolved
-    );
-    println!(
-        "signals: interrupt={} batch={} defer={} silent={}",
-        metrics.interrupt_notifications,
-        metrics.batch_notifications,
-        metrics.defer_notifications,
-        metrics.silent_requests
-    );
-    println!(
-        "quality: batch_rate={} misinterrupt_rate={} missed_critical={}",
-        format_rate(metrics.batch_rate),
-        format_rate(metrics.misinterrupt_rate),
-        metrics.missed_critical
-    );
-    if projection.attention_windows.is_empty() {
-        println!("windows: none");
-        return;
-    }
-    for window in projection.attention_windows.values() {
-        println!(
-            "window {} kind={:?} members={} due={} closed={}",
-            window.id,
-            window.kind,
-            window.request_ids.len(),
-            window.due_at.to_rfc3339(),
-            window
-                .closed_at
-                .map(|at| at.to_rfc3339())
-                .unwrap_or_else(|| "open".into())
-        );
-    }
-}
-
-fn format_rate(rate: Option<f64>) -> String {
-    match rate {
-        Some(rate) => format!("{:.1}%", rate * 100.0),
-        None => "n/a".into(),
-    }
-}
-
 fn parse_effect(raw: &str) -> else_protocol::effect::SideEffectKind {
     use else_protocol::effect::SideEffectKind;
     match raw {
@@ -2126,51 +2128,6 @@ fn parse_effect(raw: &str) -> else_protocol::effect::SideEffectKind {
         "compensatable" => SideEffectKind::Compensatable,
         "irreversible" => SideEffectKind::Irreversible,
         _ => SideEffectKind::Unknown,
-    }
-}
-
-fn print_plan(projection: &else_ledger::IntentProjection) {
-    let Some(plan) = projection.current_plan() else {
-        println!("plan: none");
-        return;
-    };
-    println!(
-        "plan {} revision={} intent_revision={} supersedes={:?}",
-        plan.id, plan.revision, plan.intent_revision, plan.supersedes
-    );
-    println!("summary: {}", plan.summary);
-    for step in &plan.steps {
-        println!(
-            "step {} status={:?} scope={:?}: {}",
-            step.id, step.status, step.scope_id, step.title
-        );
-        if !step.watch_sources.is_empty() || !step.watch_terms.is_empty() {
-            println!(
-                "  watches: sources={:?} terms={:?}",
-                step.watch_sources, step.watch_terms
-            );
-        }
-    }
-    for evidence in &plan.evidence {
-        println!(
-            "evidence {:?} {}: {}",
-            evidence.kind,
-            evidence.event_id.as_deref().unwrap_or("-"),
-            evidence.summary
-        );
-    }
-    if !projection.plan_impacts.is_empty() {
-        println!("impacts:");
-        for impact in &projection.plan_impacts {
-            println!(
-                "  {} -> affected={} scopes={} unaffected={}",
-                impact.source,
-                impact.affected_step_ids.len(),
-                impact.invalidated_scope_ids.len(),
-                impact.unaffected_step_ids.len()
-            );
-            println!("  {}", impact.explanation);
-        }
     }
 }
 
