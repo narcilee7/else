@@ -75,6 +75,10 @@ define_id!(AgentId, "外部或本地 Agent 的稳定身份。");
 define_id!(AgentBindingId, "Agent 与一次 Intent/Scope/Run 的双向绑定。");
 define_id!(McpServerId, "一个可重连的 MCP Server 注册。");
 define_id!(ConnectorId, "只读或受 Gateway 管控的外部世界连接器。");
+define_id!(
+    ConnectorActionId,
+    "一次需要外部写回的动作提案与执行生命周期。"
+);
 define_id!(WorldSignalId, "外部世界的一条标准化、可去重事实。");
 define_id!(IntentCandidateId, "根据 World Signal 提出的 Intent 候选。");
 define_id!(WorldItemId, "跨 Signal 版本聚合出的 Personal World 条目。");

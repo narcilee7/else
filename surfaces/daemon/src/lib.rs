@@ -524,6 +524,51 @@ fn route(
                 _ => {}
             }
         }
+        if segments.len() == 4 && segments[3] == "actions" {
+            match request.method() {
+                Method::Get => {
+                    let actions = state.handle.connector_actions(&intent_id)?;
+                    return Ok((200, json_string(&actions)?));
+                }
+                Method::Post => {
+                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    let value: Value = serde_json::from_str(body).map_err(json_error)?;
+                    let connector_id = else_protocol::ids::ConnectorId::from(
+                        value["connector_id"].as_str().ok_or_else(|| {
+                            DaemonError::InvalidRequest("missing connector_id".into())
+                        })?,
+                    );
+                    let capability = value["capability"]
+                        .as_str()
+                        .ok_or_else(|| DaemonError::InvalidRequest("missing capability".into()))?;
+                    let target = value["target"]
+                        .as_str()
+                        .ok_or_else(|| DaemonError::InvalidRequest("missing target".into()))?;
+                    let action = state.handle.propose_connector_action(
+                        &intent_id,
+                        &connector_id,
+                        capability,
+                        target,
+                        value["input"].clone(),
+                        value["idempotency_key"].as_str().map(str::to_string),
+                    )?;
+                    return Ok((200, json_string(&action)?));
+                }
+                _ => {}
+            }
+        }
+        if segments.len() == 6
+            && segments[3] == "actions"
+            && segments[5] == "execute"
+            && request.method() == &Method::Post
+        {
+            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            let action = state.handle.execute_connector_action(
+                &intent_id,
+                &else_protocol::ids::ConnectorActionId::from(segments[4]),
+            )?;
+            return Ok((200, json_string(&action)?));
+        }
         if segments.len() == 4
             && segments[3] == "connector-policy"
             && request.method() == &Method::Post

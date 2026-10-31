@@ -225,6 +225,24 @@ enum Command {
         #[arg(long, default_value = "linear")]
         name: String,
     },
+    /// 注册真实 Notion Search / Database Connector 并执行首次 Backfill
+    Notion {
+        intent_id: String,
+        /// 可选 Database ID 或 Database URL；省略时同步所有授权页面/数据库
+        #[arg(long)]
+        database: Option<String>,
+        /// 保存 Notion Integration Token 的环境变量
+        #[arg(long, conflicts_with = "token_keychain_service")]
+        token_env: Option<String>,
+        /// 从 macOS Keychain service 读取 Notion Integration Token
+        #[arg(long, conflicts_with = "token_env")]
+        token_keychain_service: Option<String>,
+        /// 后台同步间隔（秒）
+        #[arg(long, default_value_t = 300)]
+        sync_interval: u64,
+        #[arg(long, default_value = "notion")]
+        name: String,
+    },
     /// 通过 Adapter Registry 注册并同步任意 Connector
     Connector {
         intent_id: String,
@@ -265,10 +283,37 @@ enum Command {
     },
     /// 查看已注册连接器
     Connectors { intent_id: String },
+    /// 提案一次受 Gateway 管控的外部写动作
+    ConnectorActionPropose {
+        intent_id: String,
+        connector_id: String,
+        capability: String,
+        target: String,
+        #[arg(long, default_value = "{}")]
+        input: String,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// 执行外部写动作；超出授权时返回 Decision Request
+    ConnectorActionExecute {
+        intent_id: String,
+        action_id: String,
+    },
+    /// 查看外部写动作状态与最终结论
+    ConnectorActions { intent_id: String },
     /// 撤销 Connector 私有凭据；后续同步失败关闭
     ConnectorCredentialRevoke {
         intent_id: String,
         connector_id: String,
+    },
+    /// 更新 Connector 私有凭据，不重复注册 Connector
+    ConnectorCredentialSet {
+        intent_id: String,
+        connector_id: String,
+        #[arg(long, conflicts_with = "token_keychain_service")]
+        token_env: Option<String>,
+        #[arg(long, conflicts_with = "token_env")]
+        token_keychain_service: Option<String>,
     },
     /// 列出 Runtime 已注册的 Connector Adapter 与能力
     ConnectorAdapters,
@@ -827,13 +872,15 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             let connector = runtime.register_calendar_connector(&intent_id, &name, &source)?;
             let result = runtime.sync_connector(&intent_id, &connector.id)?;
             println!(
-                "connector: {} observed={} inserted={} skipped={} candidates={} auto_accepted={} cursor={}",
+                "connector: {} observed={} inserted={} skipped={} candidates={} auto_accepted={} pages={} backfill_complete={} cursor={}",
                 connector.id,
                 result.observed,
                 result.inserted,
                 result.skipped,
                 result.candidates_proposed,
                 result.auto_accepted,
+                result.pages_synced,
+                result.backfill_complete,
                 result.cursor.as_deref().unwrap_or("none")
             );
         }
@@ -872,15 +919,57 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             )?;
             let result = runtime.sync_connector(&intent_id, &connector.id)?;
             println!(
-                "connector: {} observed={} inserted={} skipped={} candidates={} auto_accepted={} cursor={} webhook_session={} credential={}",
+                "connector: {} observed={} inserted={} skipped={} candidates={} auto_accepted={} pages={} backfill_complete={} cursor={} webhook_session={} credential={}",
                 connector.id,
                 result.observed,
                 result.inserted,
                 result.skipped,
                 result.candidates_proposed,
                 result.auto_accepted,
+                result.pages_synced,
+                result.backfill_complete,
                 result.cursor.as_deref().unwrap_or("none"),
                 connector.webhook_session.as_deref().unwrap_or("none"),
+                connector.credential.is_some()
+            );
+        }
+        Command::Notion {
+            intent_id,
+            database,
+            token_env,
+            token_keychain_service,
+            sync_interval,
+            name,
+        } => {
+            let intent_id = IntentId::from(intent_id);
+            let source = notion_source_url(database.as_deref())?;
+            let access_token = if let Some(service) = token_keychain_service {
+                read_keychain_secret(&service)?
+            } else {
+                read_environment_secret(token_env.as_deref().unwrap_or("NOTION_TOKEN"))?
+            };
+            let credential =
+                connector_credential_from_access_token(&runtime, "notion.api", access_token)?;
+            let connector = runtime.register_connector_adapter_with_credential(
+                &intent_id,
+                &name,
+                &source,
+                "notion.api",
+                Some(credential),
+                sync_interval,
+            )?;
+            let result = runtime.sync_connector(&intent_id, &connector.id)?;
+            println!(
+                "connector: {} adapter=notion.api observed={} inserted={} skipped={} candidates={} auto_accepted={} pages={} backfill_complete={} cursor={} credential={}",
+                connector.id,
+                result.observed,
+                result.inserted,
+                result.skipped,
+                result.candidates_proposed,
+                result.auto_accepted,
+                result.pages_synced,
+                result.backfill_complete,
+                result.cursor.as_deref().unwrap_or("none"),
                 connector.credential.is_some()
             );
         }
@@ -920,7 +1009,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             )?;
             let result = runtime.sync_connector(&intent_id, &connector.id)?;
             println!(
-                "connector: {} adapter={} observed={} inserted={} skipped={} candidates={} auto_accepted={} cursor={} credential={}",
+                "connector: {} adapter={} observed={} inserted={} skipped={} candidates={} auto_accepted={} pages={} backfill_complete={} cursor={} credential={}",
                 connector.id,
                 connector.adapter,
                 result.observed,
@@ -928,6 +1017,8 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 result.skipped,
                 result.candidates_proposed,
                 result.auto_accepted,
+                result.pages_synced,
+                result.backfill_complete,
                 result.cursor.as_deref().unwrap_or("none"),
                 connector.credential.is_some()
             );
@@ -968,7 +1059,7 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
             for connector in projection.connectors.values() {
                 let health = runtime.connector_health(&intent_id, &connector.id)?;
                 println!(
-                    "{} {:?} enabled={} health={:?} failures={} last_success={} next_sync={} credential={} scopes={:?} provider={} sync={:?} read={:?} write={:?} source={}",
+                    "{} {:?} enabled={} health={:?} failures={} last_success={} next_sync={} pages={} backfill={} credential={} scopes={:?} provider={} sync={:?} read={:?} write={:?} source={}",
                     connector.id,
                     connector.adapter,
                     connector.enabled,
@@ -979,6 +1070,14 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                         .map(|value| value.to_rfc3339())
                         .unwrap_or_else(|| "never".into()),
                     health.next_sync_at.to_rfc3339(),
+                    health.pages_synced,
+                    if health.backfill_in_progress {
+                        "in_progress"
+                    } else if health.backfill_completed_at.is_some() {
+                        "complete"
+                    } else {
+                        "none"
+                    },
                     health.credential_configured,
                     health.credential_scopes,
                     connector.manifest.provider,
@@ -990,6 +1089,42 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                 if let Some(error) = health.last_error {
                     println!("  last_error={error}");
                 }
+            }
+        }
+        Command::ConnectorActionPropose {
+            intent_id,
+            connector_id,
+            capability,
+            target,
+            input,
+            idempotency_key,
+        } => {
+            let input = serde_json::from_str(&input).map_err(|error| {
+                else_api::ApiError::Conflict(format!("action --input must be JSON: {error}"))
+            })?;
+            let action = runtime.propose_connector_action(
+                &IntentId::from(intent_id),
+                &else_protocol::ids::ConnectorId::from(connector_id),
+                &capability,
+                &target,
+                input,
+                idempotency_key,
+            )?;
+            print_connector_action(&action);
+        }
+        Command::ConnectorActionExecute {
+            intent_id,
+            action_id,
+        } => {
+            let action = runtime.execute_connector_action(
+                &IntentId::from(intent_id),
+                &else_protocol::ids::ConnectorActionId::from(action_id),
+            )?;
+            print_connector_action(&action);
+        }
+        Command::ConnectorActions { intent_id } => {
+            for action in runtime.connector_actions(&IntentId::from(intent_id))? {
+                print_connector_action(&action);
             }
         }
         Command::ConnectorCredentialRevoke {
@@ -1008,6 +1143,40 @@ fn dispatch(cli: Cli) -> else_api::Result<()> {
                     .revoked_at
                     .map(|value| value.to_rfc3339())
                     .unwrap_or_default()
+            );
+        }
+        Command::ConnectorCredentialSet {
+            intent_id,
+            connector_id,
+            token_env,
+            token_keychain_service,
+        } => {
+            let intent_id = IntentId::from(intent_id);
+            let connector_id = else_protocol::ids::ConnectorId::from(connector_id);
+            let connector = runtime
+                .projection(&intent_id)?
+                .connectors
+                .get(&connector_id)
+                .cloned()
+                .ok_or_else(|| else_api::ApiError::NotFound(format!("connector {connector_id}")))?;
+            let access_token = if let Some(service) = token_keychain_service {
+                read_keychain_secret(&service)?
+            } else {
+                read_environment_secret(token_env.as_deref().unwrap_or("NOTION_TOKEN"))?
+            };
+            let credential =
+                connector_credential_from_access_token(&runtime, &connector.adapter, access_token)?;
+            let metadata =
+                runtime.attach_connector_credential(&intent_id, &connector_id, credential)?;
+            println!(
+                "credential updated: {} auth={:?} scopes={:?} expires_at={}",
+                metadata.reference,
+                metadata.auth_mode,
+                metadata.scopes,
+                metadata
+                    .expires_at
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_else(|| "none".into())
             );
         }
         Command::ConnectorAdapters => {
@@ -1318,6 +1487,31 @@ fn print_world_item(item: &else_protocol::world::WorldItem) {
     );
 }
 
+fn print_connector_action(action: &else_protocol::connector::ConnectorAction) {
+    println!(
+        "{} connector={} capability={} target={} status={:?} effect={:?} attention={} outcome={}",
+        action.id,
+        action.connector_id,
+        action.capability,
+        action.target,
+        action.status,
+        action.effect,
+        action
+            .attention_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "none".into()),
+        action
+            .outcome
+            .as_ref()
+            .map(|outcome| format!("{:?}/{:?}", outcome.status, outcome.effect))
+            .unwrap_or_else(|| "none".into())
+    );
+    if let Some(error) = &action.last_error {
+        println!("  error={error}");
+    }
+}
+
 fn parse_intent_origin(origin: &str) -> else_protocol::connector::IntentOriginKind {
     use else_protocol::connector::IntentOriginKind;
     match origin {
@@ -1328,6 +1522,114 @@ fn parse_intent_origin(origin: &str) -> else_protocol::connector::IntentOriginKi
         "system_recovery" => IntentOriginKind::SystemRecovery,
         _ => IntentOriginKind::InferredNeed,
     }
+}
+
+fn notion_source_url(database: Option<&str>) -> else_api::Result<String> {
+    let Some(database) = database.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok("https://api.notion.com/v1/search".into());
+    };
+    let without_query = database
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(database)
+        .trim_end_matches('/');
+    let path_segment = without_query.rsplit('/').next().unwrap_or(without_query);
+    let compact = if path_segment.len() == 36
+        && path_segment
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || character == '-')
+    {
+        path_segment.replace('-', "")
+    } else if path_segment.len() == 32
+        && path_segment
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        path_segment.to_string()
+    } else {
+        path_segment
+            .rsplit('-')
+            .next()
+            .filter(|candidate| {
+                candidate.len() == 32
+                    && candidate
+                        .chars()
+                        .all(|character| character.is_ascii_hexdigit())
+            })
+            .map(str::to_string)
+            .ok_or_else(|| {
+                else_api::ApiError::Conflict(format!(
+                    "could not find a Notion Database ID in {database}"
+                ))
+            })?
+    };
+    Ok(format!(
+        "https://api.notion.com/v1/databases/{compact}/query"
+    ))
+}
+
+fn read_environment_secret(name: &str) -> else_api::Result<String> {
+    let value = std::env::var(name).map_err(|_| {
+        else_api::ApiError::Conflict(format!("environment variable {name} is not set"))
+    })?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(else_api::ApiError::Conflict(format!(
+            "environment variable {name} is empty"
+        )));
+    }
+    Ok(value)
+}
+
+fn read_keychain_secret(service: &str) -> else_api::Result<String> {
+    let output = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", service, "-w"])
+        .output()
+        .map_err(|error| {
+            else_api::ApiError::Conflict(format!("cannot invoke macOS security: {error}"))
+        })?;
+    if !output.status.success() {
+        return Err(else_api::ApiError::Unauthorized(format!(
+            "Keychain service {service} was not found or access was denied"
+        )));
+    }
+    let value = String::from_utf8(output.stdout)
+        .map_err(|_| else_api::ApiError::Conflict("Keychain token is not UTF-8".into()))?
+        .trim()
+        .to_string();
+    if value.is_empty() {
+        return Err(else_api::ApiError::Conflict(format!(
+            "Keychain service {service} is empty"
+        )));
+    }
+    Ok(value)
+}
+
+fn connector_credential_from_access_token(
+    runtime: &Runtime,
+    adapter_id: &str,
+    access_token: String,
+) -> else_api::Result<else_protocol::connector::ConnectorCredential> {
+    use else_protocol::connector::{ConnectorAuthMode, ConnectorCredential};
+
+    let manifest = runtime
+        .connector_manifests()
+        .into_iter()
+        .find(|manifest| manifest.adapter == adapter_id)
+        .ok_or_else(|| else_api::ApiError::NotFound(format!("connector adapter {adapter_id}")))?;
+    if manifest.auth_mode == ConnectorAuthMode::None {
+        return Err(else_api::ApiError::Conflict(format!(
+            "connector adapter {adapter_id} does not accept credentials"
+        )));
+    }
+    Ok(ConnectorCredential {
+        access_token,
+        refresh_token: None,
+        token_type: "bearer".into(),
+        scopes: manifest.scopes,
+        expires_at: None,
+        refresh: None,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1368,14 +1670,7 @@ fn build_connector_credential(
             "connector adapter {adapter_id} does not accept credentials"
         )));
     }
-    let access_token = std::env::var(&token_env).map_err(|_| {
-        else_api::ApiError::Conflict(format!("environment variable {token_env} is not set"))
-    })?;
-    if access_token.trim().is_empty() {
-        return Err(else_api::ApiError::Conflict(format!(
-            "environment variable {token_env} is empty"
-        )));
-    }
+    let access_token = read_environment_secret(&token_env)?;
     let scopes = if credential_scopes.is_empty() {
         manifest.scopes
     } else {
@@ -1640,5 +1935,34 @@ fn print_plan(projection: &else_ledger::IntentProjection) {
             );
             println!("  {}", impact.explanation);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notion_without_database_uses_search_endpoint() {
+        assert_eq!(
+            notion_source_url(None).unwrap(),
+            "https://api.notion.com/v1/search"
+        );
+    }
+
+    #[test]
+    fn notion_database_url_is_normalized_to_query_endpoint() {
+        let id = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            notion_source_url(Some(&format!(
+                "https://www.notion.so/workspace/Projects-{id}?v=123"
+            )))
+            .unwrap(),
+            format!("https://api.notion.com/v1/databases/{id}/query")
+        );
+        assert_eq!(
+            notion_source_url(Some(id)).unwrap(),
+            format!("https://api.notion.com/v1/databases/{id}/query")
+        );
     }
 }

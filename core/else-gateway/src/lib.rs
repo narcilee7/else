@@ -14,7 +14,7 @@ pub mod tool;
 pub use model::{
     GenAiProvider, MockProvider, ModelGateway, ModelProvider, ModelRequest, ModelResponse,
 };
-pub use tool::ToolGateway;
+pub use tool::{ExternalActionExecutor, ToolGateway};
 
 use else_ledger::Ledger;
 use else_protocol::event::EventPayload;

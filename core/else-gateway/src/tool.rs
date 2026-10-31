@@ -11,6 +11,7 @@ use else_ledger::{Ledger, Projection};
 use else_protocol::attention::{AttentionKind, AttentionRequest, DecisionOption, ExpectedLoss};
 use else_protocol::capability::{
     CapabilityAdapter, CapabilityKind, CapabilityManifest, CapabilityRegistration,
+    ExternalActionBinding,
 };
 use else_protocol::effect::{EffectConclusion, SideEffectKind, ToolCall, ToolOutcome, ToolStatus};
 use else_protocol::event::{Actor, EventPayload};
@@ -25,6 +26,12 @@ use crate::{ensure_not_fenced, ExecContext, GatewayError, Result};
 pub struct ToolGateway<'a> {
     ledger: &'a Ledger,
     workspace: PathBuf,
+    external_executor: Option<&'a dyn ExternalActionExecutor>,
+}
+
+/// Runtime 注入的 Provider 写回执行器。Gateway 只负责授权、幂等、围栏与落账。
+pub trait ExternalActionExecutor {
+    fn execute_external(&self, binding: &ExternalActionBinding, input: &Value) -> ToolOutcome;
 }
 
 #[derive(Default)]
@@ -82,7 +89,16 @@ pub fn builtin_capabilities() -> Vec<CapabilityRegistration> {
 
 impl<'a> ToolGateway<'a> {
     pub fn new(ledger: &'a Ledger, workspace: PathBuf) -> Self {
-        Self { ledger, workspace }
+        Self {
+            ledger,
+            workspace,
+            external_executor: None,
+        }
+    }
+
+    pub fn with_external_executor(mut self, executor: &'a dyn ExternalActionExecutor) -> Self {
+        self.external_executor = Some(executor);
+        self
     }
 
     pub fn workspace(&self) -> &Path {
@@ -287,6 +303,14 @@ impl<'a> ToolGateway<'a> {
 
     /// 实际执行。工具失败是正常结果（Failed outcome），不是系统错误。
     fn run_tool(&self, call: &ToolCall, capability: &CapabilityRegistration) -> ToolOutcome {
+        if let CapabilityAdapter::ExternalAction(binding) = &capability.adapter {
+            return self
+                .external_executor
+                .map(|executor| executor.execute_external(binding, &call.input))
+                .unwrap_or_else(|| {
+                    failed(json!({"error": "external action executor is unavailable"}))
+                });
+        }
         let result = match &capability.adapter {
             CapabilityAdapter::Builtin => match call.tool.as_str() {
                 "fs.read" => self.fs_read(&call.input),
@@ -307,6 +331,7 @@ impl<'a> ToolGateway<'a> {
                 EffectConclusion::NoEffect,
             )),
             CapabilityAdapter::Mcp(binding) => self.mcp_tool(binding, &call.input),
+            CapabilityAdapter::ExternalAction(_) => unreachable!("handled above"),
         };
         match result {
             Ok((output, effect)) => ToolOutcome {

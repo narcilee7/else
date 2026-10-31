@@ -4,6 +4,7 @@
 //! W2 以库接口形式提供（进程内调用）；daemon 与远程 IPC 复用同一接口。
 
 mod abort;
+mod action;
 mod attention;
 mod binding;
 mod capability;

@@ -12,12 +12,13 @@ use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, AgentBindingState, AgentTransport, CapabilityRegistration,
 };
 use else_protocol::connector::{
-    ConnectorCredential, ConnectorCredentialMetadata, ConnectorHealthReport, ConnectorManifest,
-    ConnectorPolicy, ConnectorRegistration, ConnectorSyncResult, IntentCandidate,
+    ConnectorAction, ConnectorCredential, ConnectorCredentialMetadata, ConnectorHealthReport,
+    ConnectorManifest, ConnectorPolicy, ConnectorRegistration, ConnectorSyncResult,
+    IntentCandidate,
 };
 use else_protocol::ids::{
-    AgentBindingId, AgentId, AttentionId, CapabilityId, ConnectorId, IntentCandidateId, IntentId,
-    RunId, ScopeId, TimerId,
+    AgentBindingId, AgentId, AttentionId, CapabilityId, ConnectorActionId, ConnectorId,
+    IntentCandidateId, IntentId, RunId, ScopeId, TimerId,
 };
 use else_protocol::intent::IntentSpec;
 use else_protocol::plan::Plan;
@@ -134,6 +135,24 @@ enum Command {
         intent_id: IntentId,
         connector_id: ConnectorId,
         reply: Reply<ConnectorHealthReport>,
+    },
+    ProposeConnectorAction {
+        intent_id: IntentId,
+        connector_id: ConnectorId,
+        capability: String,
+        target: String,
+        input: serde_json::Value,
+        idempotency_key: Option<String>,
+        reply: Reply<ConnectorAction>,
+    },
+    ExecuteConnectorAction {
+        intent_id: IntentId,
+        action_id: ConnectorActionId,
+        reply: Reply<ConnectorAction>,
+    },
+    ConnectorActions {
+        intent_id: IntentId,
+        reply: Reply<Vec<ConnectorAction>>,
     },
     ConnectorAdapters {
         reply: Reply<Vec<ConnectorManifest>>,
@@ -495,6 +514,45 @@ impl RuntimeHandle {
         self.request(|reply| Command::ConnectorHealth {
             intent_id: intent_id.clone(),
             connector_id: connector_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn propose_connector_action(
+        &self,
+        intent_id: &IntentId,
+        connector_id: &ConnectorId,
+        capability: &str,
+        target: &str,
+        input: serde_json::Value,
+        idempotency_key: Option<String>,
+    ) -> Result<ConnectorAction> {
+        self.request(|reply| Command::ProposeConnectorAction {
+            intent_id: intent_id.clone(),
+            connector_id: connector_id.clone(),
+            capability: capability.into(),
+            target: target.into(),
+            input,
+            idempotency_key,
+            reply,
+        })
+    }
+
+    pub fn execute_connector_action(
+        &self,
+        intent_id: &IntentId,
+        action_id: &ConnectorActionId,
+    ) -> Result<ConnectorAction> {
+        self.request(|reply| Command::ExecuteConnectorAction {
+            intent_id: intent_id.clone(),
+            action_id: action_id.clone(),
+            reply,
+        })
+    }
+
+    pub fn connector_actions(&self, intent_id: &IntentId) -> Result<Vec<ConnectorAction>> {
+        self.request(|reply| Command::ConnectorActions {
+            intent_id: intent_id.clone(),
             reply,
         })
     }
@@ -964,6 +1022,34 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.connector_health(&intent_id, &connector_id));
+        }
+        Command::ProposeConnectorAction {
+            intent_id,
+            connector_id,
+            capability,
+            target,
+            input,
+            idempotency_key,
+            reply,
+        } => {
+            let _ = reply.send(runtime.propose_connector_action(
+                &intent_id,
+                &connector_id,
+                &capability,
+                &target,
+                input,
+                idempotency_key,
+            ));
+        }
+        Command::ExecuteConnectorAction {
+            intent_id,
+            action_id,
+            reply,
+        } => {
+            let _ = reply.send(runtime.execute_connector_action(&intent_id, &action_id));
+        }
+        Command::ConnectorActions { intent_id, reply } => {
+            let _ = reply.send(runtime.connector_actions(&intent_id));
         }
         Command::ConnectorAdapters { reply } => {
             let _ = reply.send(Ok(runtime.connector_manifests()));

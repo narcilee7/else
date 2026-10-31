@@ -3,6 +3,10 @@
 use std::collections::{BTreeSet, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
+use else_protocol::capability::{
+    CapabilityAdapter, CapabilityKind, CapabilityManifest, CapabilityRegistration,
+    ExternalActionBinding,
+};
 use else_protocol::connector::{
     ConnectorAuthMode, ConnectorCredential, ConnectorCredentialMetadata, ConnectorHealthReport,
     ConnectorManifest, ConnectorObservation, ConnectorPolicy, ConnectorRegistration,
@@ -13,7 +17,7 @@ use else_protocol::connector::{
 };
 use else_protocol::effect::SideEffectKind;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
-use else_protocol::ids::{ConnectorId, IntentId};
+use else_protocol::ids::{CapabilityId, ConnectorId, IntentId};
 use else_protocol::intent::{AttentionPolicy, Authority, Criterion};
 use serde_json::Value;
 
@@ -142,11 +146,57 @@ impl Runtime {
             }
         }
         appended?;
+        self.register_connector_write_capabilities(intent_id, &connector)?;
         Ok(connector)
     }
 
     pub fn connector_manifests(&self) -> Vec<ConnectorManifest> {
         self.connector_adapters.manifests()
+    }
+
+    pub(crate) fn register_connector_write_capabilities(
+        &self,
+        intent_id: &IntentId,
+        connector: &ConnectorRegistration,
+    ) -> Result<()> {
+        let projection = self.projection(intent_id)?;
+        let (root, generation, revision) = self.kernel_context(intent_id)?;
+        for operation in &connector.manifest.write_capabilities {
+            let id = CapabilityId::from(format!("connector:{}:{operation}", connector.id));
+            if projection.capabilities.contains_key(&id) {
+                continue;
+            }
+            self.ledger.append(&EventEnvelope::new(
+                intent_id.clone(),
+                root.clone(),
+                generation,
+                revision,
+                Actor::System,
+                EventPayload::CapabilityRegistered {
+                    capability: CapabilityRegistration {
+                        manifest: CapabilityManifest {
+                            id,
+                            name: operation.clone(),
+                            description: format!(
+                                "{} write capability via Tool Gateway",
+                                connector.manifest.provider
+                            ),
+                            kind: CapabilityKind::ExternalAction,
+                            // Provider Adapter must return a more precise conclusion;
+                            // authorization is conservative until it does.
+                            effect: SideEffectKind::Unknown,
+                            idempotency_required: true,
+                            input_schema: serde_json::json!({"type":"object"}),
+                        },
+                        adapter: CapabilityAdapter::ExternalAction(ExternalActionBinding {
+                            connector_id: connector.id.clone(),
+                            operation: operation.clone(),
+                        }),
+                    },
+                },
+            ))?;
+        }
+        Ok(())
     }
 
     pub fn attach_connector_credential(
@@ -271,6 +321,14 @@ impl Runtime {
             health = else_protocol::connector::ConnectorHealth::Error;
             last_error = Some("missing or revoked connector credential".into());
         }
+        let sync_cursor = self
+            .connector_adapters
+            .get(&connector.adapter)
+            .and_then(|adapter| {
+                projection
+                    .connector_cursors
+                    .get(&(connector.id.clone(), adapter.pull_stream_id().into()))
+            });
         Ok(ConnectorHealthReport {
             connector_id: connector.id,
             provider: connector.manifest.provider,
@@ -285,6 +343,10 @@ impl Runtime {
             consecutive_failures: status.consecutive_failures,
             last_error,
             next_sync_at: status.next_sync_at,
+            backfill_in_progress: sync_cursor.is_some_and(|cursor| cursor.continuation.is_some()),
+            backfill_started_at: sync_cursor.and_then(|cursor| cursor.backfill_started_at),
+            backfill_completed_at: sync_cursor.and_then(|cursor| cursor.backfill_completed_at),
+            pages_synced: sync_cursor.map(|cursor| cursor.pages_synced).unwrap_or(0),
             checked_at: Utc::now(),
         })
     }
@@ -350,8 +412,13 @@ impl Runtime {
         let started_at = Utc::now();
         let result = self.sync_connector_inner(intent_id, connector_id, started_at);
         match &result {
-            Ok(_) => {
-                let _ = self.record_connector_sync_success(intent_id, connector_id, started_at);
+            Ok(sync_result) => {
+                let _ = self.record_connector_sync_success(
+                    intent_id,
+                    connector_id,
+                    started_at,
+                    sync_result.has_more,
+                );
             }
             Err(error) => {
                 let retry_after_seconds = match error {
@@ -372,7 +439,7 @@ impl Runtime {
         result
     }
 
-    fn connector_credential(
+    pub(crate) fn connector_credential(
         &self,
         connector: &ConnectorRegistration,
     ) -> Result<Option<ConnectorCredential>> {
@@ -409,6 +476,7 @@ impl Runtime {
         intent_id: &IntentId,
         connector_id: &ConnectorId,
         started_at: DateTime<Utc>,
+        has_more: bool,
     ) -> Result<()> {
         let projection = self.projection(intent_id)?;
         let connector = projection
@@ -422,7 +490,12 @@ impl Runtime {
             last_success_at: Some(now),
             consecutive_failures: 0,
             last_error: None,
-            next_sync_at: now + Duration::seconds(connector.sync_interval_seconds as i64),
+            next_sync_at: now
+                + Duration::seconds(if has_more {
+                    1
+                } else {
+                    connector.sync_interval_seconds as i64
+                }),
         };
         self.append_connector_sync_status(intent_id, status)
     }
@@ -483,8 +556,8 @@ impl Runtime {
         connector_id: &ConnectorId,
         started_at: DateTime<Utc>,
     ) -> Result<ConnectorSyncResult> {
-        let projection = self.projection(intent_id)?;
-        let connector = projection
+        let initial_projection = self.projection(intent_id)?;
+        let connector = initial_projection
             .connectors
             .get(connector_id)
             .cloned()
@@ -501,50 +574,100 @@ impl Runtime {
                 ApiError::NotFound(format!("connector adapter {}", connector.adapter))
             })?;
         let pull_stream_id = adapter.pull_stream_id();
-        let previous_cursor = projection
+        let mut cursor = initial_projection
             .connector_cursors
-            .get(&(connector.id.clone(), pull_stream_id.into()));
+            .get(&(connector.id.clone(), pull_stream_id.into()))
+            .cloned();
         let credential = self.connector_credential(&connector)?;
-        let page = adapter
-            .pull(
-                connector.id.clone(),
-                &connector.source,
-                previous_cursor,
-                started_at,
-                credential.as_ref(),
-            )
-            .map_err(ApiError::from)?;
-        if page.stream_id != pull_stream_id {
-            return Err(ApiError::Conflict(format!(
-                "adapter {} returned stream {} instead of {pull_stream_id}",
-                connector.adapter, page.stream_id
-            )));
-        }
-        let mut result = ConnectorSyncResult {
-            observed: page.observations.len() as u64,
-            cursor: Some(page.opaque_cursor.clone()),
-            ..ConnectorSyncResult::default()
-        };
-        let cursor_key = (connector.id.clone(), page.stream_id.clone());
-        let unchanged = projection
-            .connector_cursors
-            .get(&cursor_key)
-            .is_some_and(|cursor| cursor.opaque_cursor == page.opaque_cursor);
-        if unchanged {
-            result.skipped = page.observations.len() as u64;
-        } else {
+        let mut result = ConnectorSyncResult::default();
+        const MAX_PAGES_PER_SYNC: usize = 100;
+        let mut has_more = false;
+        let mut seen_continuations = HashSet::new();
+        for _ in 0..MAX_PAGES_PER_SYNC {
+            let page = adapter
+                .pull(
+                    connector.id.clone(),
+                    &connector.source,
+                    cursor.as_ref(),
+                    started_at,
+                    credential.as_ref(),
+                )
+                .map_err(ApiError::from)?;
+            if page.stream_id != pull_stream_id {
+                return Err(ApiError::Conflict(format!(
+                    "adapter {} returned stream {} instead of {pull_stream_id}",
+                    connector.adapter, page.stream_id
+                )));
+            }
+            if let Some(continuation) = &page.continuation {
+                if !seen_continuations.insert(continuation.clone()) {
+                    return Err(ApiError::Conflict(format!(
+                        "connector {} returned a repeated continuation {continuation}",
+                        connector.adapter
+                    )));
+                }
+            }
+            let projection = self.projection(intent_id)?;
+            result.observed = result
+                .observed
+                .saturating_add(page.observations.len() as u64);
+            let unchanged = cursor.as_ref().is_some_and(|cursor| {
+                cursor.opaque_cursor == page.opaque_cursor
+                    && cursor.continuation == page.continuation
+            });
+            if unchanged {
+                result.skipped = result
+                    .skipped
+                    .saturating_add(page.observations.len() as u64);
+                if let Some(cursor) = &cursor {
+                    result.cursor = Some(cursor.opaque_cursor.clone());
+                    result.pages_synced = cursor.pages_synced;
+                    result.backfill_complete = cursor.backfill_completed_at.is_some();
+                }
+                has_more = page.continuation.is_some();
+                break;
+            }
+            let page_now = Utc::now();
+            let next_cursor = SyncCursor {
+                connector_id: connector.id.clone(),
+                stream_id: page.stream_id.clone(),
+                opaque_cursor: page.opaque_cursor.clone(),
+                overlap_until: page.overlap_until,
+                checkpointed_at: page_now,
+                continuation: page.continuation.clone(),
+                pages_synced: cursor
+                    .as_ref()
+                    .map(|cursor| cursor.pages_synced)
+                    .unwrap_or(0)
+                    .saturating_add(1),
+                backfill_started_at: cursor
+                    .as_ref()
+                    .and_then(|cursor| cursor.backfill_started_at)
+                    .or(Some(page_now)),
+                backfill_completed_at: if page.continuation.is_some() {
+                    None
+                } else {
+                    cursor
+                        .as_ref()
+                        .and_then(|cursor| cursor.backfill_completed_at)
+                        .or(Some(page_now))
+                },
+            };
             let (inserted, skipped) =
                 self.ingest_observations(intent_id, &projection, &page.observations)?;
-            result.inserted = inserted;
-            result.skipped = skipped;
-            self.record_connector_cursor(
-                intent_id,
-                &connector.id,
-                &page.stream_id,
-                &page.opaque_cursor,
-                page.overlap_until,
-            )?;
+            result.inserted = result.inserted.saturating_add(inserted);
+            result.skipped = result.skipped.saturating_add(skipped);
+            result.cursor = Some(page.opaque_cursor);
+            result.pages_synced = next_cursor.pages_synced;
+            result.backfill_complete = next_cursor.backfill_completed_at.is_some();
+            self.record_connector_cursor(intent_id, next_cursor.clone())?;
+            has_more = next_cursor.continuation.is_some();
+            cursor = Some(next_cursor);
+            if !has_more {
+                break;
+            }
         }
+        result.has_more = has_more;
         let (candidates, auto_accepted) = self.resolve_signals_internal(intent_id)?;
         result.candidates_proposed = candidates.len() as u64;
         result.auto_accepted = auto_accepted;
@@ -616,7 +739,8 @@ impl Runtime {
             self.ingest_connector_webhook_inner(intent_id, connector_id, session_token, payload);
         match &result {
             Ok(_) => {
-                let _ = self.record_connector_sync_success(intent_id, connector_id, started_at);
+                let _ =
+                    self.record_connector_sync_success(intent_id, connector_id, started_at, false);
             }
             Err(error) => {
                 let _ = self.record_connector_sync_failure(
@@ -658,11 +782,22 @@ impl Runtime {
         let stream_id = adapter.webhook_stream_id().ok_or_else(|| {
             ApiError::Conflict(format!("connector {connector_id} does not accept webhooks"))
         })?;
+        let credential = self.connector_credential(&connector)?;
+        let hydrated_payload = adapter
+            .hydrate_webhook(
+                &connector.id,
+                &connector.source,
+                &payload,
+                credential.as_ref(),
+            )
+            .map_err(ApiError::from)?;
+        let hydrated = hydrated_payload != payload;
         let observations = adapter
-            .normalize_webhook(&connector.id, &payload)
-            .map_err(|error| ApiError::NotFound(error.to_string()))?;
+            .normalize_webhook(&connector.id, &hydrated_payload)
+            .map_err(ApiError::from)?;
         let mut result = ConnectorSyncResult {
             observed: observations.len() as u64,
+            hydrated,
             ..ConnectorSyncResult::default()
         };
         let (inserted, skipped) =
@@ -676,7 +811,31 @@ impl Runtime {
             .get(&(connector.id.clone(), stream_id.into()))
             .is_some_and(|cursor| cursor.opaque_cursor == cursor_value);
         if !unchanged {
-            self.record_connector_cursor(intent_id, &connector.id, stream_id, &cursor_value, None)?;
+            let previous = projection
+                .connector_cursors
+                .get(&(connector.id.clone(), stream_id.into()));
+            let now = Utc::now();
+            self.record_connector_cursor(
+                intent_id,
+                SyncCursor {
+                    connector_id: connector.id.clone(),
+                    stream_id: stream_id.into(),
+                    opaque_cursor: cursor_value,
+                    overlap_until: None,
+                    checkpointed_at: now,
+                    continuation: None,
+                    pages_synced: previous
+                        .map(|cursor| cursor.pages_synced)
+                        .unwrap_or(0)
+                        .saturating_add(1),
+                    backfill_started_at: previous
+                        .and_then(|cursor| cursor.backfill_started_at)
+                        .or(Some(now)),
+                    backfill_completed_at: previous
+                        .and_then(|cursor| cursor.backfill_completed_at)
+                        .or(Some(now)),
+                },
+            )?;
         }
         let (candidates, auto_accepted) = self.resolve_signals_internal(intent_id)?;
         result.candidates_proposed = candidates.len() as u64;
@@ -757,18 +916,8 @@ impl Runtime {
     fn record_connector_cursor(
         &self,
         intent_id: &IntentId,
-        connector_id: &ConnectorId,
-        stream_id: &str,
-        opaque_cursor: &str,
-        overlap_until: Option<DateTime<Utc>>,
+        cursor: SyncCursor,
     ) -> Result<SyncCursor> {
-        let cursor = SyncCursor {
-            connector_id: connector_id.clone(),
-            stream_id: stream_id.into(),
-            opaque_cursor: opaque_cursor.into(),
-            overlap_until,
-            checkpointed_at: Utc::now(),
-        };
         let (root, generation, revision) = self.kernel_context(intent_id)?;
         self.ledger.append(&EventEnvelope::new(
             intent_id.clone(),

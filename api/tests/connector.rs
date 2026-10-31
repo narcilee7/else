@@ -727,6 +727,7 @@ impl ConnectorAdapter for FixtureAdapter {
             stream_id: self.pull_stream_id().into(),
             opaque_cursor: "fixture:1".into(),
             overlap_until: None,
+            continuation: None,
             observations: vec![ConnectorObservation {
                 connector_id,
                 entity_id: "fixture-1".into(),
@@ -734,6 +735,90 @@ impl ConnectorAdapter for FixtureAdapter {
                 dedupe_key: "fixture:item:1".into(),
                 source: "fixture".into(),
                 summary: "外部承诺".into(),
+                occurred_at: now,
+                valid_until: None,
+                entity_kind: "fixture_item".into(),
+                canonical_url: None,
+                object_kind: ObjectKind::Other,
+                change: ObservationChange::Upsert,
+                actor: None,
+                attributes: serde_json::json!({}),
+                evidence_ref: None,
+                sensitivity: "internal".into(),
+                source_trust: "test".into(),
+                correlations: vec![],
+            }],
+        })
+    }
+}
+
+struct PaginatedFixtureAdapter;
+
+impl ConnectorAdapter for PaginatedFixtureAdapter {
+    fn id(&self) -> &'static str {
+        "fixture.paged"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["paged"]
+    }
+
+    fn manifest(&self) -> ConnectorManifest {
+        ConnectorManifest {
+            adapter: self.id().into(),
+            provider: "fixture".into(),
+            auth_mode: ConnectorAuthMode::None,
+            scopes: vec![],
+            read_capabilities: vec!["fixture.item.read".into()],
+            write_capabilities: vec![],
+            sync_modes: vec![ConnectorSyncMode::Pull],
+            data_sensitivity: "internal".into(),
+            retention_policy: "metadata_only".into(),
+            health: ConnectorHealth::Healthy,
+        }
+    }
+
+    fn pull_stream_id(&self) -> &'static str {
+        "fixture-paged-items"
+    }
+
+    fn pull(
+        &self,
+        connector_id: else_protocol::ids::ConnectorId,
+        source: &str,
+        cursor: Option<&SyncCursor>,
+        now: DateTime<Utc>,
+        _credential: Option<&else_protocol::connector::ConnectorCredential>,
+    ) -> else_connector::Result<ConnectorPullPage> {
+        let continuation = cursor.and_then(|cursor| cursor.continuation.as_deref());
+        let (entity, page, next) = match continuation {
+            None => ("page-1", 1, Some("page-2")),
+            Some("page-2") => {
+                if std::fs::read_to_string(source).unwrap().trim() != "ready" {
+                    return Err(else_connector::ConnectorError::Http(
+                        "simulated page two outage".into(),
+                    ));
+                }
+                ("page-2", 2, None)
+            }
+            Some(other) => {
+                return Err(else_connector::ConnectorError::Http(format!(
+                    "unexpected continuation {other}"
+                )))
+            }
+        };
+        Ok(ConnectorPullPage {
+            stream_id: self.pull_stream_id().into(),
+            opaque_cursor: format!("fixture:page:{page}"),
+            overlap_until: None,
+            continuation: next.map(str::to_string),
+            observations: vec![ConnectorObservation {
+                connector_id,
+                entity_id: entity.into(),
+                source_version: "1".into(),
+                dedupe_key: format!("fixture:{entity}:1"),
+                source: "fixture".into(),
+                summary: format!("分页事项 {entity}"),
                 occurred_at: now,
                 valid_until: None,
                 entity_kind: "fixture_item".into(),
@@ -803,6 +888,93 @@ fn injected_adapter_and_interpreter_do_not_require_runtime_changes() {
         projection.intent_candidates.values().next().unwrap().origin,
         IntentOriginKind::Commitment
     );
+}
+
+#[test]
+fn paginated_backfill_resumes_from_continuation_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("page-state");
+    std::fs::write(&source, "fail").unwrap();
+    let open_runtime = || {
+        Runtime::open_with_connector_runtime(
+            dir.path(),
+            AdapterRegistry::new(vec![Box::new(PaginatedFixtureAdapter)]),
+            SignalInterpreter::builtin(),
+        )
+        .unwrap()
+    };
+    let runtime = open_runtime();
+    let spec = runtime.create_intent("分页同步外部事项", None).unwrap();
+    let connector = runtime
+        .register_connector_adapter(&spec.id, "paged", source.to_str().unwrap(), "fixture.paged")
+        .unwrap();
+
+    let interrupted = runtime.sync_connector(&spec.id, &connector.id).unwrap_err();
+    assert!(interrupted
+        .to_string()
+        .contains("simulated page two outage"));
+    let projection = runtime.projection(&spec.id).unwrap();
+    let cursor = projection
+        .connector_cursors
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    assert_eq!(cursor.continuation.as_deref(), Some("page-2"));
+    assert_eq!(projection.world_signals.len(), 1);
+    let health = runtime.connector_health(&spec.id, &connector.id).unwrap();
+    assert!(health.backfill_in_progress);
+    assert_eq!(health.health, ConnectorHealth::Degraded);
+
+    drop(runtime);
+    std::fs::write(&source, "ready").unwrap();
+    let reopened = open_runtime();
+    let completed = reopened.sync_connector(&spec.id, &connector.id).unwrap();
+    assert_eq!(completed.inserted, 1);
+    assert!(completed.backfill_complete);
+    assert!(!completed.has_more);
+    let projection = reopened.projection(&spec.id).unwrap();
+    assert_eq!(projection.world_signals.len(), 2);
+    let cursor = projection.connector_cursors.values().next().unwrap();
+    assert!(cursor.continuation.is_none());
+    assert!(cursor.backfill_completed_at.is_some());
+    assert_eq!(
+        reopened
+            .connector_health(&spec.id, &connector.id)
+            .unwrap()
+            .health,
+        ConnectorHealth::Healthy
+    );
+}
+
+#[test]
+fn linear_webhook_id_only_hydrates_from_connector_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path()).unwrap();
+    let spec = runtime.create_intent("处理 Linear 更新", None).unwrap();
+    let source = dir.path().join("linear.json");
+    std::fs::write(&source, linear_payload().to_string()).unwrap();
+    let connector = runtime
+        .register_linear_connector(&spec.id, "linear", source.to_str().unwrap())
+        .unwrap();
+    let result = runtime
+        .ingest_connector_webhook(
+            &spec.id,
+            &connector.id,
+            connector.webhook_session.as_deref().unwrap(),
+            serde_json::json!({
+                "action": "update",
+                "type": "Issue",
+                "data": {"id": "issue-commit"}
+            }),
+        )
+        .unwrap();
+    assert!(result.hydrated);
+    assert_eq!(result.inserted, 1);
+    let projection = runtime.projection(&spec.id).unwrap();
+    let signal = projection.world_signals.values().next().unwrap();
+    assert_eq!(signal.entity_ref.external_id, "issue-commit");
+    assert!(signal.summary.contains("向客户交付评审材料"));
 }
 
 #[test]

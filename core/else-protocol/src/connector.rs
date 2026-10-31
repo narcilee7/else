@@ -3,8 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::effect::SideEffectKind;
-use crate::ids::{ConnectorId, IntentCandidateId, IntentId, WorldSignalId};
+use crate::effect::{SideEffectKind, ToolOutcome};
+use crate::ids::{ConnectorActionId, ConnectorId, IntentCandidateId, IntentId, WorldSignalId};
 use crate::intent::{AttentionPolicy, Authority, Criterion};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,7 +148,46 @@ pub struct ConnectorHealthReport {
     pub consecutive_failures: u32,
     pub last_error: Option<String>,
     pub next_sync_at: DateTime<Utc>,
+    #[serde(default)]
+    pub backfill_in_progress: bool,
+    #[serde(default)]
+    pub backfill_started_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub backfill_completed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub pages_synced: u64,
     pub checked_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorActionStatus {
+    Proposed,
+    NeedsApproval,
+    Executing,
+    Applied,
+    Failed,
+    Unknown,
+    Cancelled,
+}
+
+/// Provider 写回的持久动作。真实请求只能通过 Tool Gateway 执行；
+/// 记录中保存目标与参数，但不保存凭据。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectorAction {
+    pub id: ConnectorActionId,
+    pub connector_id: ConnectorId,
+    pub capability: String,
+    pub target: String,
+    pub input: serde_json::Value,
+    pub effect: SideEffectKind,
+    pub idempotency_key: String,
+    pub status: ConnectorActionStatus,
+    pub proposed_at: DateTime<Utc>,
+    pub attention_id: Option<crate::ids::AttentionId>,
+    pub tool_call_id: Option<crate::ids::ToolCallId>,
+    pub outcome: Option<ToolOutcome>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,6 +483,15 @@ pub struct SyncCursor {
     pub opaque_cursor: String,
     pub overlap_until: Option<DateTime<Utc>>,
     pub checkpointed_at: DateTime<Utc>,
+    /// Adapter 的不透明下一页 continuation；存在时表示 Backfill/分页尚未完成。
+    #[serde(default)]
+    pub continuation: Option<String>,
+    #[serde(default)]
+    pub pages_synced: u64,
+    #[serde(default)]
+    pub backfill_started_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub backfill_completed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -465,6 +513,9 @@ pub struct ConnectorPullPage {
     pub stream_id: String,
     pub opaque_cursor: String,
     pub overlap_until: Option<DateTime<Utc>>,
+    /// 有值表示 Runtime 应立即以该 continuation 拉取下一页。
+    #[serde(default)]
+    pub continuation: Option<String>,
     pub observations: Vec<ConnectorObservation>,
 }
 
@@ -496,6 +547,14 @@ pub struct ConnectorSyncResult {
     pub auto_accepted: u64,
     #[serde(default)]
     pub cursor: Option<String>,
+    #[serde(default)]
+    pub pages_synced: u64,
+    #[serde(default)]
+    pub has_more: bool,
+    #[serde(default)]
+    pub backfill_complete: bool,
+    #[serde(default)]
+    pub hydrated: bool,
 }
 
 fn default_sensitivity() -> String {

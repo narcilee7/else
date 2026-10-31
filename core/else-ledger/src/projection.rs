@@ -11,8 +11,8 @@ use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, CapabilityRegistration, McpServerRegistration,
 };
 use else_protocol::connector::{
-    ConnectorRegistration, ConnectorSyncStatus, IntentCandidate, SignalInterpretation,
-    SignalStatus, SyncCursor, WorldSignal,
+    ConnectorAction, ConnectorRegistration, ConnectorSyncStatus, IntentCandidate,
+    SignalInterpretation, SignalStatus, SyncCursor, WorldSignal,
 };
 use else_protocol::event::{Actor, EventPayload, ScopeState};
 use else_protocol::failure::ScopeFailure;
@@ -114,6 +114,7 @@ pub struct IntentProjection {
     pub dirty_mcp_servers: std::collections::BTreeSet<else_protocol::ids::McpServerId>,
     pub connectors: BTreeMap<else_protocol::ids::ConnectorId, ConnectorRegistration>,
     pub connector_sync_status: BTreeMap<else_protocol::ids::ConnectorId, ConnectorSyncStatus>,
+    pub connector_actions: BTreeMap<else_protocol::ids::ConnectorActionId, ConnectorAction>,
     pub connector_cursors: BTreeMap<(else_protocol::ids::ConnectorId, String), SyncCursor>,
     pub external_fact_keys: std::collections::BTreeSet<String>,
     pub world_signals: BTreeMap<else_protocol::ids::WorldSignalId, WorldSignal>,
@@ -280,6 +281,32 @@ impl Projection for IntentProjection {
             EventPayload::ConnectorSyncStatusChanged { status } => {
                 self.connector_sync_status
                     .insert(status.connector_id.clone(), status.clone());
+            }
+            EventPayload::ConnectorActionProposed { action } => {
+                self.connector_actions
+                    .insert(action.id.clone(), action.clone());
+            }
+            EventPayload::ConnectorActionStateChanged {
+                action_id,
+                status,
+                attention_id,
+                tool_call_id,
+                outcome,
+                error,
+            } => {
+                if let Some(action) = self.connector_actions.get_mut(action_id) {
+                    action.status = *status;
+                    if attention_id.is_some() {
+                        action.attention_id = attention_id.clone();
+                    }
+                    if tool_call_id.is_some() {
+                        action.tool_call_id = tool_call_id.clone();
+                    }
+                    if outcome.is_some() {
+                        action.outcome = outcome.clone();
+                    }
+                    action.last_error = error.clone();
+                }
             }
             EventPayload::ConnectorSyncCheckpointed { cursor } => {
                 self.connector_cursors.insert(

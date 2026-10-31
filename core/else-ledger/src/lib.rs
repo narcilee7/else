@@ -228,6 +228,8 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::ConnectorRegistered { .. } => "connector_registered",
         P::ConnectorCredentialUpdated { .. } => "connector_credential_updated",
         P::ConnectorSyncStatusChanged { .. } => "connector_sync_status_changed",
+        P::ConnectorActionProposed { .. } => "connector_action_proposed",
+        P::ConnectorActionStateChanged { .. } => "connector_action_state_changed",
         P::ConnectorSyncCheckpointed { .. } => "connector_sync_checkpointed",
         P::WorldItemResolved { .. } => "world_item_resolved",
         P::ExternalFactIngested { .. } => "external_fact_ingested",

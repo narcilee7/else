@@ -96,6 +96,38 @@ impl Runtime {
         Ok(lease)
     }
 
+    /// 外部写动作没有 Sandbox，但仍需要 API Rate Limit Lease 与 Tool 预算。
+    pub(crate) fn admit_external_action(&self, ctx: &ExecContext) -> Result<ResourceLease> {
+        let projection = self.projection(&ctx.spec.id)?;
+        ensure_capacity(
+            "tool_calls",
+            1,
+            projection.resource_budget.max_tool_calls,
+            projection.resource_usage.tool_calls,
+            "calls",
+        )?;
+        let now = Utc::now();
+        let lease = ResourceLease {
+            id: else_protocol::ids::LeaseId::new(),
+            scope_id: ctx.scope_id.clone(),
+            run_id: Some(ctx.run_id.clone()),
+            class: ResourceClass::ApiRateLimit,
+            quantity: 1,
+            unit: "call".into(),
+            generation: ctx.generation,
+            granted_at: Some(now),
+            expires_at: now + chrono::Duration::seconds(60),
+        };
+        ctx.record(
+            &self.ledger,
+            Actor::System,
+            EventPayload::LeaseGranted {
+                lease: lease.clone(),
+            },
+        )?;
+        Ok(lease)
+    }
+
     /// Sandbox 真正开始接管执行时落账；开始后崩溃会留下可恢复证据。
     pub(crate) fn start_sandbox(
         &self,

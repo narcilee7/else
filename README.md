@@ -34,7 +34,7 @@ Coordinating agents is becoming a job of its own: checking progress, re-explaini
 
 ## Status
 
-**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 145 Rust tests and 9 Swift tests passing on macOS.
+**MVP complete (no-scale cutline, 2026-10-30).** Single user, single machine, CLI-first. 153 Rust tests and 9 Swift tests passing on macOS.
 
 - **Kernel (MVP-0)**: durable root Scope identity, explicit Scope dependencies, artifact lineage across child workspaces, fair multi-Scope reconciliation ordered by creation and last execution, replayable external waits and ExternalEvent/Timer wakes that feed the next Context Snapshot, continuous `drive` loops, and a resident single-thread Runtime supervisor; event-sourced ledger on SQLite, Checkpoint → Fork → Rerun → Compare, Abort + Generation Fencing, Subagent delegation tree, Admission + Lease + Accounting, deny-by-default OS sandboxes (macOS Seatbelt verified on real hardware; Linux bubblewrap policy unit-tested, awaiting Linux CI).
 - **Context & Memory (MVP-1)**: Intent Resolution with revisions, three-tier memory (Working / Episodic / Semantic) with scoped promotion rules, Context Compiler producing minimal read-only snapshots per Planner / Executor / Verifier. Memory is never a source of authority.
@@ -73,10 +73,17 @@ else plan <intent-id>                    # current plan, evidence, and fact impa
 else calendar <intent-id> --source ./calendar.ics
 else linear <intent-id> --source ./linear.json
 else linear <intent-id> --source https://api.linear.app/graphql --token-env LINEAR_API_TOKEN
+else notion <intent-id> --database <database-id-or-url> --token-env NOTION_TOKEN
+else notion <intent-id> --token-env NOTION_TOKEN   # search all databases/pages shared with the integration
+else notion <intent-id> --database <database-url> --token-keychain-service else-notion
 else connector-adapters
 else connector <intent-id> notion.api ./notion.json
 else connector-policy <intent-id> --auto-accept --allow-origin commitment --min-confidence 80
 else connectors <intent-id>
+else connector-action-propose <intent-id> <connector-id> <capability> <target> --input '{"title":"..."}'
+else connector-action-execute <intent-id> <action-id>
+else connector-actions <intent-id>
+else connector-credential-set <intent-id> <connector-id> --token-keychain-service else-notion
 else connector-credential-revoke <intent-id> <connector-id>
 else signals <intent-id>
 else signal-feed --provider linear --cursor 0
@@ -110,7 +117,7 @@ else compare <intent-id> <scope-a> <scope-b>
 - **Tool Gateway routing depends on the Harness following the task contract.** Native write attempts are denied by the read-only parent sandbox, but the Runtime does not yet synthesize native provider tool-call messages into a full interactive protocol.
 - **Loopback HTTP is the shared surface boundary.** `/v1/health` is public on loopback; every Runtime endpoint requires the token from `daemon-token` or `ELSE_RUNTIME_TOKEN`.
 - **RemoteHttp is a protocol, not a vendor adapter.** It uses HTTPS + NDJSON/callback and SSE for Runtime-side consumption. MCP stdio sessions are recreated rather than migrated across machines.
-- **Connectors remain read-only.** Calendar, Linear, and Notion Signals have versions, source, validity, tombstones, manifests, persisted cursors, Keychain-backed credentials, and a resident scheduler. Provider pagination / backfill, webhook hydration, contacts, and richer entity merging are not yet modeled. Personal / Project World aggregate cross-provider items and support explicit user resolution; Resolver output remains Candidate-only unless a user accepts it or enables a narrow low-risk policy.
+- **Connectors remain read-only.** Calendar, Linear, and Notion Signals have versions, source, validity, tombstones, manifests, persisted pagination/backfill cursors, Keychain-backed credentials, and a resident scheduler. Linear webhooks can hydrate ID-only events; contacts and richer entity merging are not yet modeled. Personal / Project World aggregate cross-provider items and support explicit user resolution; Resolver output remains Candidate-only unless a user accepts it or enables a narrow low-risk policy.
 - **Nested sandboxes are disabled inside harnesses** (e.g. `sandbox_mode="danger-full-access"` for codex) because Seatbelt cannot nest; else's own sandbox profile is the isolation boundary.
 - **Abort Succeeded means execution converged safely, not that the world was rolled back.** Irreversible effects stay irreversible and are recorded as such.
 - **Misinterrupt rate is a lower bound.** It only counts Interrupt requests a user explicitly dismisses; system cancellations and rejected options are not assumed to be false alarms.

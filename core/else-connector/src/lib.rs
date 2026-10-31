@@ -13,6 +13,7 @@ use else_protocol::connector::{
     ObjectKind, ObservationChange, SignalInterpretation, SignalMeaning, SignalStatus, SignalType,
     SyncCursor, WorldSignal,
 };
+use else_protocol::effect::ToolOutcome;
 use else_protocol::ids::ConnectorId;
 use ical::IcalParser;
 use serde_json::{json, Value};
@@ -33,6 +34,8 @@ pub enum ConnectorError {
     UnknownAdapter(String),
     #[error("connector adapter does not accept webhooks: {0}")]
     WebhookUnsupported(String),
+    #[error("connector adapter does not implement write capability {capability}: {adapter}")]
+    ActionUnsupported { adapter: String, capability: String },
     #[error("rate limited by provider; retry after {retry_after_seconds} seconds")]
     RateLimited { retry_after_seconds: u64 },
 }
@@ -55,12 +58,36 @@ pub trait ConnectorAdapter: Send + Sync {
     fn webhook_stream_id(&self) -> Option<&'static str> {
         None
     }
+    /// Webhook 只带实体 ID 时回源补齐。Adapter 必须保持幂等，失败时让
+    /// Runtime 记录同步错误，而不是用不完整 payload 猜测对象内容。
+    fn hydrate_webhook(
+        &self,
+        _connector_id: &ConnectorId,
+        _source: &str,
+        payload: &Value,
+        _credential: Option<&ConnectorCredential>,
+    ) -> Result<Value> {
+        Ok(payload.clone())
+    }
     fn normalize_webhook(
         &self,
         _connector_id: &ConnectorId,
         _payload: &Value,
     ) -> Result<Vec<ConnectorObservation>> {
         Err(ConnectorError::WebhookUnsupported(self.id().into()))
+    }
+    fn execute_action(
+        &self,
+        _connector_id: &ConnectorId,
+        _source: &str,
+        capability: &str,
+        _credential: Option<&ConnectorCredential>,
+        _input: &Value,
+    ) -> Result<ToolOutcome> {
+        Err(ConnectorError::ActionUnsupported {
+            adapter: self.id().into(),
+            capability: capability.into(),
+        })
     }
 }
 
@@ -183,11 +210,15 @@ impl ConnectorAdapter for LinearAdapter {
         &self,
         connector_id: ConnectorId,
         source: &str,
-        _cursor: Option<&SyncCursor>,
+        cursor: Option<&SyncCursor>,
         _now: DateTime<Utc>,
         credential: Option<&ConnectorCredential>,
     ) -> Result<ConnectorPullPage> {
-        pull_linear(connector_id, source, credential)
+        if source.starts_with("https://api.linear.app/") {
+            pull_linear_graphql(connector_id, source, cursor, credential)
+        } else {
+            pull_linear(connector_id, source, credential)
+        }
     }
 
     fn webhook_stream_id(&self) -> Option<&'static str> {
@@ -200,6 +231,27 @@ impl ConnectorAdapter for LinearAdapter {
         payload: &Value,
     ) -> Result<Vec<ConnectorObservation>> {
         normalize_linear_payload(connector_id, payload)
+    }
+
+    fn hydrate_webhook(
+        &self,
+        _connector_id: &ConnectorId,
+        source: &str,
+        payload: &Value,
+        credential: Option<&ConnectorCredential>,
+    ) -> Result<Value> {
+        if linear_issue_nodes(payload)
+            .iter()
+            .any(|issue| string_at(issue, &["title"]).is_some())
+        {
+            return Ok(payload.clone());
+        }
+        let issue_id = linear_issue_nodes(payload)
+            .into_iter()
+            .find_map(|issue| string_at(issue, &["id"]))
+            .or_else(|| string_at(payload, &["data", "id"]))
+            .ok_or_else(|| ConnectorError::Linear("webhook hydration requires issue id".into()))?;
+        hydrate_linear_issue(source, credential, &issue_id, payload)
     }
 }
 
@@ -237,11 +289,11 @@ impl ConnectorAdapter for NotionAdapter {
         &self,
         connector_id: ConnectorId,
         source: &str,
-        _cursor: Option<&SyncCursor>,
+        cursor: Option<&SyncCursor>,
         _now: DateTime<Utc>,
         credential: Option<&ConnectorCredential>,
     ) -> Result<ConnectorPullPage> {
-        pull_notion(connector_id, source, credential)
+        pull_notion_with_cursor(connector_id, source, cursor, credential)
     }
 }
 
@@ -258,6 +310,7 @@ pub fn pull_calendar(
         stream_id: "calendar-events".into(),
         opaque_cursor: cursor,
         overlap_until: Some(window_start),
+        continuation: None,
         observations,
     })
 }
@@ -353,6 +406,42 @@ pub fn pull_linear(
         stream_id: "linear-issues".into(),
         opaque_cursor: format!("linear:{:016x}", stable_hash(&content)),
         overlap_until: None,
+        continuation: None,
+        observations: normalize_linear_payload(&connector_id, &payload)?,
+    })
+}
+
+fn pull_linear_graphql(
+    connector_id: ConnectorId,
+    source: &str,
+    cursor: Option<&SyncCursor>,
+    credential: Option<&ConnectorCredential>,
+) -> Result<ConnectorPullPage> {
+    let continuation = cursor.and_then(|cursor| cursor.continuation.clone());
+    let payload = linear_graphql(
+        source,
+        credential,
+        json!({
+            "query": "query Issues($after: String) { issues(first: 50, after: $after) { nodes { id identifier title state { name type } updatedAt dueDate url assignee { name } project { name } labels { nodes { name } } blockedBy { nodes { id } } priority } pageInfo { hasNextPage endCursor } } }",
+            "variables": { "after": continuation },
+        }),
+    )?;
+    let next = payload
+        .pointer("/data/issues/pageInfo/hasNextPage")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        .then(|| {
+            payload
+                .pointer("/data/issues/pageInfo/endCursor")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .flatten();
+    Ok(ConnectorPullPage {
+        stream_id: "linear-issues".into(),
+        opaque_cursor: format!("linear-page:{:016x}", stable_hash(&payload.to_string())),
+        overlap_until: None,
+        continuation: next,
         observations: normalize_linear_payload(&connector_id, &payload)?,
     })
 }
@@ -362,15 +451,173 @@ pub fn pull_notion(
     source: &str,
     credential: Option<&ConnectorCredential>,
 ) -> Result<ConnectorPullPage> {
-    let content = load_source(source, credential, &[("Notion-Version", "2022-06-28")])?;
+    pull_notion_with_cursor(connector_id, source, None, credential)
+}
+
+fn pull_notion_with_cursor(
+    connector_id: ConnectorId,
+    source: &str,
+    cursor: Option<&SyncCursor>,
+    credential: Option<&ConnectorCredential>,
+) -> Result<ConnectorPullPage> {
+    let continuation = cursor.and_then(|cursor| cursor.continuation.clone());
+    let content = if source.starts_with("https://api.notion.com/") {
+        notion_api_request(source, continuation.as_deref(), credential)?
+    } else {
+        load_source(source, credential, &[("Notion-Version", "2022-06-28")])?
+    };
     let payload: Value = serde_json::from_str(&content)
         .map_err(|error| ConnectorError::Notion(error.to_string()))?;
+    if source.starts_with("https://api.notion.com/")
+        && !payload.get("results").is_some_and(Value::is_array)
+    {
+        return Err(ConnectorError::Notion(
+            "Notion API response is missing the results array".into(),
+        ));
+    }
+    let next = source
+        .starts_with("https://api.notion.com/")
+        .then(|| {
+            payload
+                .get("has_more")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                .then(|| {
+                    payload
+                        .get("next_cursor")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .flatten()
+        })
+        .flatten();
     Ok(ConnectorPullPage {
         stream_id: "notion-pages".into(),
         opaque_cursor: format!("notion:{:016x}", stable_hash(&content)),
         overlap_until: None,
+        continuation: next,
         observations: normalize_notion_payload(&connector_id, &payload)?,
     })
+}
+
+fn notion_api_request(
+    source: &str,
+    start_cursor: Option<&str>,
+    credential: Option<&ConnectorCredential>,
+) -> Result<String> {
+    let credential = credential
+        .ok_or_else(|| ConnectorError::Notion("Notion API requires an API token".into()))?;
+    ureq::post(source)
+        .set("Accept", "application/json")
+        .set("Content-Type", "application/json")
+        .set("Notion-Version", "2022-06-28")
+        .set("Authorization", &authorization_header(credential))
+        .send_string(&notion_request_body(source, start_cursor).to_string())
+        .map_err(map_notion_http_error)?
+        .into_string()
+        .map_err(|error| ConnectorError::Http(error.to_string()))
+}
+
+fn notion_request_body(source: &str, start_cursor: Option<&str>) -> Value {
+    let mut body = json!({
+        "page_size": 100,
+    });
+    if let Some(start_cursor) = start_cursor {
+        body["start_cursor"] = json!(start_cursor);
+    }
+    if source.trim_end_matches('/').ends_with("/search") {
+        body["query"] = json!("");
+        body["sort"] = json!({
+            "direction": "descending",
+            "timestamp": "last_edited_time"
+        });
+    }
+    body
+}
+
+fn map_notion_http_error(error: ureq::Error) -> ConnectorError {
+    match error {
+        ureq::Error::Status(429, response) => ConnectorError::RateLimited {
+            retry_after_seconds: response
+                .header("Retry-After")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(30),
+        },
+        ureq::Error::Status(status, response) => {
+            let body = response.into_string().unwrap_or_default();
+            let message = serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|payload| {
+                    payload
+                        .get("message")
+                        .or_else(|| payload.get("code"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| body.chars().take(512).collect());
+            ConnectorError::Notion(format!("HTTP {status}: {message}"))
+        }
+        other => ConnectorError::Http(other.to_string()),
+    }
+}
+
+fn hydrate_linear_issue(
+    source: &str,
+    credential: Option<&ConnectorCredential>,
+    issue_id: &str,
+    original_payload: &Value,
+) -> Result<Value> {
+    let source_payload = if source.starts_with("https://api.linear.app/") {
+        linear_graphql(
+            source,
+            credential,
+            json!({
+                "query": "query Issue($id: String!) { issue(id: $id) { id identifier title state { name type } updatedAt dueDate url assignee { name } project { name } labels { nodes { name } } blockedBy { nodes { id } } priority } }",
+                "variables": { "id": issue_id },
+            }),
+        )?
+    } else {
+        serde_json::from_str::<Value>(&load_source(source, credential, &[])?)
+            .map_err(|error| ConnectorError::Linear(error.to_string()))?
+    };
+    let issue = linear_issue_nodes(&source_payload)
+        .into_iter()
+        .find(|issue| string_at(issue, &["id"]).as_deref() == Some(issue_id))
+        .cloned()
+        .ok_or_else(|| {
+            ConnectorError::Linear(format!(
+                "provider payload did not contain issue {issue_id} for hydration"
+            ))
+        })?;
+    Ok(json!({
+        "action": original_payload.get("action").cloned().unwrap_or(Value::Null),
+        "type": original_payload.get("type").cloned().unwrap_or(Value::Null),
+        "data": issue,
+    }))
+}
+
+fn linear_graphql(
+    source: &str,
+    credential: Option<&ConnectorCredential>,
+    payload: Value,
+) -> Result<Value> {
+    let credential = credential
+        .ok_or_else(|| ConnectorError::Linear("Linear GraphQL requires an API token".into()))?;
+    let authorization = authorization_header(credential);
+    let content = ureq::post(source)
+        .set("Accept", "application/json")
+        .set("Content-Type", "application/json")
+        .set("Authorization", &authorization)
+        .send_string(&payload.to_string())
+        .map_err(map_http_error)?
+        .into_string()
+        .map_err(|error| ConnectorError::Http(error.to_string()))?;
+    let payload: Value = serde_json::from_str(&content)
+        .map_err(|error| ConnectorError::Linear(error.to_string()))?;
+    if let Some(errors) = payload.get("errors") {
+        return Err(ConnectorError::Linear(errors.to_string()));
+    }
+    Ok(payload)
 }
 
 pub fn normalize_notion_payload(
@@ -1120,18 +1367,7 @@ fn load_source(
     if source.starts_with("https://") {
         let mut request = ureq::get(source).set("Accept", "application/json");
         if let Some(credential) = credential {
-            request = request.set(
-                "Authorization",
-                &format!(
-                    "{} {}",
-                    if credential.token_type.eq_ignore_ascii_case("bearer") {
-                        "Bearer"
-                    } else {
-                        &credential.token_type
-                    },
-                    credential.access_token
-                ),
-            );
+            request = request.set("Authorization", &authorization_header(credential));
         }
         for (name, value) in headers {
             request = request.set(name, value);
@@ -1148,6 +1384,18 @@ fn load_source(
         file.read_to_string(&mut content)?;
         Ok(content)
     }
+}
+
+fn authorization_header(credential: &ConnectorCredential) -> String {
+    format!(
+        "{} {}",
+        if credential.token_type.eq_ignore_ascii_case("bearer") {
+            "Bearer"
+        } else {
+            &credential.token_type
+        },
+        credential.access_token
+    )
 }
 
 fn map_http_error(error: ureq::Error) -> ConnectorError {
@@ -1252,4 +1500,28 @@ fn stable_hash(value: &str) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notion_search_body_requests_newest_matching_objects() {
+        let body = notion_request_body("https://api.notion.com/v1/search", Some("cursor-2"));
+        assert_eq!(body["page_size"], 100);
+        assert_eq!(body["start_cursor"], "cursor-2");
+        assert_eq!(body["query"], "");
+        assert_eq!(body["sort"]["timestamp"], "last_edited_time");
+        assert_eq!(body["sort"]["direction"], "descending");
+    }
+
+    #[test]
+    fn notion_database_body_uses_same_pagination_without_search_fields() {
+        let body = notion_request_body("https://api.notion.com/v1/databases/db-id/query", None);
+        assert_eq!(body["page_size"], 100);
+        assert!(body.get("start_cursor").is_none());
+        assert!(body.get("query").is_none());
+        assert!(body.get("sort").is_none());
+    }
 }

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::effect::SideEffectKind;
-use crate::ids::{AgentBindingId, AgentId, CapabilityId, McpServerId, RunId, ScopeId};
+use crate::ids::{AgentBindingId, AgentId, CapabilityId, ConnectorId, McpServerId, RunId, ScopeId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -13,6 +13,7 @@ pub enum CapabilityKind {
     BuiltinTool,
     McpTool,
     Skill,
+    ExternalAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,12 +47,19 @@ pub struct McpToolBinding {
     pub tool_name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalActionBinding {
+    pub connector_id: ConnectorId,
+    pub operation: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum CapabilityAdapter {
     Builtin,
     Mcp(McpToolBinding),
     Skill(SkillManifest),
+    ExternalAction(ExternalActionBinding),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
