@@ -51,7 +51,7 @@ durable unit of work.
 macOS and Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/narcilee7/else/master/install.sh | sh
+curl -fsSL https://github.com/narcilee7/else/releases/latest/download/install.sh | sh
 ```
 
 The script downloads the matching release binary, verifies `SHA256SUMS`, installs

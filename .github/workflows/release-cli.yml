@@ -144,12 +144,12 @@ jobs:
           fi
 
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            gh release create "$tag" dist/*.tar.gz dist/SHA256SUMS \
+            gh release create "$tag" dist/*.tar.gz dist/SHA256SUMS install.sh \
               --title "else $version" \
               --notes "$notes" \
               "${release_args[@]}"
           else
-            gh release create "$tag" dist/*.tar.gz dist/SHA256SUMS \
+            gh release create "$tag" dist/*.tar.gz dist/SHA256SUMS install.sh \
               --target "$GITHUB_SHA" \
               --title "else $version" \
               --notes "$notes" \

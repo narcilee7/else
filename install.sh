@@ -1,7 +1,7 @@
 #!/bin/sh
 # else 一键安装。
 #
-#   curl -fsSL https://raw.githubusercontent.com/narcilee7/else/master/install.sh | sh
+#   curl -fsSL https://github.com/narcilee7/else/releases/latest/download/install.sh | sh
 #
 # 装完会：放好 `else` 二进制、准备 runtime 目录、注册后台常驻服务，
 # 然后跑一次 `else doctor` 告诉你现在的状态。
