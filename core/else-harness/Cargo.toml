@@ -1,6 +1,6 @@
 [package]
 name = "else-harness"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 description = "else harness adapters: hosted executors behind a stable control-plane contract"
 license = "MIT"
@@ -12,11 +12,11 @@ categories = ["development-tools::cargo-plugins"]
 exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [dependencies]
-else-protocol = { path = "../else-protocol", version = "0.1.1" }
-else-ledger = { path = "../else-ledger", version = "0.1.1" }
-else-gateway = { path = "../else-gateway", version = "0.1.1" }
-else-environment = { path = "../else-environment", version = "0.1.1" }
-else-attention = { path = "../else-attention", version = "0.1.1" }
+else-protocol = { path = "../else-protocol", version = "0.1.2" }
+else-ledger = { path = "../else-ledger", version = "0.1.2" }
+else-gateway = { path = "../else-gateway", version = "0.1.2" }
+else-environment = { path = "../else-environment", version = "0.1.2" }
+else-attention = { path = "../else-attention", version = "0.1.2" }
 chrono.workspace = true
 uuid.workspace = true
 serde_json.workspace = true

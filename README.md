@@ -272,13 +272,13 @@ swift test
 Build a local CLI artifact:
 
 ```bash
-scripts/release.sh 0.1.1
+scripts/release.sh 0.1.2
 ```
 
 Build internal release artifacts without Apple credentials:
 
 ```bash
-gh workflow run release-cli.yml -f version=0.1.1 -f publish=false
+gh workflow run release-cli.yml -f version=0.1.2 -f publish=false
 ```
 
 ## License

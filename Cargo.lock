@@ -624,7 +624,7 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "else-api"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -647,7 +647,7 @@ dependencies = [
 
 [[package]]
 name = "else-attention"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "else-protocol",
@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "else-bot"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "clap",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "else-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "else-daemon",
@@ -693,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "else-connector"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "else-protocol",
@@ -705,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "else-context"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "else-ledger",
@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "else-daemon"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "else-api",
@@ -732,7 +732,7 @@ dependencies = [
 
 [[package]]
 name = "else-environment"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "tempfile",
  "thiserror 2.0.21",
@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "else-gateway"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "else-attention",
@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "else-harness"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "else-attention",
@@ -772,7 +772,7 @@ dependencies = [
 
 [[package]]
 name = "else-ledger"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "else-protocol",
@@ -785,7 +785,7 @@ dependencies = [
 
 [[package]]
 name = "else-protocol"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",
@@ -795,7 +795,7 @@ dependencies = [
 
 [[package]]
 name = "else-secrets"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "else-protocol",
@@ -809,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "else-workspace"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "else-protocol",

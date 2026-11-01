@@ -1,6 +1,6 @@
 [package]
 name = "else-daemon"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 description = "Loopback HTTP daemon for the else Intent Runtime"
 license = "MIT"
@@ -12,10 +12,10 @@ categories = ["api-bindings"]
 exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [dependencies]
-else-api = { path = "../../api", version = "0.1.1" }
-else-harness = { path = "../../core/else-harness", version = "0.1.1" }
-else-ledger = { path = "../../core/else-ledger", version = "0.1.1" }
-else-protocol = { path = "../../core/else-protocol", version = "0.1.1" }
+else-api = { path = "../../api", version = "0.1.2" }
+else-harness = { path = "../../core/else-harness", version = "0.1.2" }
+else-ledger = { path = "../../core/else-ledger", version = "0.1.2" }
+else-protocol = { path = "../../core/else-protocol", version = "0.1.2" }
 chrono.workspace = true
 fs2 = "0.4"
 serde.workspace = true
