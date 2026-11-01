@@ -63,7 +63,16 @@ The script downloads the matching release binary, verifies `SHA256SUMS`, install
 brew install narcilee7/tap/else
 ```
 
+If Homebrew asks for explicit trust on first use:
+
+```bash
+brew trust narcilee7/tap
+```
+
 ### Cargo
+
+The first crates.io publication is still pending account authentication. Once
+published, the install command is:
 
 ```bash
 cargo install else-cli --locked
