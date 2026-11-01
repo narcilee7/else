@@ -1,27 +1,27 @@
 class ElseBot < Formula
   desc "Managed personal agent runtime — you do what matters, else handles the rest"
   homepage "https://github.com/narcilee7/else"
-  version "0.1.0"
+  version "0.1.1"
   license "MIT"
 
   # 发布时由 scripts/update-homebrew-formula.py 填入 release 校验和。
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/narcilee7/else/releases/download/v#{version}/else-aarch64-apple-darwin.tar.gz"
-      sha256 "e0028540f408b0779ebfa65f512ab5eb2c2b4d0be7e378c2673c4406154798d7"
+      sha256 "bc84a6ac336f191952f728bf4cc97c63387fd3b3df1b66964d7d8bc5327f0e72"
     else
       url "https://github.com/narcilee7/else/releases/download/v#{version}/else-x86_64-apple-darwin.tar.gz"
-      sha256 "077e4779f9f8ae3761b96402df334d6b29da42e30c6611638d85aa69b88bb4ed"
+      sha256 "bc519251bfe8c657163a6f7262140ff04caef474f783238cb7d182c696c35e6a"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/narcilee7/else/releases/download/v#{version}/else-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "c1ad5120fc79f863196dfb600fe7e1a1af3891afc48fa2ed9fbcceee4e5f3c1e"
+      sha256 "470bb77d93de0e9fa7028494a8c6acc1b70fabf2c0c195419a1e45fd3f3d8d65"
     else
       url "https://github.com/narcilee7/else/releases/download/v#{version}/else-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "cca1eec9ab7b497b738866007bfa7546db4aa1435525873210ff54628b7f50a8"
+      sha256 "37713a9634bb6d3dbc51e45786c82e499161386da21f8d5bad6a69b217390d20"
     end
   end
 
