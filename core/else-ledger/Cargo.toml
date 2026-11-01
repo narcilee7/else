@@ -1,6 +1,6 @@
 [package]
 name = "else-ledger"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 description = "else event ledger: append-only SQLite event store with deterministic replay"
 license = "MIT"
@@ -12,7 +12,7 @@ categories = ["database"]
 exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [dependencies]
-else-protocol = { path = "../else-protocol", version = "0.1.0" }
+else-protocol = { path = "../else-protocol", version = "0.1.1" }
 chrono.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "else-environment"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 description = "else execution environments: deny-by-default local sandbox profiles and backends"
 license = "MIT"

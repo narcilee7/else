@@ -1,6 +1,6 @@
 [package]
 name = "else-api"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 description = "else runtime API: one API for all surfaces (CLI/Web/desktop/App/IM)"
 license = "MIT"
@@ -12,16 +12,16 @@ categories = ["api-bindings"]
 exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [dependencies]
-else-protocol = { path = "../core/else-protocol", version = "0.1.0" }
-else-ledger = { path = "../core/else-ledger", version = "0.1.0" }
-else-context = { path = "../core/else-context", version = "0.1.0" }
-else-connector = { path = "../core/else-connector", version = "0.1.0" }
-else-secrets = { path = "../core/else-secrets", version = "0.1.0" }
-else-attention = { path = "../core/else-attention", version = "0.1.0" }
-else-gateway = { path = "../core/else-gateway", version = "0.1.0" }
-else-harness = { path = "../core/else-harness", version = "0.1.0" }
-else-environment = { path = "../core/else-environment", version = "0.1.0" }
-else-workspace = { path = "../core/else-workspace", version = "0.1.0" }
+else-protocol = { path = "../core/else-protocol", version = "0.1.1" }
+else-ledger = { path = "../core/else-ledger", version = "0.1.1" }
+else-context = { path = "../core/else-context", version = "0.1.1" }
+else-connector = { path = "../core/else-connector", version = "0.1.1" }
+else-secrets = { path = "../core/else-secrets", version = "0.1.1" }
+else-attention = { path = "../core/else-attention", version = "0.1.1" }
+else-gateway = { path = "../core/else-gateway", version = "0.1.1" }
+else-harness = { path = "../core/else-harness", version = "0.1.1" }
+else-environment = { path = "../core/else-environment", version = "0.1.1" }
+else-workspace = { path = "../core/else-workspace", version = "0.1.1" }
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true

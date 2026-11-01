@@ -1,6 +1,6 @@
 [package]
 name = "else-workspace"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 description = "else workspace: content-addressed snapshots of task artifacts (Git is just one backend)"
 license = "MIT"
@@ -12,7 +12,7 @@ categories = ["filesystem"]
 exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [dependencies]
-else-protocol = { path = "../else-protocol", version = "0.1.0" }
+else-protocol = { path = "../else-protocol", version = "0.1.1" }
 blake3 = "1"
 walkdir = "2"
 serde.workspace = true

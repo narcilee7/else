@@ -1,6 +1,6 @@
 [package]
 name = "else-gateway"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 description = "else gateways: Tool Gateway (side effects, authority) + Model Gateway (accounting)"
 license = "MIT"
@@ -12,10 +12,10 @@ categories = ["api-bindings"]
 exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [dependencies]
-else-protocol = { path = "../else-protocol", version = "0.1.0" }
-else-ledger = { path = "../else-ledger", version = "0.1.0" }
-else-attention = { path = "../else-attention", version = "0.1.0" }
-else-environment = { path = "../else-environment", version = "0.1.0" }
+else-protocol = { path = "../else-protocol", version = "0.1.1" }
+else-ledger = { path = "../else-ledger", version = "0.1.1" }
+else-attention = { path = "../else-attention", version = "0.1.1" }
+else-environment = { path = "../else-environment", version = "0.1.1" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
