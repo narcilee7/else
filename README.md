@@ -1,8 +1,8 @@
-# else
+# else-bot
 
 **You do what matters. Else handles the rest.**
 
-else is a local-first personal agent runtime for work that spans more than one
+else-bot is a local-first personal agent runtime for work that spans more than one
 prompt, tool, or session. You define the outcome and its boundaries; else keeps
 the intent alive, decomposes it into scopes, dispatches execution, verifies the
 result, and asks for your attention only when a decision belongs to you.
@@ -26,7 +26,7 @@ chats and notifications that you have to coordinate yourself:
 - every intermediate update competes for attention;
 - the final result is difficult to verify or audit.
 
-else exists to make the **intent**, not the chat transcript or agent run, the
+else-bot exists to make the **intent**, not the chat transcript or agent run, the
 durable unit of work.
 
 ## What Else Does
@@ -60,7 +60,7 @@ The script downloads the matching release binary, verifies `SHA256SUMS`, install
 ### Homebrew
 
 ```bash
-brew install narcilee7/tap/else
+brew install narcilee7/tap/else-bot
 ```
 
 If Homebrew asks for explicit trust on first use:
@@ -75,15 +75,15 @@ The first crates.io publication is still pending account authentication. Once
 published, the install command is:
 
 ```bash
-cargo install else-cli --locked
+cargo install else-bot --locked
 ```
 
 ## First Run
 
 ```bash
-else onboard       # prepare the runtime and background service
-else doctor        # environment, daemon, token, ledger, and connector health
-else               # open the terminal interface
+else-bot onboard       # prepare the runtime and background service
+else-bot doctor        # environment, daemon, token, ledger, and connector health
+else-bot               # open the terminal interface
 ```
 
 The first screen is a personal brief, not a chat window.
@@ -93,30 +93,30 @@ The first screen is a personal brief, not a chat window.
 Create a durable intent:
 
 ```bash
-else intent "Prepare the release and verify every platform artifact" --project release
+else-bot intent "Prepare the release and verify every platform artifact" --project release
 ```
 
 Inspect what needs attention:
 
 ```bash
-else brief
-else decisions
-else world
+else-bot brief
+else-bot decisions
+else-bot world
 ```
 
 Drive work and inspect the evidence:
 
 ```bash
-else advance <intent-id> --harness auto
-else plan <intent-id>
-else resources <intent-id>
-else log <intent-id>
+else-bot advance <intent-id> --harness auto
+else-bot plan <intent-id>
+else-bot resources <intent-id>
+else-bot log <intent-id>
 ```
 
 Run the shared runtime explicitly:
 
 ```bash
-else serve --bind 127.0.0.1:4180
+else-bot serve --bind 127.0.0.1:4180
 ```
 
 The daemon uses a local Bearer token, remains the only writer, and lets the CLI,
@@ -173,7 +173,7 @@ commands support `--json` where available.
   Gateway-authorized actions;
 - uncertain external results are surfaced rather than blindly retried.
 
-else is currently a single-user, single-machine runtime. It is not yet a
+else-bot is currently a single-user, single-machine runtime. It is not yet a
 multi-tenant cloud service, and irreversible external actions cannot be fully
 rolled back.
 

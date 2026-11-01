@@ -70,7 +70,7 @@ pub fn install(runtime_dir: &Path) -> Result<ServiceStatus> {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Err(CliError::usage(
-            "这个平台还没有后台服务支持；可以用 `else serve` 前台运行。",
+            "这个平台还没有后台服务支持；可以用 `else-bot serve` 前台运行。",
         ))
     }
 }
@@ -88,7 +88,7 @@ pub fn uninstall(runtime_dir: &Path) -> Result<ServiceStatus> {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Err(CliError::usage(
-            "这个平台还没有后台服务支持；可以用 `else serve` 前台运行。",
+            "这个平台还没有后台服务支持；可以用 `else-bot serve` 前台运行。",
         ))
     }
 }
@@ -101,7 +101,7 @@ fn unsupported_status() -> ServiceStatus {
         unit_path: None,
         installed: false,
         loaded: false,
-        detail: "这个平台还没有后台服务支持；可以用 `else serve` 前台运行。".into(),
+        detail: "这个平台还没有后台服务支持；可以用 `else-bot serve` 前台运行。".into(),
     }
 }
 
@@ -140,9 +140,9 @@ fn macos_status(runtime_dir: &Path) -> ServiceStatus {
     let detail = if loaded {
         format!("LaunchAgent {LAUNCH_AGENT_LABEL} 已加载")
     } else if installed {
-        "LaunchAgent 已安装但没有加载；运行 `else daemon install` 加载它".into()
+        "LaunchAgent 已安装但没有加载；运行 `else-bot daemon install` 加载它".into()
     } else {
-        "没有注册后台服务；运行 `else daemon install`".into()
+        "没有注册后台服务；运行 `else-bot daemon install`".into()
     };
     ServiceStatus {
         platform: "macos",
@@ -222,7 +222,7 @@ fn macos_install(runtime_dir: &Path) -> Result<ServiceStatus> {
         ))
         .map_err(|error| {
             CliError::usage(format!(
-                "cannot load the LaunchAgent ({}). 你可以手动运行 `else --dir {} serve`。",
+                "cannot load the LaunchAgent ({}). 你可以手动运行 `else-bot --dir {} serve`。",
                 error,
                 runtime_dir.display()
             ))
@@ -256,9 +256,9 @@ fn linux_status(runtime_dir: &Path) -> ServiceStatus {
     let detail = if loaded {
         format!("systemd user unit {SYSTEMD_UNIT} 正在运行")
     } else if installed {
-        "systemd user unit 已安装但没有运行；运行 `else daemon install` 启动它".into()
+        "systemd user unit 已安装但没有运行；运行 `else-bot daemon install` 启动它".into()
     } else {
-        "没有注册后台服务；运行 `else daemon install`".into()
+        "没有注册后台服务；运行 `else-bot daemon install`".into()
     };
     ServiceStatus {
         platform: "linux",

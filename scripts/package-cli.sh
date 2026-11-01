@@ -23,10 +23,10 @@ cd "$ROOT"
 
 package_version="$(
     cargo metadata --no-deps --format-version 1 |
-        python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "else-cli"))'
+        python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "else-bot"))'
 )"
 if [[ "$VERSION" != "$package_version" ]]; then
-    echo "release version $VERSION does not match else-cli Cargo version $package_version" >&2
+    echo "release version $VERSION does not match else-bot Cargo version $package_version" >&2
     exit 1
 fi
 
@@ -35,10 +35,10 @@ if ! command -v "$BUILDER" >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "==> build else $VERSION for $TARGET with $BUILDER"
-"$BUILDER" build --locked --release --target "$TARGET" -p else-cli
+echo "==> build else-bot $VERSION for $TARGET with $BUILDER"
+"$BUILDER" build --locked --release --target "$TARGET" -p else-bot
 
-BINARY="$ROOT/target/$TARGET/release/else"
+BINARY="$ROOT/target/$TARGET/release/else-bot"
 if [[ ! -x "$BINARY" ]]; then
     echo "expected binary was not produced: $BINARY" >&2
     exit 1
@@ -51,7 +51,7 @@ if [[ "$TARGET" == *apple-darwin ]]; then
     codesign --force --sign - "$BINARY"
 fi
 
-tar -czf "$ARCHIVE" -C "$(dirname "$BINARY")" else
+tar -czf "$ARCHIVE" -C "$(dirname "$BINARY")" else-bot
 archive_name="$(basename "$ARCHIVE")"
 if command -v sha256sum >/dev/null 2>&1; then
     ( cd "$DIST_DIR" && sha256sum "$archive_name" > "$archive_name.sha256" )

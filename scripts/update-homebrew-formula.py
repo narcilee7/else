@@ -20,7 +20,7 @@ def main() -> None:
 
     version = sys.argv[1]
     dist = pathlib.Path(sys.argv[2])
-    formula = pathlib.Path("Formula/else.rb")
+    formula = pathlib.Path("Formula/else-bot.rb")
     text = formula.read_text()
 
     text = re.sub(

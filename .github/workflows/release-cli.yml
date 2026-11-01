@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version matching else-cli in Cargo.toml
+        description: Version matching else-bot in Cargo.toml
         required: true
         default: 0.1.0
       publish:
@@ -101,7 +101,7 @@ jobs:
           cat SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: else-cli-release
+          name: else-bot-release
           path: dist
           if-no-files-found: error
           retention-days: 30
@@ -118,7 +118,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: else-cli-release
+          name: else-bot-release
           path: dist
       - name: Create GitHub Release
         id: release
@@ -145,13 +145,13 @@ jobs:
 
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             gh release create "$tag" dist/*.tar.gz dist/SHA256SUMS install.sh \
-              --title "else $version" \
+              --title "else-bot $version" \
               --notes "$notes" \
               "${release_args[@]}"
           else
             gh release create "$tag" dist/*.tar.gz dist/SHA256SUMS install.sh \
               --target "$GITHUB_SHA" \
-              --title "else $version" \
+              --title "else-bot $version" \
               --notes "$notes" \
               "${release_args[@]}"
           fi
@@ -171,7 +171,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
-          name: else-cli-release
+          name: else-bot-release
           path: dist
       - name: Sync master
         run: git pull --rebase origin master
@@ -187,7 +187,7 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
-          gh release upload "v${version}" Formula/else.rb --clobber
+          gh release upload "v${version}" Formula/else-bot.rb --clobber
       - name: Commit formula
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -195,7 +195,7 @@ jobs:
           version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/else.rb
+          git add Formula/else-bot.rb
           git diff --cached --quiet && exit 0
           git commit -m "Update Homebrew formula for v${version}"
           git push origin HEAD:master
@@ -208,11 +208,11 @@ jobs:
           tap_dir="$(mktemp -d)"
           git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/narcilee7/homebrew-tap.git" "$tap_dir"
           mkdir -p "$tap_dir/Formula"
-          cp Formula/else.rb "$tap_dir/Formula/else.rb"
+          cp Formula/else-bot.rb "$tap_dir/Formula/else-bot.rb"
           cd "$tap_dir"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/else.rb
+          git add Formula/else-bot.rb
           git diff --cached --quiet && exit 0
           git commit -m "Update else to v${version}"
           git push origin main

@@ -1,4 +1,4 @@
-//! `else doctor`：一次说清「现在这台机器上的 else 是什么状态」。
+//! `else-bot doctor`：一次说清「现在这台机器上的 else 是什么状态」。
 //!
 //! 出问题时，用户不该去翻日志猜。把该看的都看一遍，然后给出一份
 //! **可以直接贴给别人的**报告。
@@ -38,7 +38,7 @@ impl DoctorReport {
 
     /// 打印人类可读的报告。
     pub fn print(&self) {
-        println!("else doctor");
+        println!("else-bot doctor");
         println!("  runtime: {}", self.runtime_dir.display());
         println!("  url:     {}", self.runtime_url);
         println!();
@@ -88,7 +88,8 @@ pub fn run(client: &RuntimeClient, runtime_dir: &Path) -> DoctorReport {
             ok: false,
             detail: format!("cannot reach the runtime: {error}"),
             hint: Some(
-                "运行 `else daemon install` 让 Runtime 常驻，或用 `else serve` 前台启动。".into(),
+                "运行 `else-bot daemon install` 让 Runtime 常驻，或用 `else-bot serve` 前台启动。"
+                    .into(),
             ),
         }),
     }
@@ -129,7 +130,7 @@ fn check_runtime_dir(runtime_dir: &Path) -> Check {
             name: "runtime directory".into(),
             ok: false,
             detail: format!("{} does not exist", runtime_dir.display()),
-            hint: Some("运行 `else onboard` 创建它。".into()),
+            hint: Some("运行 `else-bot onboard` 创建它。".into()),
         };
     }
     #[cfg(unix)]
@@ -165,7 +166,7 @@ fn check_service(runtime_dir: &Path) -> Check {
         name: "background service".into(),
         ok: status.loaded,
         detail: status.detail,
-        hint: (!status.loaded).then(|| "运行 `else daemon install` 注册后台服务。".into()),
+        hint: (!status.loaded).then(|| "运行 `else-bot daemon install` 注册后台服务。".into()),
     }
 }
 

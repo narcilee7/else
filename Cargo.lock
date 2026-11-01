@@ -645,7 +645,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "else-cli"
+name = "else-bot"
 version = "0.1.0"
 dependencies = [
  "chrono",

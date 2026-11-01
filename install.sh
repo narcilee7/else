@@ -67,14 +67,23 @@ say "解压…"
 tar -xzf "$tmp/$asset" -C "$tmp"
 
 # —— 安装 ——
+source_binary="$tmp/else-bot"
+[ -x "$source_binary" ] || source_binary="$tmp/else-cli"
+[ -x "$source_binary" ] || source_binary="$tmp/else"
+[ -x "$source_binary" ] || die "压缩包中找不到 else-bot"
+
 mkdir -p "$INSTALL_DIR"
 if [ -w "$INSTALL_DIR" ]; then
-  install -m 0755 "$tmp/else" "$INSTALL_DIR/else"
+  install -m 0755 "$source_binary" "$INSTALL_DIR/else-bot"
+  ln -sf else-bot "$INSTALL_DIR/else-cli"
+  ln -sf else-bot "$INSTALL_DIR/else"
 else
   say "需要写入权限，用 sudo 安装到 $INSTALL_DIR"
-  sudo install -m 0755 "$tmp/else" "$INSTALL_DIR/else"
+  sudo install -m 0755 "$source_binary" "$INSTALL_DIR/else-bot"
+  sudo ln -sf else-bot "$INSTALL_DIR/else-cli"
+  sudo ln -sf else-bot "$INSTALL_DIR/else"
 fi
-say "已安装：$INSTALL_DIR/else"
+say "已安装：$INSTALL_DIR/else-bot"
 
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
@@ -83,18 +92,18 @@ case ":$PATH:" in
 esac
 
 # —— 初始化 ——
-if [ -x "$INSTALL_DIR/else" ]; then
-  "$INSTALL_DIR/else" onboard || warn "初始化没完全成功，先看看 else doctor 的输出"
+if [ -x "$INSTALL_DIR/else-bot" ]; then
+  "$INSTALL_DIR/else-bot" onboard || warn "初始化没完全成功，先看看 else-bot doctor 的输出"
   echo
-  "$INSTALL_DIR/else" doctor || true
+  "$INSTALL_DIR/else-bot" doctor || true
 fi
 
 cat <<'EOF'
 
 装好了。
 
-  else            打开终端界面
-  else brief      看今天要你管的事
-  else doctor     检查运行状态
+  else-bot            打开终端界面
+  else-bot brief      看今天要你管的事
+  else-bot doctor     检查运行状态
 
 EOF

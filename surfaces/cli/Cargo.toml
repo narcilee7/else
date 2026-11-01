@@ -1,8 +1,8 @@
 [package]
-name = "else-cli"
+name = "else-bot"
 version = "0.1.0"
 edition.workspace = true
-description = "else CLI: the first thin client of the runtime API"
+description = "else-bot: terminal client for the else Intent Runtime"
 license = "MIT"
 repository = "https://github.com/narcilee7/else"
 homepage = "https://github.com/narcilee7/else"
@@ -12,7 +12,7 @@ categories = ["command-line-utilities"]
 exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [[bin]]
-name = "else"
+name = "else-bot"
 path = "src/main.rs"
 
 [dependencies]

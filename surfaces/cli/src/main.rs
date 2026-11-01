@@ -28,7 +28,7 @@ use session::Session;
 
 #[derive(Parser)]
 #[command(
-    name = "else",
+    name = "else-bot",
     about = "You do what matters. Else handles the rest.",
     version = env!("CARGO_PKG_VERSION")
 )]
@@ -715,9 +715,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("background service: {}", status.detail);
             println!();
             println!("next:");
-            println!("  else              打开终端界面");
-            println!("  else brief        看今天要你管的事");
-            println!("  else doctor       再检查一次");
+            println!("  else-bot              打开终端界面");
+            println!("  else-bot brief        看今天要你管的事");
+            println!("  else-bot doctor       再检查一次");
         }
         Command::Harnesses => {
             let harnesses = client.harnesses()?;

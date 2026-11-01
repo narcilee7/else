@@ -1,4 +1,4 @@
-class Else < Formula
+class ElseBot < Formula
   desc "Managed personal agent runtime — you do what matters, else handles the rest"
   homepage "https://github.com/narcilee7/else"
   version "0.1.0"
@@ -26,19 +26,27 @@ class Else < Formula
   end
 
   def install
-    bin.install "else"
+    if File.exist?("else-bot")
+      bin.install "else-bot"
+    elsif File.exist?("else-cli")
+      bin.install "else-cli" => "else-bot"
+    else
+      bin.install "else" => "else-bot"
+    end
+    bin.install_symlink "else-bot" => "else-cli"
+    bin.install_symlink "else-bot" => "else"
   end
 
   def caveats
     <<~EOS
       else 的 Runtime 需要常驻，Connector 才能按计划同步、通知才能按时送达。
 
-        else onboard    准备 runtime 目录并注册后台服务
-        else doctor     检查运行状态
+        else-bot onboard    准备 runtime 目录并注册后台服务
+        else-bot doctor     检查运行状态
     EOS
   end
 
   test do
-    assert_match version.to_s, shell_output("#{bin}/else --version")
+    assert_match version.to_s, shell_output("#{bin}/else-bot --version")
   end
 end
