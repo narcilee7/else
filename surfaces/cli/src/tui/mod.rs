@@ -1,14 +1,7 @@
 //! 终端界面。
 //!
-//! 架构抄自 Codex CLI（`codex-rs/tui`）最要紧的两点：
-//!
-//! 1. **组件从不直接调后端**。界面只发 [`app_event::AppEvent`]，
-//!    顶层 `App` 统一处理并发起来源；异步结果走同一条消息总线回来。
-//! 2. **界面与数据之间只有一条通路**。界面读到的永远是 Runtime 真正返回的
-//!    东西，不会出现「屏幕上是 A、账本里是 B」。
-//!
-//! 但界面**不是**聊天框：else 管的是意图、世界与注意力，
-//! 所以首页是 Daily Brief，不是对话。
+//! 组件不直接访问后端；输入、加载、动作与 Runtime 事件都由顶层 `App`
+//! 统一协调。首屏是 Today，而不是聊天窗口或调试控制台。
 
 pub mod app;
 pub mod app_event;
@@ -22,21 +15,27 @@ pub mod views;
 
 use std::sync::mpsc;
 
-use else_client::RuntimeClient;
-
 use crate::error::Result;
+use crate::session::Session;
 
 /// 启动终端界面。
-pub fn launch(client: RuntimeClient) -> Result<()> {
+///
+/// `session` 必须一直活到界面退出：没有常驻 daemon 时，它内部持有内嵌
+/// daemon 的生命周期 guard。只把 client 移出来会让后端在首帧之前停止。
+pub fn launch(session: Session) -> Result<()> {
+    let client = session.client().clone();
     let (events, receiver) = mpsc::channel();
-    let (work, worker) = loader::spawn_worker(client.clone(), events.clone());
-    let _stream = loader::spawn_event_stream(client.clone(), events.clone());
-    // 后台线程的返回值不重要：它们自己会结束。
-    drop(worker);
+    let (loads, load_worker) = loader::spawn_load_worker(client.clone(), events.clone());
+    let (actions, action_worker) = loader::spawn_action_worker(client.clone(), events.clone());
+    let _stream = loader::spawn_event_stream(client, events.clone());
     let mut tui = terminal::Tui::enter().map_err(|error| {
         crate::error::CliError::usage(format!("cannot enter terminal: {error}"))
     })?;
-    let application = app::App::new(work);
-    app::run(application, receiver, &mut tui)
-        .map_err(|error| crate::error::CliError::usage(format!("terminal error: {error}")))
+    let application = app::App::new(loads, actions);
+    let result = app::run(application, receiver, &mut tui)
+        .map_err(|error| crate::error::CliError::usage(format!("terminal error: {error}")));
+    drop(tui);
+    let _ = load_worker.join();
+    let _ = action_worker.join();
+    result
 }

@@ -486,6 +486,12 @@ fn route(
     }
     if segments.len() >= 3 && segments[0..2] == ["v1", "intents"] {
         let intent_id = else_protocol::ids::IntentId::from(segments[2]);
+        // 空投影也用于 Runtime 内部的数据保留流程，不能把它当成已存在的
+        // Intent 暴露给 surface。Memory 挂在独立的系统命名空间，不做此检查。
+        if segments.get(3) != Some(&"memory") && state.handle.projection(&intent_id)?.spec.is_none()
+        {
+            return Err(DaemonError::Api(ApiError::IntentNotFound(intent_id)));
+        }
         if segments.len() == 3 {
             match request.method() {
                 Method::Get => {

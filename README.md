@@ -100,8 +100,8 @@ Inspect what needs attention:
 
 ```bash
 else-bot brief
-else-bot decisions
-else-bot world
+else-bot decisions <intent-id>
+else-bot world <intent-id>
 ```
 
 Drive work and inspect the evidence:
@@ -153,14 +153,27 @@ CLI / TUI / future surfaces
 
 The terminal UI includes:
 
-- **Overview**: brief, decisions, risks, active work, and upcoming items;
-- **Intents**: durable outcomes and their current state;
-- **World**: commitments, waiting-external work, action items, and risks;
-- **Decisions**: the small set of requests that genuinely need the user;
-- **Connectors**: provider health, credentials, and synchronization.
+- **Today**: decisions, active work, recent outcomes, commitments, and risks;
+- **Decisions**: a review queue plus full context, options, custom responses, and
+  explicit confirmation for high-impact approvals;
+- **Results**: finished outcomes, acceptance criteria, and produced artifacts;
+- **Settings**: connector health, credentials, and synchronization.
 
-The CLI also exposes structured commands for automation and scripting. Read-only
-commands support `--json` where available.
+Intent details keep scopes, resource accounting, and raw events behind an explicit
+debug toggle.
+
+The CLI accepts `--json` globally for automation and scripting. Successful commands
+write exactly one JSON document to stdout. Runtime and argument failures write
+`{"error":{"kind":"api|client|usage","message":"..."}}` to stderr and return a
+nonzero status. Existing read-only result shapes remain unchanged; write commands
+return their resulting domain object or a named object for composite results.
+`tool-call` is the exception: it preserves the Tool Gateway response body.
+
+```bash
+else-bot intent "Prepare the release" --json
+else-bot decisions <intent-id> --json
+else-bot --json  # non-interactive personal brief
+```
 
 ## Safety Model
 
@@ -205,10 +218,52 @@ available. The macOS App is not part of the current public release line.
 
 ## Development
 
+Use the isolated development runtime rather than the installed background service.
+It lives in `.else/dev`, listens on `127.0.0.1:4181`, and never requires onboarding
+or modifying the production runtime. Every command builds the current source first.
+
+Start the daemon in one terminal:
+
 ```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+./scripts/dev.sh serve
+```
+
+Populate deterministic demo data and open the TUI in another terminal:
+
+```bash
+./scripts/dev.sh seed
+./scripts/dev.sh tui
+```
+
+The seed command is idempotent and creates a pending decision, a completed result,
+and work waiting for an external event. It uses the built-in scripted harness, so
+it does not need provider credentials or network access. Python 3 is required for
+seeding and reset safety checks.
+
+Run CLI commands against the same development runtime:
+
+```bash
+./scripts/dev.sh cli list
+./scripts/dev.sh cli brief --json
+./scripts/dev.sh cli decisions <intent-id>
+```
+
+After changing only the TUI, rebuild and reopen it; the daemon can stay running.
+After changing the API, daemon, or shared protocol, restart both processes. Stop
+the daemon before clearing the development data:
+
+```bash
+./scripts/dev.sh reset
+```
+
+For another isolated checkout or runtime, set `ELSE_DEV_RUNTIME_DIR` and optionally
+`ELSE_DEV_BIND`. Reset refuses paths outside this repository's `.else` directory
+and refuses to delete a runtime whose foreground daemon is still running.
+
+Run the complete Rust validation suite:
+
+```bash
+./scripts/dev.sh check
 
 cd surfaces/apple
 swift test

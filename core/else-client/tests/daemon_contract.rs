@@ -57,6 +57,37 @@ fn client_creates_reads_and_advances_an_intent_over_http() {
 }
 
 #[test]
+fn client_rejects_unknown_intents_without_hiding_system_memory() {
+    let (_dir, daemon) = start();
+    let client = client(&daemon);
+    let missing = IntentId::from("missing-intent");
+
+    // Memory 是系统级接口，不要求存在名为 else-system 的普通 Intent。
+    client.memory().expect("system memory over http");
+
+    for error in [
+        client.intent(&missing).expect_err("unknown intent read"),
+        client.plan(&missing).expect_err("unknown intent plan"),
+        client
+            .advance(&missing, Some("scripted"))
+            .expect_err("unknown intent advance"),
+    ] {
+        match error {
+            else_client::ClientError::Rejected(message) => {
+                assert!(message.contains("404"), "{message}");
+                assert!(
+                    message.contains("intent not found: missing-intent"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected HTTP 404 rejection, got {other}"),
+        }
+    }
+
+    daemon.shutdown();
+}
+
+#[test]
 fn client_reads_the_personal_brief_and_world() {
     let (_dir, daemon) = start();
     let client = client(&daemon);

@@ -525,9 +525,39 @@ enum MemoryCommand {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    // Clap 在 Cli 构造前就可能失败；先识别显式输出模式，保证参数错误也可机器解析。
+    let requested_json = std::env::args_os()
+        .take_while(|argument| argument != "--")
+        .any(|argument| argument == "--json");
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let failed = error.use_stderr();
+            if requested_json && failed {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "error": { "kind": "usage", "message": error.to_string() }
+                    })
+                );
+            } else {
+                let _ = error.print();
+            }
+            std::process::exit(if failed { 2 } else { 0 });
+        }
+    };
+    let json = cli.json;
     if let Err(error) = dispatch(cli) {
-        eprintln!("error: {error}");
+        if json {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "error": { "kind": error.kind(), "message": error.to_string() }
+                })
+            );
+        } else {
+            eprintln!("error: {error}");
+        }
         std::process::exit(1);
     }
 }
@@ -538,20 +568,22 @@ fn dispatch(cli: Cli) -> Result<()> {
     let Some(command) = cli.command.as_ref() else {
         // 没有子命令就是交互模式。
         let session = Session::open(cli.dir.as_deref())?;
-        // 但管道、CI、重定向里没有终端：这时打印简报，绝不挂死。
-        if !std::io::stdout().is_terminal() {
+        // 管道、CI、重定向与显式 --json 都输出简报，绝不启动交互界面。
+        if cli.json || !std::io::stdout().is_terminal() {
             let client = session.client();
             let brief = client.brief()?;
-            println!("generated_at: {}", brief.generated_at.to_rfc3339());
-            print_world_section("overdue", &brief.overdue);
-            print_world_section("commitments", &brief.open_commitments);
-            print_world_section("waiting_external", &brief.waiting_external);
-            print_world_section("action_items_due_soon", &brief.action_items_due_soon);
-            print_world_section("upcoming_calendar", &brief.upcoming_calendar);
-            print_world_section("risks", &brief.risks);
+            emit_or(cli.json, &brief, |brief| {
+                println!("generated_at: {}", brief.generated_at.to_rfc3339());
+                print_world_section("overdue", &brief.overdue);
+                print_world_section("commitments", &brief.open_commitments);
+                print_world_section("waiting_external", &brief.waiting_external);
+                print_world_section("action_items_due_soon", &brief.action_items_due_soon);
+                print_world_section("upcoming_calendar", &brief.upcoming_calendar);
+                print_world_section("risks", &brief.risks);
+            })?;
             return Ok(());
         }
-        return tui::launch(session.into_client());
+        return tui::launch(session);
     };
     if let Command::ToolCall {
         tool,
@@ -569,13 +601,18 @@ fn dispatch(cli: Cli) -> Result<()> {
             token: token.clone(),
         })
         .map_err(|error| CliError::usage(error.to_string()))?;
-        println!("runtime: {}", daemon.url);
-        println!(
-            "token-file: {}",
-            session::resolve_runtime_dir(cli.dir.as_deref())
-                .join("daemon-token")
-                .display()
-        );
+        let token_file = session::resolve_runtime_dir(cli.dir.as_deref()).join("daemon-token");
+        let startup = serde_json::json!({ "runtime": &daemon.url, "token_file": token_file });
+        emit_or(cli.json, &startup, |startup| {
+            println!(
+                "runtime: {}",
+                startup["runtime"].as_str().unwrap_or_default()
+            );
+            println!(
+                "token-file: {}",
+                startup["token_file"].as_str().unwrap_or_default()
+            );
+        })?;
         loop {
             std::thread::park_timeout(std::time::Duration::from_secs(60));
         }
@@ -596,7 +633,6 @@ fn dispatch(cli: Cli) -> Result<()> {
         } => {
             let snapshot = client.create_intent(&outcome, project.as_deref())?;
             let intent_id = snapshot.spec.id.clone();
-            println!("intent: {intent_id}");
             if allow_opaque {
                 client.configure_opaque_harness(
                     &intent_id,
@@ -609,11 +645,14 @@ fn dispatch(cli: Cli) -> Result<()> {
                 )?;
             }
             let advanced = client.advance(&intent_id, Some(&harness))?;
-            print_snapshot(&advanced);
+            emit_or(cli.json, &advanced, |snapshot| {
+                println!("intent: {intent_id}");
+                print_snapshot(snapshot);
+            })?;
         }
         Command::Advance { intent_id, harness } => {
             let advanced = client.advance(&IntentId::from(intent_id), Some(&harness))?;
-            print_snapshot(&advanced);
+            emit_or(cli.json, &advanced, print_snapshot)?;
         }
         Command::Drive {
             intent_id,
@@ -621,9 +660,11 @@ fn dispatch(cli: Cli) -> Result<()> {
             max_steps,
         } => {
             let driven = client.drive(&IntentId::from(intent_id), Some(&harness), max_steps)?;
-            println!("stopped: {}", driven.stopped);
-            println!("steps: {}", driven.steps);
-            print_snapshot(&driven.snapshot);
+            emit_or(cli.json, &driven, |driven| {
+                println!("stopped: {}", driven.stopped);
+                println!("steps: {}", driven.steps);
+                print_snapshot(&driven.snapshot);
+            })?;
         }
         Command::Event {
             intent_id,
@@ -632,11 +673,11 @@ fn dispatch(cli: Cli) -> Result<()> {
         } => {
             let projection =
                 client.record_external_event(&IntentId::from(intent_id), &source, &summary)?;
-            print_snapshot(&projection);
+            emit_or(cli.json, &projection, print_snapshot)?;
         }
         Command::WaitExternal { intent_id, reason } => {
             let projection = client.wait_for_external(&IntentId::from(intent_id), &reason)?;
-            print_snapshot(&projection);
+            emit_or(cli.json, &projection, print_snapshot)?;
         }
         Command::Wake {
             intent_id,
@@ -644,7 +685,10 @@ fn dispatch(cli: Cli) -> Result<()> {
             reason,
         } => {
             let timer_id = client.schedule_timer(&IntentId::from(intent_id), seconds, &reason)?;
-            println!("timer: {timer_id}");
+            let output = serde_json::json!({ "timer_id": timer_id });
+            emit_or(cli.json, &output, |output| {
+                println!("timer: {}", output["timer_id"].as_str().unwrap_or_default());
+            })?;
         }
         Command::Run { intent_id, harness } => {
             let intent_id = IntentId::from(intent_id);
@@ -667,7 +711,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 )));
             }
             let projection = client.run(&intent_id, Some(&harness))?;
-            print_snapshot(&projection);
+            emit_or(cli.json, &projection, print_snapshot)?;
         }
         Command::Doctor => {
             let runtime_dir = session::resolve_runtime_dir(cli.dir.as_deref());
@@ -710,14 +754,23 @@ fn dispatch(cli: Cli) -> Result<()> {
                         CliError::usage(format!("cannot secure the runtime directory: {error}"))
                     })?;
             }
-            println!("runtime directory: {}", runtime_dir.display());
             let status = service::install(&runtime_dir)?;
-            println!("background service: {}", status.detail);
-            println!();
-            println!("next:");
-            println!("  else-bot              打开终端界面");
-            println!("  else-bot brief        看今天要你管的事");
-            println!("  else-bot doctor       再检查一次");
+            let output = serde_json::json!({ "runtime_dir": runtime_dir, "service": status });
+            emit_or(cli.json, &output, |output| {
+                println!(
+                    "runtime directory: {}",
+                    output["runtime_dir"].as_str().unwrap_or_default()
+                );
+                println!(
+                    "background service: {}",
+                    output["service"]["detail"].as_str().unwrap_or_default()
+                );
+                println!();
+                println!("next:");
+                println!("  else-bot              打开终端界面");
+                println!("  else-bot brief        看今天要你管的事");
+                println!("  else-bot doctor       再检查一次");
+            })?;
         }
         Command::Harnesses => {
             let harnesses = client.harnesses()?;
@@ -753,19 +806,21 @@ fn dispatch(cli: Cli) -> Result<()> {
                     max_observed_effect: parse_effect(&max_effect),
                 },
             )?;
-            println!(
-                "opaque: enabled network={} max_effect={:?} revision={}",
-                spec.opaque_harness_policy.allow_native_provider_network,
-                spec.opaque_harness_policy.max_observed_effect,
-                spec.revision
-            );
+            emit_or(cli.json, &spec, |spec| {
+                println!(
+                    "opaque: enabled network={} max_effect={:?} revision={}",
+                    spec.opaque_harness_policy.allow_native_provider_network,
+                    spec.opaque_harness_policy.max_observed_effect,
+                    spec.revision
+                );
+            })?;
         }
         Command::Abort { intent_id, reason } => {
             let projection = client.abort(
                 &IntentId::from(intent_id),
                 reason.as_deref().unwrap_or("用户取消"),
             )?;
-            print_snapshot(&projection);
+            emit_or(cli.json, &projection, print_snapshot)?;
         }
         Command::List => {
             let intents = client.list_intents()?;
@@ -828,7 +883,13 @@ fn dispatch(cli: Cli) -> Result<()> {
                 &depends_on,
                 max_effect,
             )?;
-            println!("child scope: {child}");
+            let output = serde_json::json!({ "scope_id": child });
+            emit_or(cli.json, &output, |output| {
+                println!(
+                    "child scope: {}",
+                    output["scope_id"].as_str().unwrap_or_default()
+                );
+            })?;
         }
         Command::RunScope {
             intent_id,
@@ -840,7 +901,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 &else_protocol::ids::ScopeId::from(scope_id),
                 Some(&harness),
             )?;
-            print_snapshot(&projection);
+            emit_or(cli.json, &projection, print_snapshot)?;
         }
         Command::Decisions { intent_id } => {
             let intent_id = IntentId::from(intent_id);
@@ -850,7 +911,8 @@ fn dispatch(cli: Cli) -> Result<()> {
                 .filter(|window| window.intent_id == intent_id)
                 .collect();
             let requests = client.intent(&intent_id)?.decisions;
-            print_decisions(&windows, &requests);
+            let output = serde_json::json!({ "windows": &windows, "requests": &requests });
+            emit_or(cli.json, &output, |_| print_decisions(&windows, &requests))?;
         }
         Command::Attention { intent_id } => {
             let view = client.attention(&IntentId::from(intent_id))?;
@@ -882,7 +944,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 &AttentionId::from(request_id),
                 choice,
             )?;
-            print_snapshot(&projection);
+            emit_or(cli.json, &projection, print_snapshot)?;
         }
         Command::Log { intent_id } => {
             let events = client.events(&IntentId::from(intent_id))?;
@@ -966,13 +1028,27 @@ fn dispatch(cli: Cli) -> Result<()> {
         } => {
             let intent_id = IntentId::from(intent_id);
             let (scope_id, generation) = client.rerun(&intent_id, &checkpoint_id, alternative)?;
-            println!("branch scope: {scope_id}");
-            println!("generation: {generation}");
             let snapshot = client.intent(&intent_id)?;
-            print_snapshot(&snapshot);
+            let output = serde_json::json!({
+                "scope_id": scope_id,
+                "generation": generation,
+                "snapshot": &snapshot,
+            });
+            emit_or(cli.json, &output, |output| {
+                println!(
+                    "branch scope: {}",
+                    output["scope_id"].as_str().unwrap_or_default()
+                );
+                println!("generation: {generation}");
+                print_snapshot(&snapshot);
+            })?;
         }
         Command::Compare { intent_id } => {
-            print!("{}", client.compare(&IntentId::from(intent_id))?);
+            let comparison = client.compare(&IntentId::from(intent_id))?;
+            let output = serde_json::json!({ "comparison": comparison });
+            emit_or(cli.json, &output, |output| {
+                print!("{}", output["comparison"].as_str().unwrap_or_default());
+            })?;
         }
         Command::Revise {
             intent_id,
@@ -987,8 +1063,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                 &constraints,
                 &reason,
             )?;
-            println!("revision: {}", spec.revision);
-            println!("outcome: {}", spec.outcome);
+            emit_or(cli.json, &spec, |spec| {
+                println!("revision: {}", spec.revision);
+                println!("outcome: {}", spec.outcome);
+            })?;
         }
         Command::Memory { command, project } => {
             use else_protocol::memory::{MemoryScope, MemoryTier};
@@ -1020,22 +1098,37 @@ fn dispatch(cli: Cli) -> Result<()> {
                         &tiers,
                         chrono::Utc::now(),
                     );
-                    println!("promoted (scope={:?}):", project.as_deref().unwrap_or("*"));
-                    for record in &recalled {
-                        println!(
-                            "  {} {:?} {:?} {} = {}",
-                            record.id, record.tier, record.scope, record.subject, record.value
-                        );
-                    }
-                    if project.is_none() {
-                        println!("candidates:");
-                        for record in memory.candidates.values() {
+                    let candidates: Vec<_> = if project.is_none() {
+                        memory.candidates.values().collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let output = serde_json::json!({
+                        "promoted": &recalled,
+                        "candidates": &candidates,
+                    });
+                    emit_or(cli.json, &output, |_| {
+                        println!("promoted (scope={:?}):", project.as_deref().unwrap_or("*"));
+                        for record in &recalled {
                             println!(
                                 "  {} {:?} {:?} {} = {}",
                                 record.id, record.tier, record.scope, record.subject, record.value
                             );
                         }
-                    }
+                        if project.is_none() {
+                            println!("candidates:");
+                            for record in candidates {
+                                println!(
+                                    "  {} {:?} {:?} {} = {}",
+                                    record.id,
+                                    record.tier,
+                                    record.scope,
+                                    record.subject,
+                                    record.value
+                                );
+                            }
+                        }
+                    })?;
                 }
                 Some(MemoryCommand::Promote {
                     candidate_id,
@@ -1049,14 +1142,22 @@ fn dispatch(cli: Cli) -> Result<()> {
                         &else_protocol::ids::MemoryId::from(candidate_id),
                         scope.as_ref(),
                     )?;
-                    println!("promoted: {} -> {:?}", record.id, record.scope);
+                    emit_or(cli.json, &record, |record| {
+                        println!("promoted: {} -> {:?}", record.id, record.scope);
+                    })?;
                 }
                 Some(MemoryCommand::Revoke { memory_id, reason }) => {
                     client.revoke_memory(
                         &else_protocol::ids::MemoryId::from(memory_id.clone()),
                         &reason,
                     )?;
-                    println!("revoked: {memory_id}");
+                    let output = serde_json::json!({ "memory_id": memory_id, "revoked": true });
+                    emit_or(cli.json, &output, |output| {
+                        println!(
+                            "revoked: {}",
+                            output["memory_id"].as_str().unwrap_or_default()
+                        );
+                    })?;
                 }
                 Some(MemoryCommand::Correct {
                     project,
@@ -1065,7 +1166,9 @@ fn dispatch(cli: Cli) -> Result<()> {
                     value,
                 }) => {
                     let record = client.correct_memory(&project, &subject, &predicate, &value)?;
-                    println!("corrected: {} (project scope only)", record.id);
+                    emit_or(cli.json, &record, |record| {
+                        println!("corrected: {} (project scope only)", record.id);
+                    })?;
                 }
             }
         }
@@ -1080,6 +1183,10 @@ fn dispatch(cli: Cli) -> Result<()> {
             let connector =
                 client.register_connector(&intent_id, &name, &source, "calendar.ics", None, 300)?;
             let result = client.sync_connector(&intent_id, &connector.id)?;
+            if cli.json {
+                emit_json(&serde_json::json!({ "connector": connector, "sync": result }))?;
+                return Ok(());
+            }
             println!(
                 "connector: {} observed={} inserted={} skipped={} candidates={} auto_accepted={} pages={} backfill_complete={} cursor={}",
                 connector.id,
@@ -1136,6 +1243,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                 sync_interval,
             )?;
             let result = client.sync_connector(&intent_id, &connector.id)?;
+            if cli.json {
+                emit_json(&serde_json::json!({ "connector": connector, "sync": result }))?;
+                return Ok(());
+            }
             println!(
                 "connector: {} adapter=calendar.google source={} observed={} inserted={} skipped={} candidates={} pages={} backfill_complete={} cursor={}",
                 connector.id,
@@ -1183,6 +1294,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                 sync_interval,
             )?;
             let result = client.sync_connector(&intent_id, &connector.id)?;
+            if cli.json {
+                emit_json(&serde_json::json!({ "connector": connector, "sync": result }))?;
+                return Ok(());
+            }
             println!(
                 "connector: {} observed={} inserted={} skipped={} candidates={} auto_accepted={} pages={} backfill_complete={} cursor={} webhook_session={} credential={}",
                 connector.id,
@@ -1224,6 +1339,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                 sync_interval,
             )?;
             let result = client.sync_connector(&intent_id, &connector.id)?;
+            if cli.json {
+                emit_json(&serde_json::json!({ "connector": connector, "sync": result }))?;
+                return Ok(());
+            }
             println!(
                 "connector: {} adapter=notion.api observed={} inserted={} skipped={} candidates={} auto_accepted={} pages={} backfill_complete={} cursor={} credential={}",
                 connector.id,
@@ -1273,6 +1392,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                 sync_interval,
             )?;
             let result = client.sync_connector(&intent_id, &connector.id)?;
+            if cli.json {
+                emit_json(&serde_json::json!({ "connector": connector, "sync": result }))?;
+                return Ok(());
+            }
             println!(
                 "connector: {} adapter={} observed={} inserted={} skipped={} candidates={} auto_accepted={} pages={} backfill_complete={} cursor={} credential={}",
                 connector.id,
@@ -1310,17 +1433,29 @@ fn dispatch(cli: Cli) -> Result<()> {
                 max_autonomous_effect: parse_effect(&max_effect),
             };
             let spec = client.configure_connector_policy(&IntentId::from(intent_id), policy)?;
-            println!(
-                "connector policy: auto_accept={} min_confidence={} max_effect={:?} revision={}",
-                spec.connector_policy.auto_accept_low_risk,
-                spec.connector_policy.min_confidence,
-                spec.connector_policy.max_autonomous_effect,
-                spec.revision
-            );
+            emit_or(cli.json, &spec, |spec| {
+                println!(
+                    "connector policy: auto_accept={} min_confidence={} max_effect={:?} revision={}",
+                    spec.connector_policy.auto_accept_low_risk,
+                    spec.connector_policy.min_confidence,
+                    spec.connector_policy.max_autonomous_effect,
+                    spec.revision
+                );
+            })?;
         }
         Command::Connectors { intent_id } => {
             let intent_id = IntentId::from(intent_id);
-            for connector in client.connectors(&intent_id)? {
+            let connectors = client.connectors(&intent_id)?;
+            if cli.json {
+                let mut rows = Vec::with_capacity(connectors.len());
+                for connector in connectors {
+                    let health = client.connector_health(&intent_id, &connector.id)?;
+                    rows.push(serde_json::json!({ "connector": connector, "health": health }));
+                }
+                emit_json(&rows)?;
+                return Ok(());
+            }
+            for connector in connectors {
                 let health = client.connector_health(&intent_id, &connector.id)?;
                 println!(
                     "{} {:?} enabled={} health={:?} failures={} last_success={} next_sync={} pages={} backfill={} credential={} scopes={:?} provider={} sync={:?} read={:?} write={:?} source={}",
@@ -1374,7 +1509,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 input,
                 idempotency_key.as_deref(),
             )?;
-            print_connector_action(&action);
+            emit_or(cli.json, &action, print_connector_action)?;
         }
         Command::ConnectorActionExecute {
             intent_id,
@@ -1385,7 +1520,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 &else_protocol::ids::ConnectorActionId::from(action_id),
                 "execute",
             )?;
-            print_connector_action(&action);
+            emit_or(cli.json, &action, print_connector_action)?;
         }
         Command::ConnectorActionVerify {
             intent_id,
@@ -1396,7 +1531,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 &else_protocol::ids::ConnectorActionId::from(action_id),
                 "verify",
             )?;
-            print_connector_action(&action);
+            emit_or(cli.json, &action, print_connector_action)?;
         }
         Command::ConnectorActionCompensate {
             intent_id,
@@ -1407,12 +1542,15 @@ fn dispatch(cli: Cli) -> Result<()> {
                 &else_protocol::ids::ConnectorActionId::from(action_id),
                 "compensate",
             )?;
-            print_connector_action(&action);
+            emit_or(cli.json, &action, print_connector_action)?;
         }
         Command::ConnectorActions { intent_id } => {
-            for action in client.connector_actions(&IntentId::from(intent_id))? {
-                print_connector_action(&action);
-            }
+            let actions = client.connector_actions(&IntentId::from(intent_id))?;
+            emit_or(cli.json, &actions, |actions| {
+                for action in actions {
+                    print_connector_action(action);
+                }
+            })?;
         }
         Command::ConnectorCredentialRevoke {
             intent_id,
@@ -1422,15 +1560,17 @@ fn dispatch(cli: Cli) -> Result<()> {
                 &IntentId::from(intent_id),
                 &else_protocol::ids::ConnectorId::from(connector_id),
             )?;
-            println!(
-                "credential revoked: {} auth={:?} revoked_at={}",
-                credential.reference,
-                credential.auth_mode,
-                credential
-                    .revoked_at
-                    .map(|value| value.to_rfc3339())
-                    .unwrap_or_default()
-            );
+            emit_or(cli.json, &credential, |credential| {
+                println!(
+                    "credential revoked: {} auth={:?} revoked_at={}",
+                    credential.reference,
+                    credential.auth_mode,
+                    credential
+                        .revoked_at
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_default()
+                );
+            })?;
         }
         Command::ConnectorCredentialSet {
             intent_id,
@@ -1454,16 +1594,18 @@ fn dispatch(cli: Cli) -> Result<()> {
                 connector_credential_from_access_token(client, &connector.adapter, access_token)?;
             let metadata =
                 client.attach_connector_credential(&intent_id, &connector_id, credential)?;
-            println!(
-                "credential updated: {} auth={:?} scopes={:?} expires_at={}",
-                metadata.reference,
-                metadata.auth_mode,
-                metadata.scopes,
-                metadata
-                    .expires_at
-                    .map(|value| value.to_rfc3339())
-                    .unwrap_or_else(|| "none".into())
-            );
+            emit_or(cli.json, &metadata, |metadata| {
+                println!(
+                    "credential updated: {} auth={:?} scopes={:?} expires_at={}",
+                    metadata.reference,
+                    metadata.auth_mode,
+                    metadata.scopes,
+                    metadata
+                        .expires_at
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_else(|| "none".into())
+                );
+            })?;
         }
         Command::ConnectorAdapters => {
             let manifests = client.connector_manifests()?;
@@ -1485,7 +1627,12 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
         }
         Command::Signals { intent_id } => {
-            for signal in client.world_signals_of(&IntentId::from(intent_id))? {
+            let signals = client.world_signals_of(&IntentId::from(intent_id))?;
+            if cli.json {
+                emit_json(&signals)?;
+                return Ok(());
+            }
+            for signal in signals {
                 println!(
                     "{} {:?} {:?} {:?} occurred={} valid_until={} trust={} summary={}",
                     signal.id,
@@ -1531,7 +1678,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 kind,
                 note.as_deref(),
             )?;
-            print_world_item(&item);
+            emit_or(cli.json, &item, print_world_item)?;
         }
         Command::Brief => {
             let brief = client.brief()?;
@@ -1652,21 +1799,28 @@ fn dispatch(cli: Cli) -> Result<()> {
                     corrected_at: chrono::Utc::now(),
                 },
             )?;
-            println!(
-                "correction: {} {:?} {:?} target={:?} label={:?}",
-                correction.id,
-                correction.kind,
-                correction.correlation_kind,
-                correction.target_key,
-                correction.label
-            );
+            emit_or(cli.json, &correction, |correction| {
+                println!(
+                    "correction: {} {:?} {:?} target={:?} label={:?}",
+                    correction.id,
+                    correction.kind,
+                    correction.correlation_kind,
+                    correction.target_key,
+                    correction.label
+                );
+            })?;
         }
         Command::SignalFeed {
             cursor,
             provider,
             entity,
         } => {
-            for record in client.world_signals(cursor, provider.as_deref(), entity.as_deref())? {
+            let records = client.world_signals(cursor, provider.as_deref(), entity.as_deref())?;
+            if cli.json {
+                emit_json(&records)?;
+                return Ok(());
+            }
+            for record in records {
                 println!(
                     "#{} intent={} {} {:?} {:?} {:?} {}",
                     record.seq,
@@ -1680,7 +1834,12 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
         }
         Command::CandidateFeed { cursor } => {
-            for record in client.intent_candidates(cursor)? {
+            let records = client.intent_candidates(cursor)?;
+            if cli.json {
+                emit_json(&records)?;
+                return Ok(());
+            }
+            for record in records {
                 println!(
                     "#{} intent={} {} {:?} {:?} {}",
                     record.seq,
@@ -1694,6 +1853,10 @@ fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::ResolveSignals { intent_id } => {
             let candidates = client.resolve_signals(&IntentId::from(intent_id))?;
+            if cli.json {
+                emit_json(&candidates)?;
+                return Ok(());
+            }
             if candidates.is_empty() {
                 println!("candidates: none");
             }
@@ -1703,6 +1866,10 @@ fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Candidates { intent_id } => {
             let records = client.intent_candidates_of(&IntentId::from(intent_id))?;
+            if cli.json {
+                emit_json(&records)?;
+                return Ok(());
+            }
             if records.is_empty() {
                 println!("candidates: none");
             }
@@ -1782,7 +1949,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                     accepted_by: None,
                 },
             )?;
-            print_candidate(&candidate);
+            emit_or(cli.json, &candidate, print_candidate)?;
         }
         Command::CandidateAccept {
             intent_id,
@@ -1795,28 +1962,30 @@ fn dispatch(cli: Cli) -> Result<()> {
             )?;
             let spec =
                 intent.ok_or_else(|| CliError::usage("candidate acceptance produced no intent"))?;
-            println!("intent: {}", spec.id);
-            println!("outcome: {}", spec.outcome);
-            if let Some(origin) = spec.origin {
-                println!(
-                    "origin: {:?} candidate={:?} signals={} connectors={}",
-                    origin.kind,
-                    origin.candidate_id,
-                    origin.signal_ids.len(),
-                    origin.connector_ids.len()
-                );
-            }
+            emit_or(cli.json, &spec, |spec| {
+                println!("intent: {}", spec.id);
+                println!("outcome: {}", spec.outcome);
+                if let Some(origin) = &spec.origin {
+                    println!(
+                        "origin: {:?} candidate={:?} signals={} connectors={}",
+                        origin.kind,
+                        origin.candidate_id,
+                        origin.signal_ids.len(),
+                        origin.connector_ids.len()
+                    );
+                }
+            })?;
         }
         Command::CandidateReject {
             intent_id,
             candidate_id,
         } => {
-            client.resolve_intent_candidate(
+            let (record, _) = client.resolve_intent_candidate(
                 &IntentId::from(intent_id),
                 &else_protocol::ids::IntentCandidateId::from(candidate_id),
                 false,
             )?;
-            println!("rejected");
+            emit_or(cli.json, &record, |_| println!("rejected"))?;
         }
     }
     Ok(())
@@ -1828,6 +1997,16 @@ fn emit_json<T: serde::Serialize>(value: &T) -> Result<()> {
         .map_err(|error| CliError::usage(format!("cannot encode JSON: {error}")))?;
     println!("{text}");
     Ok(())
+}
+
+/// 同一个领域结果只构造一次，按输出模式选择机器或人类呈现。
+fn emit_or<T: serde::Serialize>(json: bool, value: &T, human: impl FnOnce(&T)) -> Result<()> {
+    if json {
+        emit_json(value)
+    } else {
+        human(value);
+        Ok(())
+    }
 }
 
 fn parse_intent_origin(origin: &str) -> else_protocol::connector::IntentOriginKind {

@@ -1,19 +1,23 @@
-//! Connectors：外部来源的健康状况。
+//! Settings 中的 Connector 健康与同步。
 
 use super::super::data::ConnectorRow;
 use super::super::row::{Pane, Row, RowAction};
 use super::super::theme;
+use super::short_id;
 
-/// Connector 列表。
 pub fn pane(rows: &[ConnectorRow], intent_id: Option<&else_protocol::ids::IntentId>) -> Pane {
     let mut lines = Vec::new();
     if rows.is_empty() {
-        lines.push(Row::muted("no connectors registered"));
+        lines.push(Row::muted("No connectors registered for this intent."));
+        lines.push(Row::muted(
+            "Use the CLI connector commands to connect Calendar, Linear or Notion.",
+        ));
         return Pane {
             title: "Connectors".into(),
             rows: lines,
         };
     }
+    lines.push(Row::muted("Enter or s to sync the selected connector."));
     for row in rows {
         let health = &row.health;
         let style = match health.health {
@@ -21,18 +25,15 @@ pub fn pane(rows: &[ConnectorRow], intent_id: Option<&else_protocol::ids::Intent
             else_protocol::connector::ConnectorHealth::Degraded => theme::warning(),
             else_protocol::connector::ConnectorHealth::Error => theme::critical(),
         };
+        let health_label = match health.health {
+            else_protocol::connector::ConnectorHealth::Healthy => "healthy",
+            else_protocol::connector::ConnectorHealth::Degraded => "degraded",
+            else_protocol::connector::ConnectorHealth::Error => "error",
+        };
         lines.push(Row::action(
             format!(
-                "  {}  {:?}  health={:?}  failures={}  credential={}",
-                row.connector.id,
-                row.connector.adapter,
-                health.health,
-                health.consecutive_failures,
-                if health.credential_configured {
-                    "set"
-                } else {
-                    "none"
-                }
+                "  {} · {} · {health_label}",
+                row.connector.name, row.connector.adapter
             ),
             style,
             RowAction::SyncConnector {
@@ -43,24 +44,30 @@ pub fn pane(rows: &[ConnectorRow], intent_id: Option<&else_protocol::ids::Intent
             },
         ));
         lines.push(Row::muted(format!(
-            "      source={}  last_success={}  next_sync={}",
+            "      source={} · credential={}",
             row.connector.source,
+            if health.credential_configured {
+                "configured"
+            } else {
+                "missing"
+            }
+        )));
+        lines.push(Row::muted(format!(
+            "      last success={} · next sync={}",
             health
                 .last_success_at
-                .map(|value| value.to_rfc3339())
+                .map(|value| value.format("%Y-%m-%d %H:%M UTC").to_string())
                 .unwrap_or_else(|| "never".into()),
-            health.next_sync_at.to_rfc3339()
+            health.next_sync_at.format("%Y-%m-%d %H:%M UTC")
         )));
         if let Some(error) = &health.last_error {
-            lines.push(Row::styled(
-                format!("      error: {error}"),
-                theme::critical(),
-            ));
+            lines.push(Row::styled(format!("      {error}"), theme::critical()));
         }
     }
-    lines.push(Row::muted("press s to sync the selected connector"));
     Pane {
-        title: "Connectors".into(),
+        title: intent_id
+            .map(|id| format!("Connectors · {}", short_id(id)))
+            .unwrap_or_else(|| "Connectors".into()),
         rows: lines,
     }
 }

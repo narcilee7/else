@@ -8,7 +8,7 @@ use else_protocol::api::{
 };
 use else_protocol::attention::AttentionRequest;
 use else_protocol::connector::{ConnectorHealthReport, ConnectorRegistration};
-use else_protocol::world::{IdentityWorld, PersonalBrief, ProjectWorld, WorldItem};
+use else_protocol::world::{IdentityWorld, PersonalBrief, ProjectWorld};
 
 /// Overview 屏幕的数据：一天里真正要你管的事。
 #[derive(Debug, Clone)]
@@ -55,7 +55,6 @@ pub enum Data {
     Overview(Box<OverviewData>),
     Intents(Vec<IntentSnapshot>),
     IntentDetail(Box<IntentDetailData>),
-    World(Vec<WorldItem>),
     Decisions(Box<DecisionsData>),
     Connectors(Vec<ConnectorRow>),
 }

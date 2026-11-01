@@ -51,6 +51,15 @@ impl CliError {
     pub fn usage(message: impl Into<String>) -> Self {
         Self::Usage(message.into())
     }
+
+    /// 稳定的机器可读错误类别。
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Api(_) => "api",
+            Self::Client(_) => "client",
+            Self::Usage(_) => "usage",
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, CliError>;

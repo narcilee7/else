@@ -108,11 +108,6 @@ impl Session {
     pub fn client(&self) -> &RuntimeClient {
         &self.client
     }
-
-    /// 交出 Runtime 客户端的所有权。
-    pub fn into_client(self) -> RuntimeClient {
-        self.client
-    }
 }
 
 /// 在指定目录起一个内嵌 daemon。

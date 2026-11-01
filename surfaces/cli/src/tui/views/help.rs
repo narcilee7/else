@@ -1,12 +1,10 @@
 //! 帮助浮层。
 
+use super::super::theme;
 use ratatui::text::{Line, Span};
 
-use super::super::theme;
-
-/// 键位说明。
 pub fn lines() -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut lines = Vec::new();
     let mut section = |title: &'static str, entries: &[(&'static str, &'static str)]| {
         lines.push(Line::from(Span::styled(
             format!(" {title}"),
@@ -14,7 +12,7 @@ pub fn lines() -> Vec<Line<'static>> {
         )));
         for (key, description) in entries {
             lines.push(Line::from(vec![
-                Span::styled(format!("   {key:<10}"), theme::hint_key()),
+                Span::styled(format!("   {key:<12}"), theme::hint_key()),
                 Span::styled(*description, theme::text()),
             ]));
         }
@@ -23,34 +21,33 @@ pub fn lines() -> Vec<Line<'static>> {
     section(
         "Navigate",
         &[
-            ("j / k", "move down / up"),
-            ("↑ / ↓", "move down / up"),
-            ("PgUp/PgDn", "move a page"),
-            ("Home/End", "jump to first / last"),
-            ("Enter", "open the selected row"),
-            ("Esc", "clear the focused intent"),
+            ("j / k / ↑ / ↓", "move"),
+            ("PgUp / PgDn", "move faster"),
+            ("Home / End", "first / last row"),
+            ("Enter", "open or choose"),
+            ("Esc", "back"),
+            ("mouse wheel", "scroll"),
         ],
     );
     section(
-        "Screens",
+        "Surfaces",
         &[
-            ("1", "Overview — what needs you today"),
-            ("2", "Intents"),
-            ("3", "World"),
-            ("4", "Decisions"),
-            ("5", "Connectors"),
+            ("1", "Today"),
+            ("2", "Decisions"),
+            ("3", "Results"),
+            ("4", "Settings / connectors"),
         ],
     );
     section(
-        "Act",
+        "Work",
         &[
             ("n", "new intent"),
             ("r", "refresh"),
-            ("a", "approve (Decisions) / advance (Intent)"),
-            ("r", "reject (Decisions)"),
-            ("s", "defer (Decisions) / sync (Connectors)"),
-            ("c", "complete a World item"),
-            ("d", "dismiss a World item"),
+            ("a", "advance an intent"),
+            ("d", "toggle intent debug details"),
+            ("e", "write a custom decision"),
+            ("x", "dismiss a decision"),
+            ("s", "sync a connector"),
         ],
     );
     section("Quit", &[("q", "quit"), ("Ctrl-C", "quit")]);

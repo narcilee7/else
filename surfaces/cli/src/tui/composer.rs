@@ -24,6 +24,18 @@ impl Composer {
         &self.buffer
     }
 
+    /// 光标位置（按字符计数）。
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    /// 在当前光标处插入粘贴文本。
+    pub fn insert_str(&mut self, text: &str) {
+        let index = self.byte_index(self.cursor);
+        self.buffer.insert_str(index, text);
+        self.cursor += text.chars().count();
+    }
+
     /// 清空。
     pub fn clear(&mut self) {
         self.buffer.clear();
