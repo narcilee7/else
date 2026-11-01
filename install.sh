@@ -48,7 +48,7 @@ asset="else-$target.tar.gz"
 url="https://github.com/$REPO/releases/download/v$VERSION/$asset"
 checksums_url="https://github.com/$REPO/releases/download/v$VERSION/SHA256SUMS"
 
-say "下载 else $VERSION（$target）…"
+say "下载 else ${VERSION} (${target})…"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 curl -fsSL "$url" -o "$tmp/$asset" || die "下载失败：$url"
