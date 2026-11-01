@@ -1,4 +1,5 @@
 /target
+documents/
 **/*.rs.bk
 .DS_Store
 .else/

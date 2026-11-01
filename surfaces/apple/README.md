@@ -19,8 +19,6 @@ macOS 原生壳，使用 SwiftUI 与 Swift Package Manager。目标不是再做�
 - Lease 修复：支持清理已结束 Run / 终态 Scope 的孤儿 Lease，活跃 Lease 不受影响
 - 发布：Developer ID hardened runtime 签名、notarytool 公证、staple 与 SHA-256 打包脚本
 
-视觉、Motion 与组件约束见 [DESIGN.md](../../DESIGN.md)。
-
 ## 结构
 
 ```text
