@@ -55,6 +55,7 @@ impl LineParser for JsonParser {
 
 fn fake_harness(script: &'static str) -> ProcessHarness<JsonParser> {
     ProcessHarness {
+        dynamic_egress_hosts: Vec::new,
         name: "fake-harness",
         capabilities: HarnessCapabilities {
             cancel: CancelSupport::KillOnly,
@@ -91,7 +92,7 @@ fn process_harness_bridges_events_and_verifies() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("桥接契约验证", None, Default::default())
+        .create_thread_with_done_when("桥接契约验证", None, Default::default(), plan_done())
         .unwrap();
 
     let projection = runtime
@@ -147,7 +148,7 @@ fn failed_harness_converges_without_completing() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("失败收敛", None, Default::default())
+        .create_thread_with_done_when("失败收敛", None, Default::default(), plan_done())
         .unwrap();
     let script = r#"{"type":"output","text":"尝试中"}
 {"type":"failed","reason":"依赖服务不可达"}
@@ -185,7 +186,7 @@ fn harness_exit_without_completion_is_failure() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("静默退出", None, Default::default())
+        .create_thread_with_done_when("静默退出", None, Default::default(), plan_done())
         .unwrap();
     // 进程正常退出但从未报告 Completed：不能当成成功
     let error = runtime
@@ -204,7 +205,7 @@ fn terminal_thread_rerun_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("终态幂等", None, Default::default())
+        .create_thread_with_done_when("终态幂等", None, Default::default(), plan_done())
         .unwrap();
     runtime
         .run_adapter(&spec.id, &fake_harness(SUCCESS_SCRIPT))
@@ -215,4 +216,12 @@ fn terminal_thread_rerun_is_idempotent() {
         .unwrap();
     assert_eq!(again.state, Some(ThreadState::Completed));
     assert_eq!(runtime.events(&spec.id).unwrap().len(), before);
+}
+
+/// 夹具 Harness 写 plan.md：用机器可查的验收标准，让用例专注在它要验证的机制上。
+fn plan_done() -> Vec<else_protocol::thread::Criterion> {
+    vec![else_protocol::thread::Criterion::file_exists(
+        "计划产物存在",
+        "plan.md",
+    )]
 }

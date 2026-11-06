@@ -90,6 +90,14 @@ pub trait HarnessAdapter {
     fn egress_allowlist(&self) -> Vec<&'static str> {
         vec![]
     }
+    /// 运行时才知道的 Provider 域名。
+    ///
+    /// 默认名单是官方域名；但把 Agent 指向自建/中转端点时，真实流量不走
+    /// 官方域名。名单必须跟着真实端点走，否则沙箱会把合法请求当成外联
+    /// 拒绝，而失败看起来只是"连不上网"。
+    fn dynamic_egress_hosts(&self) -> Vec<String> {
+        vec![]
+    }
     fn execute(&self, request: &HarnessRequest) -> Result<()>;
 }
 
@@ -262,6 +270,8 @@ pub struct ProcessHarness<P> {
     pub network: else_environment::NetworkPolicy,
     /// Opaque Harness 的 Provider 域名 Allowlist；只对代理生效。
     pub egress_allowlist: &'static [&'static str],
+    /// 运行时从环境/配置推导出的额外 Provider 域名（见 `dynamic_egress_hosts`）。
+    pub dynamic_egress_hosts: fn() -> Vec<String>,
     /// 墙钟超时：到点杀进程并判失败，不等待 Harness 自觉。
     pub timeout: Option<std::time::Duration>,
     pub prepare: PrepareFn,
@@ -302,6 +312,13 @@ impl<P: LineParser> HarnessAdapter for ProcessHarness<P> {
 
     fn egress_allowlist(&self) -> Vec<&'static str> {
         self.egress_allowlist.to_vec()
+    }
+
+    fn dynamic_egress_hosts(&self) -> Vec<String> {
+        (self.dynamic_egress_hosts)()
+            .into_iter()
+            .filter(|host| !host.is_empty())
+            .collect()
     }
 
     fn execute(&self, request: &HarnessRequest) -> Result<()> {

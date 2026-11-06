@@ -11,7 +11,12 @@ use else_protocol::ids::{MemoryId, ScopeId, ThreadId};
 use else_protocol::memory::{
     MemoryRecord, MemoryScope, MemorySource, MemoryTier, SnapshotAudience,
 };
-use else_protocol::thread::{ThreadSpec, ThreadState};
+use else_protocol::thread::{Criterion, ThreadSpec, ThreadState};
+
+/// 这些用例关心的是 Context/Memory，不是验收策略：用机器可查的标准。
+fn plan_done() -> Vec<Criterion> {
+    vec![Criterion::file_exists("计划存在", "plan.md")]
+}
 
 fn complete_via_approve(runtime: &Runtime, spec: &ThreadSpec) {
     let projection = runtime.run(&spec.id).unwrap();
@@ -45,7 +50,12 @@ fn completed_thread_recalls_into_new_planner_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec_a = runtime
-        .create_thread("发布 1.8 版本", Some("console".into()), Default::default())
+        .create_thread_with_done_when(
+            "发布 1.8 版本",
+            Some("console".into()),
+            Default::default(),
+            plan_done(),
+        )
         .unwrap();
     complete_via_approve(&runtime, &spec_a);
 
@@ -57,7 +67,12 @@ fn completed_thread_recalls_into_new_planner_snapshot() {
     );
 
     let spec_b = runtime
-        .create_thread("发布 1.9 版本", Some("console".into()), Default::default())
+        .create_thread_with_done_when(
+            "发布 1.9 版本",
+            Some("console".into()),
+            Default::default(),
+            plan_done(),
+        )
         .unwrap();
     let snapshot = runtime
         .compile_snapshot(&spec_b.id, SnapshotAudience::Planner)
@@ -90,7 +105,12 @@ fn project_correction_does_not_leak_to_other_scopes() {
 
     let recall_for = |project: Option<&str>| {
         let spec = runtime
-            .create_thread("验证召回", project.map(str::to_string), Default::default())
+            .create_thread_with_done_when(
+                "验证召回",
+                project.map(str::to_string),
+                Default::default(),
+                plan_done(),
+            )
             .unwrap();
         runtime
             .compile_snapshot(&spec.id, SnapshotAudience::Planner)
@@ -110,7 +130,12 @@ fn verifier_ignores_memory_and_stays_on_original_done_when() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("达到可发布状态", Some("console".into()), Default::default())
+        .create_thread_with_done_when(
+            "达到可发布状态",
+            Some("console".into()),
+            Default::default(),
+            plan_done(),
+        )
         .unwrap();
     // 记忆中塞入一条试图放宽验收标准的“事实”
     runtime
@@ -155,7 +180,12 @@ fn memory_and_snapshots_replay_identically_after_reopen() {
     let (spec_id, before) = {
         let runtime = Runtime::open(dir.path()).unwrap();
         let spec = runtime
-            .create_thread("验证记忆重放", Some("console".into()), Default::default())
+            .create_thread_with_done_when(
+                "验证记忆重放",
+                Some("console".into()),
+                Default::default(),
+                plan_done(),
+            )
             .unwrap();
         runtime
             .correct_memory(
@@ -212,7 +242,7 @@ fn revision_cancels_only_affected_scopes() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("验证 Revision 联动", None, Default::default())
+        .create_thread_with_done_when("验证 Revision 联动", None, Default::default(), plan_done())
         .unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);

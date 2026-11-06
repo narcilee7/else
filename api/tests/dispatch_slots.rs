@@ -18,6 +18,7 @@ impl LineParser for NullParser {
 
 fn fake_adapter() -> ProcessHarness<NullParser> {
     ProcessHarness {
+        dynamic_egress_hosts: Vec::new,
         name: "fake-slot-harness",
         capabilities: HarnessCapabilities {
             cancel: CancelSupport::KillOnly,
@@ -58,7 +59,7 @@ fn slot_exhaustion_rejects_run_before_any_event() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("槽位测试", None, Default::default())
+        .create_thread_with_done_when("槽位测试", None, Default::default(), plan_done())
         .unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
@@ -76,4 +77,12 @@ fn slot_exhaustion_rejects_run_before_any_event() {
     // 准入拒绝：不产生任何新事件（无 RunStarted、无 Lease）
     assert_eq!(runtime.events(&spec.id).unwrap().len(), before);
     unsafe { std::env::remove_var("ELSE_MAX_RUN_SLOTS") };
+}
+
+/// 夹具 Harness 写 plan.md：用机器可查的验收标准，让用例专注在它要验证的机制上。
+fn plan_done() -> Vec<else_protocol::thread::Criterion> {
+    vec![else_protocol::thread::Criterion::file_exists(
+        "计划产物存在",
+        "plan.md",
+    )]
 }

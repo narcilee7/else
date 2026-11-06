@@ -21,6 +21,7 @@ impl LineParser for CompletedParser {
 
 fn completed_harness() -> ProcessHarness<CompletedParser> {
     ProcessHarness {
+        dynamic_egress_hosts: Vec::new,
         name: "manual-verification",
         capabilities: HarnessCapabilities {
             cancel: CancelSupport::KillOnly,

@@ -37,6 +37,7 @@ impl LineParser for JsonParser {
 
 fn fake_adapter(name: &'static str, script: &'static str) -> ProcessHarness<JsonParser> {
     ProcessHarness {
+        dynamic_egress_hosts: Vec::new,
         name,
         capabilities: HarnessCapabilities {
             cancel: CancelSupport::KillOnly,
@@ -66,6 +67,7 @@ fn fake_adapter(name: &'static str, script: &'static str) -> ProcessHarness<Json
 
 fn dependent_harness() -> ProcessHarness<JsonParser> {
     ProcessHarness {
+        dynamic_egress_hosts: Vec::new,
         name: "dependent",
         capabilities: HarnessCapabilities {
             cancel: CancelSupport::KillOnly,
@@ -111,7 +113,12 @@ fn dispatch_runs_scope_in_isolated_workspace_and_keeps_root_running() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("编码任务：实现两个模块", None, Default::default())
+        .create_thread_with_done_when(
+            "编码任务：实现两个模块",
+            None,
+            Default::default(),
+            plan_done(),
+        )
         .unwrap();
     runtime.run(&spec.id).unwrap(); // 根： scripted 推进到 NeedsDecision，产生计划产物
     let root = root_scope(&runtime, &spec.id);
@@ -185,7 +192,7 @@ fn dispatch_terminal_scope_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("幂等派发", None, Default::default())
+        .create_thread_with_done_when("幂等派发", None, Default::default(), plan_done())
         .unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
@@ -208,7 +215,7 @@ fn dependent_scope_receives_artifacts_from_its_dependency() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("依赖工件交接", None, Default::default())
+        .create_thread_with_done_when("依赖工件交接", None, Default::default(), plan_done())
         .unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
@@ -253,4 +260,12 @@ fn rule_selection_prefers_explicit_hint_and_degrades() {
         else_harness::select_harness("整理会议纪要", None),
         else_harness::SCRIPTED
     );
+}
+
+/// 夹具 Harness 写 plan.md：用机器可查的验收标准，让用例专注在它要验证的机制上。
+fn plan_done() -> Vec<else_protocol::thread::Criterion> {
+    vec![else_protocol::thread::Criterion::file_exists(
+        "计划产物存在",
+        "plan.md",
+    )]
 }

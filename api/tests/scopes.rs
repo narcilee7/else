@@ -20,7 +20,7 @@ fn root_scope(runtime: &Runtime, thread_id: &ThreadId) -> ScopeId {
 
 fn setup_tree(runtime: &Runtime) -> (else_protocol::thread::ThreadSpec, ScopeId, ScopeId, ScopeId) {
     let spec = runtime
-        .create_thread("验证委托树", None, Default::default())
+        .create_thread_with_done_when("验证委托树", None, Default::default(), plan_done())
         .unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(runtime, &spec.id);
@@ -80,7 +80,7 @@ fn delegation_is_replayable_and_cannot_widen_authority() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("权限收窄", None, Default::default())
+        .create_thread_with_done_when("权限收窄", None, Default::default(), plan_done())
         .unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
@@ -116,7 +116,7 @@ fn completing_subagent_does_not_complete_root_thread() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("父子终态隔离", None, Default::default())
+        .create_thread_with_done_when("父子终态隔离", None, Default::default(), plan_done())
         .unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
@@ -196,4 +196,12 @@ fn kill_at_every_tree_abort_boundary_recovers_all_descendants() {
         let reopened = Runtime::open(dir.path()).unwrap();
         assert_eq!(reopened.events(&spec.id).unwrap().len(), count, "cut={cut}");
     }
+}
+
+/// 夹具 Harness 写 plan.md：用机器可查的验收标准。
+fn plan_done() -> Vec<else_protocol::thread::Criterion> {
+    vec![else_protocol::thread::Criterion::file_exists(
+        "计划产物存在",
+        "plan.md",
+    )]
 }

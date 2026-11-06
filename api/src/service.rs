@@ -1847,7 +1847,9 @@ fn reconcile_all(runtime: &Runtime) -> Option<DateTime<Utc>> {
         ) {
             continue;
         }
-        if runtime.drive(&spec.id, None, 16).is_err() {
+        // 后台只推进调度层，不替用户启动 Run：创建与配置之间的空隙
+        // 不能被 reconciler 抢跑。
+        if runtime.drive_scheduling(&spec.id, 16).is_err() {
             had_error = true;
         }
         if let Ok(projection) = runtime.projection(&spec.id) {

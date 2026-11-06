@@ -160,13 +160,16 @@ impl Sandbox {
             )));
         }
         for path in &mut profile.write_paths {
-            *path = path.canonicalize().map_err(|error| {
+            // 只验证，不改写：macOS 的 /tmp 与 /private/tmp 是 firmlink，
+            // Seatbelt 按访问路径字面匹配。把写路径统一换成解析后的形式，
+            // 会让子进程用原写法访问时被拒。两种写法都交给 profile 层生成规则。
+            let canonical = path.canonicalize().map_err(|error| {
                 SandboxError::InvalidProfile(format!(
                     "private write path {}: {error}",
                     path.display()
                 ))
             })?;
-            if !path.is_dir() {
+            if !canonical.is_dir() {
                 return Err(SandboxError::InvalidProfile(format!(
                     "private write path is not a directory: {}",
                     path.display()

@@ -29,6 +29,7 @@ impl LineParser for CompletedParser {
 
 fn failing_harness() -> ProcessHarness<EmptyParser> {
     ProcessHarness {
+        dynamic_egress_hosts: Vec::new,
         name: "dependency-failure",
         capabilities: HarnessCapabilities {
             cancel: CancelSupport::KillOnly,
@@ -55,6 +56,7 @@ fn failing_harness() -> ProcessHarness<EmptyParser> {
 
 fn successful_harness() -> ProcessHarness<CompletedParser> {
     ProcessHarness {
+        dynamic_egress_hosts: Vec::new,
         name: "dependency-success",
         capabilities: HarnessCapabilities {
             cancel: CancelSupport::KillOnly,
@@ -84,7 +86,7 @@ fn terminal_dependency_failure_gets_one_replacement_and_rewires_downstream() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("依赖自动收敛", None, Default::default())
+        .create_thread_with_done_when("依赖自动收敛", None, Default::default(), plan_done())
         .unwrap();
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let failed = runtime
@@ -163,7 +165,7 @@ fn user_cancelled_dependency_supersedes_downstream_without_retrying_it() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("用户取消上游", None, Default::default())
+        .create_thread_with_done_when("用户取消上游", None, Default::default(), plan_done())
         .unwrap();
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let cancelled = runtime
@@ -202,7 +204,7 @@ fn failed_replacement_is_not_replaced_again_and_downstream_is_cut() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("替换链只允许一层", None, Default::default())
+        .create_thread_with_done_when("替换链只允许一层", None, Default::default(), plan_done())
         .unwrap();
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let failed = runtime
@@ -230,4 +232,12 @@ fn failed_replacement_is_not_replaced_again_and_downstream_is_cut() {
     assert_eq!(projection.scopes[&replacement].state, ScopeState::Failed);
     assert_eq!(projection.scopes[&downstream].state, ScopeState::Superseded);
     assert_eq!(projection.scope_replacements.len(), 1);
+}
+
+/// 夹具 Harness 写 plan.md：用机器可查的验收标准，让用例专注在它要验证的机制上。
+fn plan_done() -> Vec<else_protocol::thread::Criterion> {
+    vec![else_protocol::thread::Criterion::file_exists(
+        "计划产物存在",
+        "plan.md",
+    )]
 }

@@ -765,6 +765,7 @@ dependencies = [
  "else-gateway",
  "else-ledger",
  "else-protocol",
+ "libc",
  "serde_json",
  "tempfile",
  "uuid",

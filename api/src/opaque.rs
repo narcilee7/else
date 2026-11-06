@@ -99,11 +99,12 @@ impl Runtime {
         if adapter.network_access() == HarnessNetworkAccess::Deny {
             return Ok(None);
         }
-        let allowlist = adapter
+        let mut allowlist: Vec<String> = adapter
             .egress_allowlist()
             .into_iter()
             .map(str::to_string)
             .collect();
+        allowlist.extend(adapter.dynamic_egress_hosts());
         EgressProxy::start(allowlist).map(Some).map_err(|error| {
             GatewayError::OpaqueHarnessDenied(format!(
                 "failed to start egress proxy for {}: {error}",

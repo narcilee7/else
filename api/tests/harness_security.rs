@@ -28,6 +28,7 @@ impl LineParser for JsonParser {
 
 fn probe_harness(script: &'static str) -> ProcessHarness<JsonParser> {
     ProcessHarness {
+        dynamic_egress_hosts: Vec::new,
         name: "probe-harness",
         capabilities: HarnessCapabilities {
             cancel: CancelSupport::KillOnly,

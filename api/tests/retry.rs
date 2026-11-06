@@ -16,6 +16,7 @@ impl LineParser for EmptyParser {
 
 fn failing_harness() -> ProcessHarness<EmptyParser> {
     ProcessHarness {
+        dynamic_egress_hosts: Vec::new,
         name: "retry-failure",
         capabilities: HarnessCapabilities {
             cancel: CancelSupport::KillOnly,
@@ -45,7 +46,7 @@ fn explicit_retry_resets_failed_scope_and_returns_to_kernel() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("retry failed scope", None, Default::default())
+        .create_thread_with_done_when("retry failed scope", None, Default::default(), plan_done())
         .unwrap();
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let harness = failing_harness();
@@ -61,4 +62,12 @@ fn explicit_retry_resets_failed_scope_and_returns_to_kernel() {
     assert_ne!(projection.state, Some(ThreadState::Failed));
     assert_eq!(projection.scopes[&root].failure_count, 0);
     assert!(projection.scopes[&root].generation > failed.scopes[&root].generation);
+}
+
+/// 夹具 Harness 写 plan.md：用机器可查的验收标准，让用例专注在它要验证的机制上。
+fn plan_done() -> Vec<else_protocol::thread::Criterion> {
+    vec![else_protocol::thread::Criterion::file_exists(
+        "计划产物存在",
+        "plan.md",
+    )]
 }

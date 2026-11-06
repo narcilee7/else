@@ -50,6 +50,7 @@ pub fn codex() -> ProcessHarness<CodexParser> {
         },
         network: NetworkPolicy::AllowOutbound,
         egress_allowlist: CODEX_PROVIDER_HOSTS,
+        dynamic_egress_hosts: codex_extra_hosts,
         timeout: Some(REAL_HARNESS_TIMEOUT),
         prepare: Box::new(|_workspace, private_dir, prompt| {
             let binary = resolve_binary(
@@ -119,12 +120,36 @@ pub fn claude_code() -> ProcessHarness<ClaudeParser> {
         },
         network: NetworkPolicy::AllowOutbound,
         egress_allowlist: CLAUDE_PROVIDER_HOSTS,
+        dynamic_egress_hosts: claude_extra_hosts,
         timeout: Some(REAL_HARNESS_TIMEOUT),
-        prepare: Box::new(|_workspace, private_dir, prompt| {
+        prepare: Box::new(|workspace, private_dir, prompt| {
             let binary = resolve_binary("claude", &[])?;
             let (home, cleanup_root) = stage_private_dir(private_dir, "claude-config")?;
+            // 没有凭据就登不上，没有 settings 就没有 MCP 与权限预设。
+            // 只抄运行必需的那几个文件，不把整个 ~/.claude 带进沙箱。
+            if let Some(source) = host_home().map(|home| home.join(".claude")) {
+                for file in [
+                    ".credentials.json",
+                    "settings.json",
+                    "settings.local.json",
+                    "CLAUDE.md",
+                ] {
+                    let from = source.join(file);
+                    if from.is_file() {
+                        std::fs::copy(&from, home.join(file))?;
+                    }
+                }
+            }
+            if let Some(source) = host_home().map(|home| home.join(".claude.json")) {
+                if source.is_file() {
+                    std::fs::copy(&source, home.join(".claude.json"))?;
+                }
+            }
             let mut env = vec![
                 ("CLAUDE_CONFIG_DIR".to_string(), home.display().to_string()),
+                // bun 编译的原生二进制会把临时目录建在 $TMPDIR：沙箱只放
+                // Workspace，所以必须显式指向它，不能用宿主的 /tmp。
+                ("TMPDIR".to_string(), workspace.display().to_string()),
                 // claude 2.x 是 bun 编译的原生二进制；PATH 兜底其可能调用的子工具
                 (
                     "PATH".to_string(),
@@ -148,12 +173,34 @@ pub fn claude_code() -> ProcessHarness<ClaudeParser> {
                 // claude 2.x 为 bun 编译的单文件原生二进制，canonicalize 后只读放行
                 // 其真实路径即可；若未来拆分运行时再按拒绝日志收敛。
                 read_paths: vec![binary],
-                write_paths: vec![home],
+                write_paths: vec![home, claude_work_dir()?],
                 cleanup_paths: vec![cleanup_root],
             })
         }),
         parser: ClaudeParser,
     }
+}
+
+/// Claude Code 不认 `$TMPDIR`，固定它在 `/tmp/claude-<uid>` 下建临时目录。
+///
+/// 所以只能把那一块窄得不能再窄的路径写放给它；不这样做，
+/// 真实 Harness 在沙箱里第一步就 EPERM。
+fn claude_work_dir() -> std::io::Result<PathBuf> {
+    let uid = current_uid();
+    let path = PathBuf::from("/tmp").join(format!("claude-{uid}"));
+    std::fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
+#[cfg(unix)]
+fn current_uid() -> u32 {
+    // SAFETY: getuid 没有参数也没有内存影响。
+    unsafe { libc::getuid() }
+}
+
+#[cfg(not(unix))]
+fn current_uid() -> u32 {
+    0
 }
 
 /// 按 PATH 与常见位置解析 Harness 二进制绝对路径；找不到是明确的启动失败。
@@ -388,4 +435,40 @@ fn summarize_input(input: &serde_json::Value) -> String {
         }
     }
     input.to_string().chars().take(200).collect()
+}
+
+/// 用户把 Codex 指向自建/中转端点时，真实流量不走官方域名。
+/// 名单跟着端点走：否则 egress 代理会把合法请求当成外联拒绝。
+fn codex_extra_hosts() -> Vec<String> {
+    base_url_host("OPENAI_BASE_URL").into_iter().collect()
+}
+
+fn claude_extra_hosts() -> Vec<String> {
+    base_url_host("ANTHROPIC_BASE_URL")
+        .into_iter()
+        .chain(claude_settings_base_url_host())
+        .collect()
+}
+
+/// Claude Code 的端点常写在 `~/.claude/settings.json` 的 `env` 里，
+/// 而不是进程环境。只读这一个字段。
+fn claude_settings_base_url_host() -> Option<String> {
+    let path = host_home()?.join(".claude").join("settings.json");
+    let body = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let base_url = value["env"]["ANTHROPIC_BASE_URL"].as_str()?;
+    host_of(base_url)
+}
+
+/// 从 `<scheme>://host[:port]/...` 里取出 host。取不到就返回 None。
+fn base_url_host(key: &str) -> Option<String> {
+    let value = std::env::var(key).ok()?;
+    host_of(&value)
+}
+
+fn host_of(value: &str) -> Option<String> {
+    let rest = value.split("://").nth(1).unwrap_or(value);
+    let host = rest.split('/').next()?.rsplit('@').next()?;
+    let host = host.split(':').next()?;
+    (!host.is_empty() && host != "localhost" && host != "127.0.0.1").then(|| host.to_string())
 }

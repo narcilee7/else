@@ -36,6 +36,7 @@ fn fake_harness(
     timeout: Option<std::time::Duration>,
 ) -> ProcessHarness<JsonParser> {
     ProcessHarness {
+        dynamic_egress_hosts: Vec::new,
         name: "fake-failure-harness",
         capabilities: HarnessCapabilities {
             cancel: CancelSupport::KillOnly,
@@ -75,7 +76,7 @@ fn prepare_failure_is_startup_failure() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("启动失败", None, Default::default())
+        .create_thread_with_done_when("启动失败", None, Default::default(), plan_done())
         .unwrap();
     let mut harness = fake_harness("true", None);
     harness.prepare = Box::new(|_, _, _| {
@@ -100,7 +101,7 @@ fn crash_exit_carries_stderr_evidence() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("崩溃证据", None, Default::default())
+        .create_thread_with_done_when("崩溃证据", None, Default::default(), plan_done())
         .unwrap();
     let error = runtime
         .run_adapter(
@@ -118,7 +119,7 @@ fn timeout_kills_process_and_fails() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("超时收敛", None, Default::default())
+        .create_thread_with_done_when("超时收敛", None, Default::default(), plan_done())
         .unwrap();
     let started = std::time::Instant::now();
     let error = runtime
@@ -158,7 +159,7 @@ fn abort_mid_run_fences_late_output() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("运行中取消", None, Default::default())
+        .create_thread_with_done_when("运行中取消", None, Default::default(), plan_done())
         .unwrap();
     let thread_id = spec.id.clone();
 
@@ -227,7 +228,7 @@ fn completion_without_done_when_evidence_is_not_verified() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("必须真实产出文件", None, Default::default())
+        .create_thread_with_done_when("必须真实产出文件", None, Default::default(), plan_done())
         .unwrap();
     let script = r#"printf '%s\n' '{"type":"completed","summary":"我完成了"}'"#;
     let error = runtime
@@ -245,4 +246,12 @@ fn completion_without_done_when_evidence_is_not_verified() {
         runtime.projection(&spec.id).unwrap().state,
         Some(ThreadState::Completed)
     );
+}
+
+/// 夹具 Harness 写 plan.md：用机器可查的验收标准，让用例专注在它要验证的机制上。
+fn plan_done() -> Vec<else_protocol::thread::Criterion> {
+    vec![else_protocol::thread::Criterion::file_exists(
+        "计划产物存在",
+        "plan.md",
+    )]
 }

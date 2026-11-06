@@ -179,6 +179,7 @@ impl Runtime {
             }
         };
         let harness = ProcessHarness {
+            dynamic_egress_hosts: Vec::new,
             name: "bound-agent",
             capabilities: HarnessCapabilities {
                 cancel: CancelSupport::KillOnly,

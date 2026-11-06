@@ -30,6 +30,7 @@ impl LineParser for CompletedParser {
 
 fn failing_harness() -> ProcessHarness<NullParser> {
     ProcessHarness {
+        dynamic_egress_hosts: Vec::new,
         name: "kernel-failure",
         capabilities: HarnessCapabilities {
             cancel: CancelSupport::KillOnly,
@@ -56,6 +57,7 @@ fn failing_harness() -> ProcessHarness<NullParser> {
 
 fn successful_child_harness() -> ProcessHarness<CompletedParser> {
     ProcessHarness {
+        dynamic_egress_hosts: Vec::new,
         name: "kernel-success",
         capabilities: HarnessCapabilities {
             cancel: CancelSupport::KillOnly,
@@ -85,7 +87,7 @@ fn kernel_drives_one_step_and_waits_for_real_decisions() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("整理会议纪要", None, Default::default())
+        .create_thread_with_done_when("整理会议纪要", None, Default::default(), plan_done())
         .unwrap();
 
     let initial = runtime.projection(&spec.id).unwrap();
@@ -129,7 +131,7 @@ fn failed_run_is_retried_with_a_new_generation() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("整理会议纪要", None, Default::default())
+        .create_thread_with_done_when("整理会议纪要", None, Default::default(), plan_done())
         .unwrap();
     runtime
         .run_adapter(&spec.id, &failing_harness())
@@ -159,7 +161,7 @@ fn kernel_respects_scope_dependencies_and_fair_root_order() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("整理会议纪要", None, Default::default())
+        .create_thread_with_done_when("整理会议纪要", None, Default::default(), plan_done())
         .unwrap();
     runtime
         .run_adapter(&spec.id, &failing_harness())
@@ -207,7 +209,7 @@ fn due_timer_wakes_drive_until_the_next_wait_state() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("整理会议纪要", None, Default::default())
+        .create_thread_with_done_when("整理会议纪要", None, Default::default(), plan_done())
         .unwrap();
     runtime
         .schedule_timer(
@@ -229,7 +231,7 @@ fn future_timer_is_a_durable_wait_condition() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("整理会议纪要", None, Default::default())
+        .create_thread_with_done_when("整理会议纪要", None, Default::default(), plan_done())
         .unwrap();
     let fire_at = chrono::Utc::now() + chrono::Duration::hours(1);
     runtime
@@ -251,7 +253,7 @@ fn external_event_is_durable_and_can_wake_kernel_progress() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("整理会议纪要", None, Default::default())
+        .create_thread_with_done_when("整理会议纪要", None, Default::default(), plan_done())
         .unwrap();
     runtime
         .record_external_event(&spec.id, "mail", "合作方已回复")
@@ -270,7 +272,7 @@ fn waiting_external_blocks_execution_and_feeds_the_next_context() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("整理会议纪要", None, Default::default())
+        .create_thread_with_done_when("整理会议纪要", None, Default::default(), plan_done())
         .unwrap();
     runtime
         .wait_for_external(&spec.id, "等待合作方回复")
@@ -300,7 +302,7 @@ fn due_timer_resumes_an_external_wait() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("整理会议纪要", None, Default::default())
+        .create_thread_with_done_when("整理会议纪要", None, Default::default(), plan_done())
         .unwrap();
     runtime.wait_for_external(&spec.id, "等待异步任务").unwrap();
     runtime
@@ -315,4 +317,12 @@ fn due_timer_resumes_an_external_wait() {
     assert_eq!(driven.stopped, KernelDriveStop::WaitForUser);
     assert_eq!(driven.projection.external_wait_reason, None);
     assert_ne!(driven.projection.state, Some(ThreadState::WaitingExternal));
+}
+
+/// 夹具 Harness 写 plan.md：用机器可查的验收标准，让用例专注在它要验证的机制上。
+fn plan_done() -> Vec<else_protocol::thread::Criterion> {
+    vec![else_protocol::thread::Criterion::file_exists(
+        "计划产物存在",
+        "plan.md",
+    )]
 }

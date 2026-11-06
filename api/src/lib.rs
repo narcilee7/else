@@ -178,9 +178,11 @@ impl Runtime {
             outcome,
             project,
             mode,
-            vec![else_protocol::thread::Criterion::file_exists(
-                "计划产物写入工作区且校验通过",
-                "plan.md",
+            // 默认验收必须是“人来确认”。以前这里写的是“plan.md 存在”：
+            // 一个桩执行器无条件写出的文件，让 `outcome_verified` 永远是
+            // true —— 这不是验收，是自证。
+            vec![else_protocol::thread::Criterion::manual(
+                "结果符合预期（由你确认）",
             )],
         )
     }

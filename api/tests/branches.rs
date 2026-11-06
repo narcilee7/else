@@ -9,8 +9,18 @@ use else_protocol::thread::ThreadState;
 fn checkpoint_fork_rerun_compare() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
+    // 这个用例关心的是 checkpoint/fork/rerun，不是验收策略：显式用
+    // 机器可查的标准，让一次 approve 就能收敛。
     let spec = runtime
-        .create_thread("把发布推进到可对外状态", None, Default::default())
+        .create_thread_with_done_when(
+            "把发布推进到可对外状态",
+            None,
+            Default::default(),
+            vec![else_protocol::thread::Criterion::file_exists(
+                "计划存在",
+                "plan.md",
+            )],
+        )
         .unwrap();
     let projection = runtime.run(&spec.id).unwrap();
 

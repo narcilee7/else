@@ -576,6 +576,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             let client = session.client();
             let brief = client.brief()?;
             emit_or(cli.json, &brief, |brief| {
+                // 先回答"现在什么在等我"，再谈外部世界。
+                print_needs_you(client);
                 println!("generated_at: {}", brief.generated_at.to_rfc3339());
                 print_world_section("overdue", &brief.overdue);
                 print_world_section("commitments", &brief.open_commitments);
@@ -598,7 +600,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         return Ok(());
     }
     if let Command::Serve { bind, token } = command {
-        let daemon = else_daemon::Daemon::start(else_daemon::DaemonConfig {
+        let daemon = else_daemon::Daemon::start_resident(else_daemon::DaemonConfig {
             dir: session::resolve_runtime_dir(cli.dir.as_deref()),
             bind: bind.clone(),
             token: token.clone(),
@@ -656,6 +658,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 )?;
             }
             let advanced = client.advance(&thread_id, Some(&harness))?;
+            warn_harness_fallback(client, &thread_id, &harness, &advanced);
             emit_or(cli.json, &advanced, |snapshot| {
                 println!("thread: {thread_id}");
                 println!("in: {}", snapshot.spec.mode.label());
@@ -663,7 +666,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             })?;
         }
         Command::Advance { thread_id, harness } => {
-            let advanced = client.advance(&ThreadId::from(thread_id), Some(&harness))?;
+            let thread_id = ThreadId::from(thread_id);
+            let advanced = client.advance(&thread_id, Some(&harness))?;
+            warn_harness_fallback(client, &thread_id, &harness, &advanced);
             emit_or(cli.json, &advanced, print_snapshot)?;
         }
         Command::Drive {
@@ -1699,6 +1704,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 emit_json(&brief)?;
                 return Ok(());
             }
+            print_needs_you(client);
             println!("generated_at: {}", brief.generated_at.to_rfc3339());
             print_world_section("overdue", &brief.overdue);
             print_world_section("commitments", &brief.open_commitments);
@@ -2019,6 +2025,94 @@ fn emit_or<T: serde::Serialize>(json: bool, value: &T, human: impl FnOnce(&T)) -
     } else {
         human(value);
         Ok(())
+    }
+}
+
+/// "现在什么在等我"：跨 Thread 汇总待决策。
+///
+/// 一个在等你的决策会阻塞已经在跑的工作，它比外部世界更紧要，
+/// 所以 brief 先回答这个问题，再说承诺与日程。
+fn print_needs_you(client: &RuntimeClient) {
+    let Ok(threads) = client.list_threads() else {
+        return;
+    };
+    let waiting = threads
+        .iter()
+        .filter(|snapshot| !snapshot.decisions.is_empty())
+        .collect::<Vec<_>>();
+    if waiting.is_empty() {
+        println!("needs_you: none");
+        println!();
+        return;
+    }
+    println!("needs_you:");
+    for snapshot in waiting {
+        for request in &snapshot.decisions {
+            println!("  {}", request.summary);
+            println!("      thread  {}", snapshot.spec.outcome);
+            println!("      why     {}", request.blocked_reason);
+            println!(
+                "      decide  else-bot decide {} {} <option>  ({})",
+                snapshot.spec.id,
+                request.id,
+                request
+                    .options
+                    .iter()
+                    .map(|option| option.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+        }
+    }
+    println!();
+}
+
+/// 用户点名要的执行器没跑起来时，把原因说清楚。
+///
+/// “静默回落 scripted”是最伤人一种失败：用户以为 Agent 干了活，
+/// 实际跑的是一个只会写 plan.md 的桩。
+fn warn_harness_fallback(
+    client: &RuntimeClient,
+    thread_id: &ThreadId,
+    requested: &str,
+    snapshot: &else_protocol::api::ThreadSnapshot,
+) {
+    if requested == "auto" {
+        return;
+    }
+    let Ok(events) = client.events(thread_id) else {
+        return;
+    };
+    let actual = events
+        .iter()
+        .rev()
+        .find_map(|event| match event.payload["type"].as_str() {
+            Some("run_started") => event.payload["data"]["harness"]
+                .as_str()
+                .map(str::to_string),
+            _ => None,
+        });
+    let Some(actual) = actual else {
+        return;
+    };
+    if actual == requested {
+        return;
+    }
+    let reason = if !snapshot.spec.opaque_harness_policy.enabled {
+        "这个 Thread 没开 Opaque Profile，执行器不能接管工具与网络".to_string()
+    } else {
+        match client.harnesses() {
+            Ok(available) if available.iter().all(|harness| harness.name != requested) => {
+                format!("本机找不到 {requested} 的可执行文件")
+            }
+            _ => "被当前策略拒绝".to_string(),
+        }
+    };
+    eprintln!("warning: 你要的是 {requested}，实跑的是 {actual}：{reason}");
+    if !snapshot.spec.opaque_harness_policy.enabled {
+        eprintln!(
+            "         想真的用它：else-bot allow-opaque {thread_id} --network --max-effect reversible"
+        );
     }
 }
 

@@ -35,6 +35,7 @@ impl LineParser for JsonParser {
 
 fn opaque_harness(network: else_environment::NetworkPolicy) -> ProcessHarness<JsonParser> {
     ProcessHarness {
+        dynamic_egress_hosts: Vec::new,
         name: "opaque-probe",
         capabilities: HarnessCapabilities {
             cancel: CancelSupport::KillOnly,

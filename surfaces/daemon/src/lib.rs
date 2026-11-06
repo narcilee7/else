@@ -46,13 +46,29 @@ pub struct DaemonConfig {
 pub struct Daemon {
     pub url: String,
     pub token: String,
+    dir: PathBuf,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     _lock: File,
 }
 
 impl Daemon {
+    /// 启动一个跟随调用方生命的 Runtime（CLI 内嵌用）。
+    ///
+    /// 它不会写 `daemon.pid`：临时替身不该被当成常驻服务。
     pub fn start(config: DaemonConfig) -> Result<Self> {
+        Self::start_with(config, false)
+    }
+
+    /// 启动常驻 Runtime（`serve` / LaunchAgent）。
+    ///
+    /// 它会登记 pid 与监听地址，`doctor` 靠这份登记区分
+    /// "真的在后台跑" 与 "这条命令自己起了一个"。
+    pub fn start_resident(config: DaemonConfig) -> Result<Self> {
+        Self::start_with(config, true)
+    }
+
+    fn start_with(config: DaemonConfig, resident: bool) -> Result<Self> {
         std::fs::create_dir_all(&config.dir)?;
         #[cfg(unix)]
         {
@@ -88,6 +104,9 @@ impl Daemon {
         let service = RuntimeService::start(&config.dir)?;
         let handle = service.handle();
         write_token(&config.dir, &token)?;
+        if resident {
+            write_pid_file(&config.dir, &url)?;
+        }
 
         let state = Arc::new(AppState {
             token: token.clone(),
@@ -109,6 +128,7 @@ impl Daemon {
         Ok(Self {
             url,
             token,
+            dir: config.dir,
             stop,
             worker: Some(worker),
             _lock: lock,
@@ -124,6 +144,7 @@ impl Daemon {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+        remove_pid_file(&self.dir, &self.url);
     }
 }
 
@@ -527,6 +548,21 @@ fn route(
                     "thread": snapshot(&projection),
                 }))?,
             ));
+        }
+        // 事件流：`else-bot log <thread>` 读的就是这一条。
+        // 支持 `?after=<seq>` 做增量读，缺省从头开始。
+        if segments.len() == 4 && segments[3] == "events" && request.method() == &Method::Get {
+            let after = query_value(request.url(), "after")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            let events: Vec<_> = state
+                .handle
+                .events(&thread_id)?
+                .into_iter()
+                .filter(|event| event.seq > after)
+                .map(event_response)
+                .collect();
+            return Ok((200, json_string(&events)?));
         }
         if segments.len() == 4 && segments[3] == "run" && request.method() == &Method::Post {
             check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
@@ -1746,6 +1782,41 @@ impl Read for EventStream {
     }
 }
 
+/// 常驻 Runtime 的自我登记：pid + 监听地址。
+///
+/// 写入失败不阻碍 daemon 启动：这是诊断信息，不是运行前提。
+fn write_pid_file(dir: &Path, url: &str) -> Result<()> {
+    let path = dir.join("daemon.pid");
+    let body = format!("{}\n{url}\n", std::process::id());
+    let _ = write_private(&path, body.as_bytes());
+    Ok(())
+}
+
+/// 只删除自己的登记：另一个 daemon 接管了同一目录时，不能把它的写丢了。
+fn remove_pid_file(dir: &Path, url: &str) {
+    let path = dir.join("daemon.pid");
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        if existing.lines().nth(1) == Some(url) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+fn write_private(path: &Path, body: &[u8]) -> Result<()> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    use std::io::Write;
+    file.write_all(body)?;
+    file.sync_all()?;
+    Ok(())
+}
+
 fn write_token(dir: &Path, token: &str) -> Result<()> {
     let path = dir.join("daemon-token");
     let temporary = dir.join(format!(".daemon-token-{}", uuid::Uuid::new_v4()));
@@ -1796,7 +1867,7 @@ pub fn run_from_args() -> Result<()> {
         .or_else(|| std::env::var_os("ELSE_RUNTIME_DIR").map(PathBuf::from))
         .unwrap_or_else(default_runtime_dir);
     let token_path = dir.join("daemon-token");
-    let daemon = Daemon::start(DaemonConfig { dir, bind, token })?;
+    let daemon = Daemon::start_resident(DaemonConfig { dir, bind, token })?;
     println!("runtime: {}", daemon.url);
     println!("token-file: {}", token_path.display());
     loop {

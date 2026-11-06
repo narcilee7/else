@@ -322,6 +322,24 @@ impl Runtime {
         harness_hint: Option<&str>,
         max_steps: u64,
     ) -> Result<KernelDrive> {
+        self.drive_inner(thread_id, harness_hint, max_steps, true)
+    }
+
+    /// 只推进调度层：定时器、注意力窗口、依赖收敛，**绝不启动 Run**。
+    ///
+    /// 后台 reconciler 用它。否则一个刚创建、用户还没来得及配置的 Thread
+    /// 会被后台先跑一轮，用户传的 harness 与授权永远晚一步。
+    pub fn drive_scheduling(&self, thread_id: &ThreadId, max_steps: u64) -> Result<KernelDrive> {
+        self.drive_inner(thread_id, None, max_steps, false)
+    }
+
+    fn drive_inner(
+        &self,
+        thread_id: &ThreadId,
+        harness_hint: Option<&str>,
+        max_steps: u64,
+        allow_runs: bool,
+    ) -> Result<KernelDrive> {
         let mut steps = 0;
         loop {
             if steps >= max_steps {
@@ -345,6 +363,7 @@ impl Runtime {
                     Some(KernelDriveStop::BlockedByDependency)
                 }
                 KernelAction::ConvergeDependency { .. } => None,
+                KernelAction::Run { .. } if !allow_runs => Some(KernelDriveStop::WaitForRun),
                 KernelAction::FireTimer { .. }
                 | KernelAction::CloseAttentionWindow { .. }
                 | KernelAction::ScheduleAttentionWindow { .. }

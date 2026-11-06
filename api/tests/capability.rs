@@ -73,7 +73,15 @@ fn local_process_binding_dispatches_outbound_agent_and_verifies_result() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("Bound agent outcome", None, Default::default())
+        .create_thread_with_done_when(
+            "Bound agent outcome",
+            None,
+            Default::default(),
+            vec![else_protocol::thread::Criterion::file_exists(
+                "计划存在",
+                "plan.md",
+            )],
+        )
         .unwrap();
     runtime
         .configure_opaque_harness(
@@ -168,7 +176,15 @@ fn mcp_stdio_binding_dispatches_task_through_selected_tool() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("MCP binding outcome", None, Default::default())
+        .create_thread_with_done_when(
+            "MCP binding outcome",
+            None,
+            Default::default(),
+            vec![else_protocol::thread::Criterion::file_exists(
+                "计划存在",
+                "plan.md",
+            )],
+        )
         .unwrap();
     runtime
         .configure_opaque_harness(

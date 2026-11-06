@@ -21,7 +21,7 @@ fn approve_path_resumes_and_completes() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("今天达到可对外发布", None, Default::default())
+        .create_thread_with_done_when("今天达到可对外发布", None, Default::default(), plan_done())
         .unwrap();
 
     // 默认验收标准与显式假设由系统补全（Thread Resolution 最小实现）
@@ -56,7 +56,7 @@ fn reject_path_replans_and_completes_without_asking_again() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("验证自动重规划", None, Default::default())
+        .create_thread_with_done_when("验证自动重规划", None, Default::default(), plan_done())
         .unwrap();
     let projection = runtime.run(&spec.id).unwrap();
     let request_id = projection.open_requests.keys().next().unwrap().clone();
@@ -90,7 +90,7 @@ fn terminal_state_run_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("终态幂等", None, Default::default())
+        .create_thread_with_done_when("终态幂等", None, Default::default(), plan_done())
         .unwrap();
     let projection = runtime.run(&spec.id).unwrap();
     let request_id = projection.open_requests.keys().next().unwrap().clone();
@@ -114,7 +114,7 @@ fn reopening_runtime_replays_same_state() {
     let spec_id = {
         let runtime = Runtime::open(dir.path()).unwrap();
         let spec = runtime
-            .create_thread("验证恢复", None, Default::default())
+            .create_thread_with_done_when("验证恢复", None, Default::default(), plan_done())
             .unwrap();
         runtime.run(&spec.id).unwrap();
         spec.id
@@ -129,4 +129,12 @@ fn reopening_runtime_replays_same_state() {
 /// Thread 的执行位置：Scratch 模式下每个 Thread 一个目录。
 fn workspace(runtime: &Runtime, spec: &else_protocol::thread::ThreadSpec) -> std::path::PathBuf {
     runtime.thread_workspace(spec).unwrap()
+}
+
+/// 夹具场景写 plan.md：用机器可查的验收标准。
+fn plan_done() -> Vec<else_protocol::thread::Criterion> {
+    vec![else_protocol::thread::Criterion::file_exists(
+        "计划产物存在",
+        "plan.md",
+    )]
 }

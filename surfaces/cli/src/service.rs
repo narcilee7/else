@@ -35,8 +35,13 @@ pub struct ServiceStatus {
     pub unit_path: Option<PathBuf>,
     /// 定义文件是否在。
     pub installed: bool,
-    /// 服务是否已经被系统加载。
+    /// 服务是否已经被系统加载（已加载不等于在跑）。
     pub loaded: bool,
+    /// 进程是否真的活着。`launchctl` 会列出已退出、正在重试的 job，
+    /// 只看 label 会把一个崩溃循环当成健康。
+    pub running: bool,
+    /// 服务定义实际指向的 runtime 目录（从 unit 文件读出来，不是猜的）。
+    pub unit_runtime_dir: Option<PathBuf>,
     /// 一句人话说明。
     pub detail: String,
 }
@@ -101,6 +106,8 @@ fn unsupported_status() -> ServiceStatus {
         unit_path: None,
         installed: false,
         loaded: false,
+        running: false,
+        unit_runtime_dir: None,
         detail: "这个平台还没有后台服务支持；可以用 `else-bot serve` 前台运行。".into(),
     }
 }
@@ -136,9 +143,24 @@ fn linux_unit_path() -> Option<PathBuf> {
 fn macos_status(runtime_dir: &Path) -> ServiceStatus {
     let unit_path = macos_unit_path();
     let installed = unit_path.as_ref().is_some_and(|path| path.exists());
-    let loaded = launchctl("list").is_ok_and(|output| output.contains(LAUNCH_AGENT_LABEL));
-    let detail = if loaded {
-        format!("LaunchAgent {LAUNCH_AGENT_LABEL} 已加载")
+    let job = launchctl("list")
+        .ok()
+        .and_then(|output| parse_launchctl_job(&output, LAUNCH_AGENT_LABEL));
+    let loaded = job.is_some();
+    let running = job.as_ref().is_some_and(|job| job.running);
+    // 读 unit 文件里真实的 `--dir`，而不是把手上的目录拼到描述里。
+    let unit_runtime_dir = unit_path
+        .as_ref()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|body| plist_argument(&body, "--dir"));
+    let detail = if running {
+        format!("LaunchAgent {LAUNCH_AGENT_LABEL} 正在运行")
+    } else if let Some(job) = job.filter(|job| !job.running) {
+        format!(
+            "LaunchAgent {LAUNCH_AGENT_LABEL} 已加载但已退出（退出码 {:?}）；\
+             它在反复重启，日志见 ~/Library/Logs/else-runtime.log",
+            job.last_exit
+        )
     } else if installed {
         "LaunchAgent 已安装但没有加载；运行 `else-bot daemon install` 加载它".into()
     } else {
@@ -149,9 +171,63 @@ fn macos_status(runtime_dir: &Path) -> ServiceStatus {
         unit_path,
         installed,
         loaded,
+        running,
+        unit_runtime_dir,
         detail,
     }
     .with_runtime(runtime_dir)
+}
+
+/// `launchctl list` 的一行：`PID\tStatus\tLabel`。
+/// PID 为 `-` 表示 job 已加载但进程没在跑。
+#[cfg(target_os = "macos")]
+struct LaunchctlJob {
+    running: bool,
+    last_exit: Option<i32>,
+}
+
+#[cfg(target_os = "macos")]
+fn parse_launchctl_job(output: &str, label: &str) -> Option<LaunchctlJob> {
+    output.lines().find_map(|line| {
+        let mut columns = line.split('\t');
+        let pid = columns.next()?.trim();
+        let status = columns.next()?.trim();
+        let name = columns.next()?.trim();
+        (name == label).then(|| LaunchctlJob {
+            running: pid != "-" && !pid.is_empty(),
+            last_exit: status.parse::<i32>().ok(),
+        })
+    })
+}
+
+/// 从 plist 文本里取 `--dir` 后面那个参数。
+#[cfg(target_os = "macos")]
+fn plist_argument(body: &str, flag: &str) -> Option<PathBuf> {
+    let mut values = body
+        .split("<string>")
+        .filter_map(|chunk| chunk.split("</string>").next());
+    let mut previous: Option<&str> = None;
+    for value in values.by_ref() {
+        if previous == Some(flag) {
+            return Some(PathBuf::from(value.trim()));
+        }
+        previous = Some(value.trim());
+    }
+    None
+}
+
+/// macOS 后台服务的日志文件。
+///
+/// 没有它，一个崩溃循环的 LaunchAgent 只会默默重试：`launchctl` 说"已加载"，
+/// 而用户看不到任何原因。
+#[cfg(target_os = "macos")]
+pub fn launch_log_path() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| {
+        PathBuf::from(home)
+            .join("Library")
+            .join("Logs")
+            .join("else-runtime.log")
+    })
 }
 
 /// macOS LaunchAgent 的内容。
@@ -183,10 +259,20 @@ fn macos_plist(program: &Path, runtime_dir: &Path) -> String {
          \x20 <string>Interactive</string>\n\
          \x20 <key>ThrottleInterval</key>\n\
          \x20 <integer>10</integer>\n\
+         \x20 <key>StandardOutPath</key>\n\
+         \x20 <string>{}</string>\n\
+         \x20 <key>StandardErrorPath</key>\n\
+         \x20 <string>{}</string>\n\
          </dict>\n\
          </plist>\n",
         program.display(),
-        runtime_dir.display()
+        runtime_dir.display(),
+        launch_log_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+        launch_log_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default()
     )
 }
 
@@ -251,9 +337,24 @@ fn macos_uninstall(runtime_dir: &Path) -> Result<ServiceStatus> {
 fn linux_status(runtime_dir: &Path) -> ServiceStatus {
     let unit_path = linux_unit_path();
     let installed = unit_path.as_ref().is_some_and(|path| path.exists());
-    let loaded = systemctl(&["--user", "is-active", SYSTEMD_UNIT])
+    let active = systemctl(&["--user", "is-active", SYSTEMD_UNIT])
         .is_ok_and(|output| output.trim() == "active");
-    let detail = if loaded {
+    let unit_runtime_dir = unit_path
+        .as_ref()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|body| {
+            body.lines()
+                .find_map(|line| line.strip_prefix("ExecStart="))
+                .and_then(|command| {
+                    command
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .windows(2)
+                        .find(|pair| pair[0] == "--dir")
+                        .map(|pair| PathBuf::from(pair[1]))
+                })
+        });
+    let detail = if active {
         format!("systemd user unit {SYSTEMD_UNIT} 正在运行")
     } else if installed {
         "systemd user unit 已安装但没有运行；运行 `else-bot daemon install` 启动它".into()
@@ -264,7 +365,9 @@ fn linux_status(runtime_dir: &Path) -> ServiceStatus {
         platform: "linux",
         unit_path,
         installed,
-        loaded,
+        loaded: active,
+        running: active,
+        unit_runtime_dir,
         detail,
     }
     .with_runtime(runtime_dir)
@@ -332,8 +435,11 @@ fn linux_uninstall(runtime_dir: &Path) -> Result<ServiceStatus> {
 
 /// 状态里带上 runtime 目录。
 impl ServiceStatus {
+    /// 描述里带上"这个状态是对哪个 runtime 目录说的"。
+    /// 注意：目录来自调用方（当前会话），unit 文件真正指向哪里见
+    /// `unit_runtime_dir`，两者不一致由 doctor 报错。
     fn with_runtime(mut self, runtime_dir: &Path) -> Self {
-        self.detail = format!("{}（runtime: {}）", self.detail, runtime_dir.display());
+        self.detail = format!("{}（当前会话：{}）", self.detail, runtime_dir.display());
         self
     }
 }
