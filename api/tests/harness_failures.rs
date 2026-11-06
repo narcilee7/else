@@ -74,7 +74,9 @@ fn payloads(runtime: &Runtime, thread_id: &ThreadId) -> Vec<String> {
 fn prepare_failure_is_startup_failure() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("启动失败", None).unwrap();
+    let spec = runtime
+        .create_thread("启动失败", None, Default::default())
+        .unwrap();
     let mut harness = fake_harness("true", None);
     harness.prepare = Box::new(|_, _, _| {
         Err(std::io::Error::new(
@@ -97,7 +99,9 @@ fn prepare_failure_is_startup_failure() {
 fn crash_exit_carries_stderr_evidence() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("崩溃证据", None).unwrap();
+    let spec = runtime
+        .create_thread("崩溃证据", None, Default::default())
+        .unwrap();
     let error = runtime
         .run_adapter(
             &spec.id,
@@ -113,7 +117,9 @@ fn crash_exit_carries_stderr_evidence() {
 fn timeout_kills_process_and_fails() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("超时收敛", None).unwrap();
+    let spec = runtime
+        .create_thread("超时收敛", None, Default::default())
+        .unwrap();
     let started = std::time::Instant::now();
     let error = runtime
         .run_adapter(
@@ -151,7 +157,9 @@ fn timeout_kills_process_and_fails() {
 fn abort_mid_run_fences_late_output() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("运行中取消", None).unwrap();
+    let spec = runtime
+        .create_thread("运行中取消", None, Default::default())
+        .unwrap();
     let thread_id = spec.id.clone();
 
     // 慢速 Harness：先发一行输出，睡 3 秒后才报告完成
@@ -218,7 +226,9 @@ fn missing_usage_is_unknown_not_zero() {
 fn completion_without_done_when_evidence_is_not_verified() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("必须真实产出文件", None).unwrap();
+    let spec = runtime
+        .create_thread("必须真实产出文件", None, Default::default())
+        .unwrap();
     let script = r#"printf '%s\n' '{"type":"completed","summary":"我完成了"}'"#;
     let error = runtime
         .run_adapter(&spec.id, &fake_harness(script, None))

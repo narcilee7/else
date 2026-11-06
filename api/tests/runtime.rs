@@ -20,7 +20,9 @@ fn payloads(runtime: &Runtime, thread_id: &ThreadId) -> Vec<String> {
 fn approve_path_resumes_and_completes() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("今天达到可对外发布", None).unwrap();
+    let spec = runtime
+        .create_thread("今天达到可对外发布", None, Default::default())
+        .unwrap();
 
     // 默认验收标准与显式假设由系统补全（Thread Resolution 最小实现）
     assert!(!spec.done_when.is_empty());
@@ -30,7 +32,7 @@ fn approve_path_resumes_and_completes() {
     let projection = runtime.run(&spec.id).unwrap();
     assert_eq!(projection.state, Some(ThreadState::NeedsDecision));
     assert_eq!(projection.open_requests.len(), 1);
-    assert!(dir.path().join("workspace/plan.md").exists());
+    assert!(workspace(&runtime, &spec).join("plan.md").exists());
 
     // approve → 一次性授权放行 shell → 自动续跑 → 按 DoneWhen 验收
     let request_id = projection.open_requests.keys().next().unwrap().clone();
@@ -53,7 +55,9 @@ fn approve_path_resumes_and_completes() {
 fn reject_path_replans_and_completes_without_asking_again() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("验证自动重规划", None).unwrap();
+    let spec = runtime
+        .create_thread("验证自动重规划", None, Default::default())
+        .unwrap();
     let projection = runtime.run(&spec.id).unwrap();
     let request_id = projection.open_requests.keys().next().unwrap().clone();
 
@@ -85,7 +89,9 @@ fn reject_path_replans_and_completes_without_asking_again() {
 fn terminal_state_run_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("终态幂等", None).unwrap();
+    let spec = runtime
+        .create_thread("终态幂等", None, Default::default())
+        .unwrap();
     let projection = runtime.run(&spec.id).unwrap();
     let request_id = projection.open_requests.keys().next().unwrap().clone();
     runtime
@@ -107,7 +113,9 @@ fn reopening_runtime_replays_same_state() {
     let dir = tempfile::tempdir().unwrap();
     let spec_id = {
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_thread("验证恢复", None).unwrap();
+        let spec = runtime
+            .create_thread("验证恢复", None, Default::default())
+            .unwrap();
         runtime.run(&spec.id).unwrap();
         spec.id
     };
@@ -116,4 +124,9 @@ fn reopening_runtime_replays_same_state() {
     let projection = runtime.projection(&spec_id).unwrap();
     assert_eq!(projection.state, Some(ThreadState::NeedsDecision));
     assert_eq!(projection.open_requests.len(), 1);
+}
+
+/// Thread 的执行位置：Scratch 模式下每个 Thread 一个目录。
+fn workspace(runtime: &Runtime, spec: &else_protocol::thread::ThreadSpec) -> std::path::PathBuf {
+    runtime.thread_workspace(spec).unwrap()
 }

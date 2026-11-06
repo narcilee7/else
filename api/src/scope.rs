@@ -118,6 +118,13 @@ impl Runtime {
             .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let subagent = scope.spec.is_some();
         let generation = generation.unwrap_or(scope.generation);
+        // 根 Scope 在 Thread 的执行位置；子 Scope 在 Runtime 下的隔离目录。
+        let workspace = if subagent {
+            self.scope_workspace(thread_id, scope_id)
+        } else {
+            self.thread_workspace(&spec)?
+        };
+        std::fs::create_dir_all(&workspace)?;
         // 执行前编译 Planner 快照；本 Run 后续事件都标记该上下文版本。
         let snapshot =
             self.compile_snapshot(thread_id, else_protocol::memory::SnapshotAudience::Planner)?;
@@ -139,7 +146,7 @@ impl Runtime {
             },
         )?;
         let sandbox_started = self.start_sandbox(&ctx, &lease)?;
-        let tools = ToolGateway::new(&self.ledger, self.workspace.clone());
+        let tools = ToolGateway::new(&self.ledger, workspace.clone());
         let model = ModelGateway::new(&self.ledger, self.provider()?);
         let result = else_harness::run(
             &ctx,

@@ -25,6 +25,7 @@ fn ctx(spec_id: &ThreadId) -> ExecContext {
                 allow_interrupt: true,
                 batch_interval_minutes: 30,
             },
+            mode: Default::default(),
             opaque_harness_policy: else_protocol::thread::OpaqueHarnessPolicy::default(),
             deadline: None,
             assumptions: vec![],

@@ -109,6 +109,36 @@ impl Default for OpaqueHarnessPolicy {
     }
 }
 
+/// Thread 的**执行位置**。
+///
+/// else 是个人 Agent：一次工作可能是写周报、查资料、改代码、发邮件。
+/// 把位置绑成 git worktree 会把产品缩成一种模式，所以位置是 Thread 的属性，
+/// 不是全局设置——同一个 Runtime 里可以同时存在两种。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ThreadMode {
+    /// 默认：Runtime 下的隔离目录，每个 Thread 一个，可以被安全遗弃。
+    #[default]
+    Scratch,
+    /// 用户指定的真实目录：文档、资料库、代码仓库都行。
+    /// Runtime 不拥有它、不复制它，删除 Thread 也不会删它。
+    Directory { path: String },
+}
+
+impl ThreadMode {
+    pub fn is_scratch(&self) -> bool {
+        matches!(self, Self::Scratch)
+    }
+
+    /// 人话描述，用于 CLI/TUI 与错误信息。
+    pub fn label(&self) -> String {
+        match self {
+            Self::Scratch => "scratch".into(),
+            Self::Directory { path } => path.clone(),
+        }
+    }
+}
+
 /// Thread 的用户目标契约（ThreadSpec）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThreadSpec {
@@ -123,6 +153,9 @@ pub struct ThreadSpec {
     pub constraints: Vec<String>,
     pub authority: Authority,
     pub attention_policy: AttentionPolicy,
+    /// 在哪里做。缺省是隔离目录，不假设目标是代码。
+    #[serde(default)]
+    pub mode: ThreadMode,
     /// Opaque Harness 的显式用户风险配置；缺省拒绝。
     #[serde(default)]
     pub opaque_harness_policy: OpaqueHarnessPolicy,

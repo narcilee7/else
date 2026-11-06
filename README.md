@@ -93,6 +93,10 @@ The first screen is a personal brief, not a chat window.
 Create a durable thread:
 
 ```bash
+# in a directory you already own
+else-bot thread "Summarize this week's meeting notes" --in ~/notes
+
+# or in an isolated scratch directory owned by the runtime
 else-bot thread "Prepare the release and verify every platform artifact" --project release
 ```
 

@@ -26,9 +26,9 @@ impl Runtime {
             .ok_or_else(|| ApiError::NotFound(format!("scope {scope_id}")))?;
         let subagent = scope.spec.is_some();
         let workspace = if subagent {
-            self.workspace.join("scopes").join(scope_id.to_string())
+            self.scope_workspace(thread_id, scope_id)
         } else {
-            self.workspace.clone()
+            self.thread_workspace(&spec)?
         };
         let evidence = else_harness::verify::confirm_manual_outcome(&workspace, &spec.done_when)
             .map_err(GatewayError::Model)?;

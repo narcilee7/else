@@ -5,7 +5,7 @@ fn diagnostics_report_contains_health_and_storage_without_secrets() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("诊断测试", Some("else".into()))
+        .create_thread("诊断测试", Some("else".into()), Default::default())
         .unwrap();
     runtime.drive(&spec.id, None, 16).unwrap();
     runtime

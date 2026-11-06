@@ -51,6 +51,9 @@ enum Command {
     /// 开一个 Thread：说清楚要达成什么，它自己开始做
     Thread {
         outcome: String,
+        /// 在哪个目录里做。省略则在 runtime 下的隔离目录里做。
+        #[arg(long = "in", value_name = "DIRECTORY")]
+        directory: Option<std::path::PathBuf>,
         /// 项目作用域：历史结论与纠正按项目召回，不泛化到全局
         #[arg(long)]
         project: Option<String>,
@@ -624,6 +627,7 @@ fn dispatch(cli: Cli) -> Result<()> {
     match command.clone() {
         Command::Thread {
             outcome,
+            directory,
             project,
             harness,
             allow_opaque,
@@ -631,7 +635,14 @@ fn dispatch(cli: Cli) -> Result<()> {
             tool_gateway,
             opaque_max_effect,
         } => {
-            let snapshot = client.create_thread(&outcome, project.as_deref())?;
+            // 位置是一个必须明说的选择，不是一个隐式默认值。
+            let mode = match directory {
+                Some(path) => else_protocol::thread::ThreadMode::Directory {
+                    path: path.to_string_lossy().into_owned(),
+                },
+                None => else_protocol::thread::ThreadMode::Scratch,
+            };
+            let snapshot = client.create_thread(&outcome, project.as_deref(), &mode)?;
             let thread_id = snapshot.spec.id.clone();
             if allow_opaque {
                 client.configure_opaque_harness(
@@ -647,6 +658,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             let advanced = client.advance(&thread_id, Some(&harness))?;
             emit_or(cli.json, &advanced, |snapshot| {
                 println!("thread: {thread_id}");
+                println!("in: {}", snapshot.spec.mode.label());
                 print_snapshot(snapshot);
             })?;
         }
@@ -830,6 +842,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             for snapshot in threads {
                 println!("{}  {}", snapshot.spec.id, snapshot.spec.outcome);
+                println!("    in: {}", snapshot.spec.mode.label());
             }
         }
         Command::Scopes { thread_id } => {

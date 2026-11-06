@@ -80,7 +80,9 @@ fn notion_json() -> serde_json::Value {
 fn project_world_correlates_connectors_and_threads_by_project_key() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let first = runtime.create_thread("推进 Launch", None).unwrap();
+    let first = runtime
+        .create_thread("推进 Launch", None, Default::default())
+        .unwrap();
     let linear_path = dir.path().join("linear.json");
     let notion_path = dir.path().join("notion.json");
     let calendar_path = dir.path().join("calendar.ics");
@@ -108,7 +110,9 @@ fn project_world_correlates_connectors_and_threads_by_project_key() {
     assert_eq!(launch.connector_ids.len(), 3);
     assert_eq!(launch.thread_ids, vec![first.id.clone()]);
 
-    let second = runtime.create_thread("准备 Launch 评审", None).unwrap();
+    let second = runtime
+        .create_thread("准备 Launch 评审", None, Default::default())
+        .unwrap();
     let calendar = runtime
         .register_connector_adapter(
             &second.id,

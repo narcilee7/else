@@ -28,7 +28,7 @@ fn client_creates_reads_and_advances_an_thread_over_http() {
     let client = client(&daemon);
 
     let snapshot = client
-        .create_thread("契约测试目标", Some("contract"))
+        .create_thread("契约测试目标", Some("contract"), &Default::default())
         .expect("create over http");
     assert_eq!(snapshot.spec.outcome, "契约测试目标");
     assert_eq!(snapshot.spec.project.as_deref(), Some("contract"));
@@ -92,7 +92,9 @@ fn client_reads_the_personal_brief_and_world() {
     let (_dir, daemon) = start();
     let client = client(&daemon);
 
-    client.create_thread("简报目标", None).expect("create");
+    client
+        .create_thread("简报目标", None, &Default::default())
+        .expect("create");
 
     // Brief 是跨 Provider 聚合的；没有 Connector 时应为空而不是报错。
     let brief = client.brief().expect("brief over http");
@@ -109,7 +111,9 @@ fn client_writes_require_a_matching_revision() {
     let (_dir, daemon) = start();
     let client = client(&daemon);
 
-    let snapshot = client.create_thread("Revision 冲突", None).expect("create");
+    let snapshot = client
+        .create_thread("Revision 冲突", None, &Default::default())
+        .expect("create");
     let thread_id = snapshot.spec.id.clone();
 
     // 先改一次目标，Revision 前进。

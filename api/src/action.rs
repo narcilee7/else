@@ -159,6 +159,7 @@ impl Runtime {
         action_id: &ConnectorActionId,
     ) -> Result<ConnectorAction> {
         let projection = self.projection(thread_id)?;
+        let workspace = self.workspace_of(&projection)?;
         let action = projection
             .connector_actions
             .get(action_id)
@@ -243,8 +244,7 @@ impl Runtime {
             credential,
             mode: ActionMode::Execute,
         };
-        let tools = ToolGateway::new(&self.ledger, self.workspace.clone())
-            .with_external_executor(&executor);
+        let tools = ToolGateway::new(&self.ledger, workspace).with_external_executor(&executor);
         let mut input = action.input.clone();
         if let Value::Object(object) = &mut input {
             object
@@ -407,6 +407,7 @@ impl Runtime {
         action_id: &ConnectorActionId,
     ) -> Result<ConnectorAction> {
         let projection = self.projection(thread_id)?;
+        let workspace = self.workspace_of(&projection)?;
         let action = projection
             .connector_actions
             .get(action_id)
@@ -483,8 +484,7 @@ impl Runtime {
             credential,
             mode: ActionMode::Compensate,
         };
-        let tools = ToolGateway::new(&self.ledger, self.workspace.clone())
-            .with_external_executor(&executor);
+        let tools = ToolGateway::new(&self.ledger, workspace).with_external_executor(&executor);
         let compensation_key = format!("compensate:{}", action.idempotency_key);
         if tools.effect_is_authorized(&ctx, action.effect, &compensation_key)? {
             self.record_action_state(

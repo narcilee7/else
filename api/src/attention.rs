@@ -442,7 +442,9 @@ mod tests {
     fn batch_window_opens_once_and_aggregates_new_requests() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_thread("整理待办", None).unwrap();
+        let spec = runtime
+            .create_thread("整理待办", None, Default::default())
+            .unwrap();
         runtime.wait_for_external(&spec.id, "等待批量判断").unwrap();
         let first = attention_request(ExpectedLoss::Low, false, false);
         let second = attention_request(ExpectedLoss::Low, false, false);
@@ -473,7 +475,9 @@ mod tests {
     fn due_window_fires_timer_then_closes_exactly_once() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_thread("整理待办", None).unwrap();
+        let spec = runtime
+            .create_thread("整理待办", None, Default::default())
+            .unwrap();
         runtime
             .wait_for_external(&spec.id, "等待注意力窗口")
             .unwrap();
@@ -525,7 +529,9 @@ mod tests {
     fn defer_has_a_persistent_timer_and_stays_hidden_until_closed() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_thread("整理待办", None).unwrap();
+        let spec = runtime
+            .create_thread("整理待办", None, Default::default())
+            .unwrap();
         runtime.wait_for_external(&spec.id, "等待专注间隙").unwrap();
         let request = attention_request(ExpectedLoss::Medium, true, true);
         let request_id = request.id.clone();
@@ -546,7 +552,9 @@ mod tests {
     fn abort_closes_empty_attention_window_and_cancels_timer() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_thread("整理待办", None).unwrap();
+        let spec = runtime
+            .create_thread("整理待办", None, Default::default())
+            .unwrap();
         runtime.wait_for_external(&spec.id, "等待判断").unwrap();
         let request = attention_request(ExpectedLoss::Low, false, false);
         runtime
@@ -568,7 +576,9 @@ mod tests {
     fn revision_invalidates_requests_owned_by_cancelled_scopes() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_thread("整理待办", None).unwrap();
+        let spec = runtime
+            .create_thread("整理待办", None, Default::default())
+            .unwrap();
         let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
         let child = runtime
             .spawn_subagent(&spec.id, &root, "受影响分支", SideEffectKind::ReadOnly)

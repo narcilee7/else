@@ -1215,9 +1215,13 @@ impl Runtime {
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect();
+            // 从 Candidate 接受的 Thread 继承来源 Thread 的执行位置：
+            // 同一件事不应该因为入口不同就换到别的地方做。
+            let mode = source_spec.mode.clone();
             self.create_thread_from_parts(ThreadDraft {
                 outcome: candidate.proposed_outcome.clone(),
                 project: source_spec.project.clone(),
+                mode,
                 done_when: candidate.done_when.clone(),
                 constraints: candidate.constraints.clone(),
                 authority: candidate.authority.clone(),

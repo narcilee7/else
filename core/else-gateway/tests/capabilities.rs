@@ -28,6 +28,7 @@ fn context(thread_id: ThreadId) -> ExecContext {
                 allow_interrupt: true,
                 batch_interval_minutes: 30,
             },
+            mode: Default::default(),
             opaque_harness_policy: Default::default(),
             deadline: None,
             assumptions: vec![],

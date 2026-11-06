@@ -11,7 +11,9 @@ fn resident_runtime_reconciles_threads_and_decisions() {
     let dir = tempfile::tempdir().unwrap();
     let service = RuntimeService::start(dir.path()).unwrap();
     let handle = service.handle();
-    let spec = handle.create_thread("整理会议纪要", None).unwrap();
+    let spec = handle
+        .create_thread("整理会议纪要", None, Default::default())
+        .unwrap();
 
     let waiting = wait_until(&handle, &spec.id, ThreadState::NeedsDecision);
     let request = waiting

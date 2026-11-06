@@ -42,9 +42,13 @@ fn retention_deletes_only_terminal_threads_past_cutoff() {
             retention_days: Some(7),
         })
         .unwrap();
-    let terminal = runtime.create_thread("终态测试", None).unwrap();
+    let terminal = runtime
+        .create_thread("终态测试", None, Default::default())
+        .unwrap();
     runtime.abort(&terminal.id, "retention test").unwrap();
-    let running = runtime.create_thread("运行中测试", None).unwrap();
+    let running = runtime
+        .create_thread("运行中测试", None, Default::default())
+        .unwrap();
 
     let not_due = runtime.enforce_retention(Utc::now()).unwrap();
     assert!(not_due.is_empty());

@@ -58,7 +58,9 @@ fn host_env_credentials_do_not_leak_into_sandbox() {
     unsafe { std::env::set_var("ELSE_TEST_SECRET_SENTINEL", "super-secret-value") };
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("凭据泄漏探针", None).unwrap();
+    let spec = runtime
+        .create_thread("凭据泄漏探针", None, Default::default())
+        .unwrap();
     // Harness 把环境变量值写进输出；若泄漏，事件流里会出现哨兵值
     runtime
         .run_adapter(
@@ -91,7 +93,9 @@ printf '%s\n' '{"type":"completed","summary":"probe"}'"#,
 fn network_is_denied_by_default_for_harnesses() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("网络拒绝探针", None).unwrap();
+    let spec = runtime
+        .create_thread("网络拒绝探针", None, Default::default())
+        .unwrap();
     let error = runtime
         .run_adapter(
             &spec.id,
@@ -109,7 +113,9 @@ fn network_is_denied_by_default_for_harnesses() {
 fn harness_private_credentials_are_deleted_and_never_enter_workspace() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("私有目录探针", None).unwrap();
+    let spec = runtime
+        .create_thread("私有目录探针", None, Default::default())
+        .unwrap();
     let mut harness = probe_harness(
         r#"touch plan.md
 printf '%s\n' '{"type":"completed","summary":"done"}'"#,
@@ -134,7 +140,7 @@ printf '%s\n' '{"type":"completed","summary":"done"}'"#,
     runtime.run_adapter(&spec.id, &harness).unwrap();
     let root = staged.lock().unwrap().clone().unwrap();
     assert!(!root.exists(), "Harness 私有目录必须在运行后删除");
-    assert!(!std::fs::read_dir(dir.path().join("workspace"))
+    assert!(!std::fs::read_dir(workspace(&runtime, &spec))
         .unwrap()
         .any(|entry| entry.unwrap().file_name() == ".else-harness"));
 }
@@ -143,4 +149,9 @@ fn private_probe_command() -> String {
     r#"touch plan.md
 printf '%s\n' '{"type":"completed","summary":"done"}'"#
         .into()
+}
+
+/// Thread 的执行位置：Scratch 模式下每个 Thread 一个目录。
+fn workspace(runtime: &Runtime, spec: &else_protocol::thread::ThreadSpec) -> std::path::PathBuf {
+    runtime.thread_workspace(spec).unwrap()
 }

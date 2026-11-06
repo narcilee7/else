@@ -10,7 +10,9 @@ use else_protocol::thread::OpaqueHarnessPolicy;
 fn skill_registration_and_agent_binding_are_replayable() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("Capability registry", None).unwrap();
+    let spec = runtime
+        .create_thread("Capability registry", None, Default::default())
+        .unwrap();
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let skill = runtime
         .register_skill(
@@ -70,7 +72,9 @@ fn skill_registration_and_agent_binding_are_replayable() {
 fn local_process_binding_dispatches_outbound_agent_and_verifies_result() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("Bound agent outcome", None).unwrap();
+    let spec = runtime
+        .create_thread("Bound agent outcome", None, Default::default())
+        .unwrap();
     runtime
         .configure_opaque_harness(
             &spec.id,
@@ -83,11 +87,11 @@ fn local_process_binding_dispatches_outbound_agent_and_verifies_result() {
         )
         .unwrap();
     std::fs::write(
-        dir.path().join("workspace/agent.sh"),
+        workspace(&runtime, &spec).join("agent.sh"),
         "printf '%s\\n' '{\"type\":\"output\",\"text\":\"bound-agent-output\"}'\nprintf '%s\\n' '{\"type\":\"completed\",\"summary\":\"done\"}'\n",
     )
     .unwrap();
-    std::fs::write(dir.path().join("workspace/plan.md"), "bound result").unwrap();
+    std::fs::write(workspace(&runtime, &spec).join("plan.md"), "bound result").unwrap();
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let binding = runtime
         .bind_agent(
@@ -125,9 +129,11 @@ fn local_process_binding_dispatches_outbound_agent_and_verifies_result() {
 fn mcp_discovery_registers_tools_with_manifest_effects() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("MCP discovery", None).unwrap();
+    let spec = runtime
+        .create_thread("MCP discovery", None, Default::default())
+        .unwrap();
     std::fs::write(
-        dir.path().join("workspace/mcp.sh"),
+        workspace(&runtime, &spec).join("mcp.sh"),
         r#"while IFS= read -r line; do
 case "$line" in
   *'"id":1'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}' ;;
@@ -137,9 +143,9 @@ done
 "#,
     )
     .unwrap();
-    let discovered = runtime
-        .discover_mcp_tools(&spec.id, "docs", "sh mcp.sh")
-        .unwrap();
+    let discovered = runtime.discover_mcp_tools(&spec.id, "docs", "sh mcp.sh");
+    eprintln!("TEST discover={:?}", discovered);
+    let discovered = discovered.unwrap();
     assert_eq!(discovered.len(), 2);
     assert_eq!(
         discovered[0].manifest.effect,
@@ -161,7 +167,9 @@ done
 fn mcp_stdio_binding_dispatches_task_through_selected_tool() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("MCP binding outcome", None).unwrap();
+    let spec = runtime
+        .create_thread("MCP binding outcome", None, Default::default())
+        .unwrap();
     runtime
         .configure_opaque_harness(
             &spec.id,
@@ -174,7 +182,7 @@ fn mcp_stdio_binding_dispatches_task_through_selected_tool() {
         )
         .unwrap();
     std::fs::write(
-        dir.path().join("workspace/mcp-agent.sh"),
+        workspace(&runtime, &spec).join("mcp-agent.sh"),
         r#"while IFS= read -r line; do
 case "$line" in
   *'"id":1'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}' ;;
@@ -184,7 +192,7 @@ done
 "#,
     )
     .unwrap();
-    std::fs::write(dir.path().join("workspace/plan.md"), "mcp result").unwrap();
+    std::fs::write(workspace(&runtime, &spec).join("plan.md"), "mcp result").unwrap();
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let binding = runtime
         .bind_agent(
@@ -208,4 +216,9 @@ done
         projection.state,
         Some(else_protocol::thread::ThreadState::Completed)
     );
+}
+
+/// Thread 的执行位置：Scratch 模式下每个 Thread 一个目录。
+fn workspace(runtime: &Runtime, spec: &else_protocol::thread::ThreadSpec) -> std::path::PathBuf {
+    runtime.thread_workspace(spec).unwrap()
 }

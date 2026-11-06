@@ -57,7 +57,9 @@ fn root_scope(runtime: &Runtime, thread_id: &ThreadId) -> else_protocol::ids::Sc
 fn slot_exhaustion_rejects_run_before_any_event() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("槽位测试", None).unwrap();
+    let spec = runtime
+        .create_thread("槽位测试", None, Default::default())
+        .unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
     let child = runtime

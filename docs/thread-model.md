@@ -38,19 +38,20 @@ Thread   一件事。目标 + 验收 + 约束 + 权限 + 记忆作用域
 else 是个人 Agent，不是编码 Agent。绑定 git worktree 会把产品缩成一种模式。
 Thread 只声明**在哪里做**，由 Mode 决定：
 
-| Mode | 执行位置 | 典型用途 |
+| Mode | 执行位置 | 状态 |
 | --- | --- | --- |
-| `scratch` | runtime 下的隔离目录（默认） | 研究、写作、整理、一次性任务 |
-| `directory` | 用户指定的目录（不只代码） | 文档、资料库、任意真实目录 |
-| `repo` | 目录 + git 分支/worktree | 代码改动、可回滚的提交 |
-| `remote` | 远端（云沙箱 / 另一台机器） | 长时间任务、重活 |
+| `scratch` | `<runtime>/workspace/threads/<thread>`（默认） | 已实现 |
+| `directory` | 用户指定的绝对目录 | 已实现 |
+| `repo` | 目录 + git 分支/worktree | 待做 |
+| `remote` | 远端（云沙箱 / 另一台机器） | 待做 |
 
 规则：
 
-- Mode 是 Thread 的属性，不是全局设置；同一个 Runtime 里可以同时存在四种。
-- 只有 `repo` 才谈分支、diff、合并；`scratch` 交付的是工件（artifact）。
-- 工件是唯一跨 Mode 的交付物：文件树快照，内容寻址，不绑定 Git。
-- 验收（DoneWhen）永远相对执行位置判断，不假设"代码能编译"。
+- Mode 是 Thread 的属性，不是全局设置；同一个 Runtime 里可以同时存在多种。
+- 创建时校验：`directory` 要求绝对路径、存在、且是目录；不会隐式建目录。
+- 只删自己创建的：`scratch` 目录随 Thread 删除，用户目录永远不删。
+- `checkpoint` 只对 `scratch` 成立；把一个用户目录整体快照下来既不安全
+  也没意义，那个目录的版本由它自己（git 或别的）负责。
 
 ## 4. Agent 层：宿主式（ACP 思路），不是黑盒进程
 
@@ -111,16 +112,21 @@ Agent ──request_permission──▶ Gateway ──NeedsApproval──▶ Att
 
 已完成（本分支）：
 
-1. 词汇改名：协议类型、wire、CLI、TUI、App、README；老账本迁移 + 兼容测试。
+1. 词汇改名：协议类型、wire、CLI、TUI、App、README（破坏性，不兼容旧名）。
 2. 核心命令的帮助文案改成用户语言。
+3. `ThreadMode` 的 `scratch` / `directory`：模型、wire、执行路径、删除、
+   checkpoint、工件相对位置全部按"执行位置"而不是"Runtime 目录"计算；
+   CLI 用 `--in <dir>`。
 
 接下来（每步单独可评审）：
 
-3. `ThreadMode`（`scratch` / `directory`）落到模型与执行路径；`repo` 后置。
-4. ACP 宿主适配器：先接 claude-code，`request_permission` → Decision。
-5. Run transcript 事件 + TUI Run 视图；修 `log`。
-6. 医生说真话：区分常驻 daemon 与临时 embedded；LaunchAgent 落日志。
-7. 通知通道（先 `osascript`/`terminal-notifier`）。
+4. Context 与 Memory：`--in` 之后，Planner 应该看到那个目录里的事实
+   （而不是只有一份通用 brief）。
+5. ACP 宿主适配器：先接 claude-code，`request_permission` → Decision。
+6. Run transcript 事件 + TUI Run 视图；修 `log`。
+7. `repo` 模式（git worktree）与 `remote`。
+8. 医生说真话：区分常驻 daemon 与临时 embedded；LaunchAgent 落日志。
+9. 通知通道（先 `osascript`/`terminal-notifier`）。
 
 ## 不做的事
 

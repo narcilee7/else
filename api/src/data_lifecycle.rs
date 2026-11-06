@@ -56,13 +56,28 @@ impl Runtime {
         for scope_id in projection.scopes.keys() {
             for path in [
                 self.branches.join(scope_id.to_string()),
-                self.workspace.join("scopes").join(scope_id.to_string()),
+                self.scope_workspace(thread_id, scope_id),
             ] {
                 match std::fs::remove_dir_all(&path) {
                     Ok(()) => removed_workspace_paths += 1,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => cleanup_errors.push(format!("{}: {error}", path.display())),
                 }
+            }
+            // 父目录（scopes/<thread_id>）删完子 Scope 后就没用了。
+            let _ = std::fs::remove_dir(self.workspace.join("scopes").join(thread_id.to_string()));
+        }
+        // 只删 Runtime 自己的隔离目录。`--in` 指定的用户目录永远不归 else 删。
+        if let Some(spec) = projection
+            .spec
+            .as_ref()
+            .filter(|spec| spec.mode.is_scratch())
+        {
+            let path = self.thread_workspace(spec)?;
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => removed_workspace_paths += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => cleanup_errors.push(format!("{}: {error}", path.display())),
             }
         }
 

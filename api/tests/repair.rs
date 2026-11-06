@@ -5,7 +5,9 @@ use else_api::Runtime;
 fn connector_repair_resets_cursor_and_resyncs_through_adapter() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("Connector repair", None).unwrap();
+    let spec = runtime
+        .create_thread("Connector repair", None, Default::default())
+        .unwrap();
     let start = Utc::now() + Duration::hours(2);
     let end = start + Duration::hours(1);
     let source = dir.path().join("calendar.ics");

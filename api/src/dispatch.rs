@@ -85,16 +85,23 @@ impl Runtime {
         self.ensure_slot_available()?;
         self.ensure_scope_not_active(thread_id, scope_id)?;
 
-        // 根 Scope 使用持久 Workspace；子 Scope 使用隔离 Workspace + 工件物化。
+        // 根 Scope 在 Thread 的执行位置；子 Scope 始终在 Runtime 下的隔离目录，
+        // 不往用户的目录里塞 else 自己的运行时状态。
         let subagent = scope.spec.is_some();
+        let thread_workspace = self.thread_workspace(&spec)?;
         let scope_workspace = if subagent {
-            self.workspace.join("scopes").join(scope_id.to_string())
+            self.scope_workspace(&spec.id, scope_id)
         } else {
-            self.workspace.clone()
+            thread_workspace.clone()
         };
         std::fs::create_dir_all(&scope_workspace)?;
         if subagent {
-            self.materialize_artifacts(&projection, &scope_workspace)?;
+            self.materialize_artifacts(
+                thread_id,
+                &projection,
+                &thread_workspace,
+                &scope_workspace,
+            )?;
         }
 
         self.ensure_plan_for_scope(thread_id, &spec, scope_id)?;
@@ -152,7 +159,9 @@ impl Runtime {
     /// 旧式 locator 从根 Workspace 安全复制。子 Scope 因此能真正读取父级产物。
     fn materialize_artifacts(
         &self,
+        thread_id: &ThreadId,
         projection: &ThreadProjection,
+        thread_workspace: &std::path::Path,
         target: &std::path::Path,
     ) -> Result<()> {
         for artifact in &projection.artifacts {
@@ -163,8 +172,8 @@ impl Runtime {
             let artifact_workspace = projection
                 .artifact_scopes
                 .get(&artifact.id)
-                .map(|scope_id| self.artifact_workspace(scope_id))
-                .unwrap_or_else(|| self.workspace.clone());
+                .map(|scope_id| self.artifact_workspace(thread_id, thread_workspace, scope_id))
+                .unwrap_or_else(|| thread_workspace.to_path_buf());
             let artifact_root = artifact_workspace.canonicalize()?;
             let (source, relative) = if let Some(relative) = safe_artifact_path(&artifact.locator) {
                 (artifact_workspace.join(&relative), relative)
@@ -198,16 +207,21 @@ impl Runtime {
         Ok(())
     }
 
-    fn artifact_workspace(&self, scope_id: &ScopeId) -> std::path::PathBuf {
+    fn artifact_workspace(
+        &self,
+        thread_id: &ThreadId,
+        thread_workspace: &std::path::Path,
+        scope_id: &ScopeId,
+    ) -> std::path::PathBuf {
         let branch = self.branches.join(scope_id.to_string());
         if branch.exists() {
             return branch;
         }
-        let scoped = self.workspace.join("scopes").join(scope_id.to_string());
+        let scoped = self.scope_workspace(thread_id, scope_id);
         if scoped.exists() {
             return scoped;
         }
-        self.workspace.clone()
+        thread_workspace.to_path_buf()
     }
 
     /// 固定槽位准入：活跃 Run（RunStarted 无对应 RunFinished）到顶则拒绝启动。

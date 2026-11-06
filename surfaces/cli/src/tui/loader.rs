@@ -249,15 +249,15 @@ fn join<T>(handle: thread::ScopedJoinHandle<'_, else_client::Result<T>>) -> else
 
 fn perform(client: &RuntimeClient, action: &ActionRequest) -> AppEvent {
     let result: else_client::Result<(String, String, Option<ThreadId>)> = match action {
-        ActionRequest::CreateThread { outcome } => {
-            client.create_thread(outcome, None).map(|snapshot| {
+        ActionRequest::CreateThread { outcome } => client
+            .create_thread(outcome, None, &Default::default())
+            .map(|snapshot| {
                 (
                     "Thread created".to_string(),
                     snapshot.spec.outcome.clone(),
                     Some(snapshot.spec.id),
                 )
-            })
-        }
+            }),
         ActionRequest::AdvanceThread { thread_id } => {
             client.advance(thread_id, Some("auto")).map(|snapshot| {
                 (

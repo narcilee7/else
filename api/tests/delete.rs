@@ -15,7 +15,9 @@ fn explicit_thread_delete_removes_events_credentials_and_scope_workspaces() {
         credential_store,
     )
     .unwrap();
-    let spec = runtime.create_thread("待删除 Thread", None).unwrap();
+    let spec = runtime
+        .create_thread("待删除 Thread", None, Default::default())
+        .unwrap();
     let connector = runtime
         .register_connector_adapter_with_credential(
             &spec.id,
@@ -39,6 +41,7 @@ fn explicit_thread_delete_removes_events_credentials_and_scope_workspaces() {
     let scope_path = dir
         .path()
         .join("workspace/scopes")
+        .join(spec.id.to_string())
         .join(root_scope.to_string());
     let branch_path = dir.path().join("branches").join(root_scope.to_string());
     std::fs::create_dir_all(&scope_path).unwrap();

@@ -186,7 +186,9 @@ fn notion_payload() -> serde_json::Value {
 fn calendar_signals_are_versioned_deduplicated_and_resolved() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("准备明天的会议", None).unwrap();
+    let spec = runtime
+        .create_thread("准备明天的会议", None, Default::default())
+        .unwrap();
     let start = Utc::now() + Duration::hours(2);
     let path = dir.path().join("calendar.ics");
     std::fs::write(&path, calendar_ics("meeting-1", "产品评审", start)).unwrap();
@@ -278,7 +280,9 @@ fn calendar_signals_are_versioned_deduplicated_and_resolved() {
 fn signal_tombstone_removes_context_and_supersedes_candidate() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("跟进会议", None).unwrap();
+    let spec = runtime
+        .create_thread("跟进会议", None, Default::default())
+        .unwrap();
     let path = dir.path().join("calendar.ics");
     let start = Utc::now() + Duration::hours(3);
     std::fs::write(&path, calendar_ics("meeting-2", "客户同步", start)).unwrap();
@@ -322,7 +326,9 @@ fn signal_tombstone_removes_context_and_supersedes_candidate() {
 fn candidate_acceptance_preserves_lineage_and_rejects_duplicate_proposals() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("准备客户评审", None).unwrap();
+    let spec = runtime
+        .create_thread("准备客户评审", None, Default::default())
+        .unwrap();
     let first = runtime
         .propose_thread_candidate(
             &spec.id,
@@ -410,7 +416,9 @@ fn candidate_acceptance_preserves_lineage_and_rejects_duplicate_proposals() {
 fn candidate_rejection_creates_no_thread() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("整理材料", None).unwrap();
+    let spec = runtime
+        .create_thread("整理材料", None, Default::default())
+        .unwrap();
     let candidate = runtime
         .propose_thread_candidate(
             &spec.id,
@@ -432,7 +440,9 @@ fn candidate_rejection_creates_no_thread() {
 fn candidate_cannot_escalate_source_thread_authority() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("只读分析", None).unwrap();
+    let spec = runtime
+        .create_thread("只读分析", None, Default::default())
+        .unwrap();
     let error = runtime
         .propose_thread_candidate(
             &spec.id,
@@ -455,7 +465,9 @@ fn candidate_cannot_escalate_source_thread_authority() {
 fn linear_pull_classifies_work_and_persists_cursor() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("推进发布", None).unwrap();
+    let spec = runtime
+        .create_thread("推进发布", None, Default::default())
+        .unwrap();
     let path = dir.path().join("linear.json");
     std::fs::write(&path, linear_payload().to_string()).unwrap();
     let connector = runtime
@@ -584,7 +596,9 @@ fn linear_pull_classifies_work_and_persists_cursor() {
 fn linear_webhook_is_session_scoped_deduplicated_and_handles_completion() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("跟进外部依赖", None).unwrap();
+    let spec = runtime
+        .create_thread("跟进外部依赖", None, Default::default())
+        .unwrap();
     let path = dir.path().join("linear.json");
     std::fs::write(&path, r#"{"issues":[]}"#).unwrap();
     let connector = runtime
@@ -640,7 +654,9 @@ fn linear_webhook_is_session_scoped_deduplicated_and_handles_completion() {
 fn connector_policy_only_auto_accepts_explicit_low_risk_origins() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("推进发布", None).unwrap();
+    let spec = runtime
+        .create_thread("推进发布", None, Default::default())
+        .unwrap();
     let policy = ConnectorPolicy {
         auto_accept_low_risk: true,
         allowed_origins: vec![ThreadOriginKind::Commitment],
@@ -866,7 +882,9 @@ fn injected_adapter_and_interpreter_do_not_require_runtime_changes() {
         SignalInterpreter::with_rules(vec![Box::new(FixtureRule)]),
     )
     .unwrap();
-    let spec = runtime.create_thread("处理外部承诺", None).unwrap();
+    let spec = runtime
+        .create_thread("处理外部承诺", None, Default::default())
+        .unwrap();
     let connector = runtime
         .register_connector_adapter(&spec.id, "fixture", source.to_str().unwrap(), "fixture")
         .unwrap();
@@ -904,7 +922,9 @@ fn paginated_backfill_resumes_from_continuation_after_restart() {
         .unwrap()
     };
     let runtime = open_runtime();
-    let spec = runtime.create_thread("分页同步外部事项", None).unwrap();
+    let spec = runtime
+        .create_thread("分页同步外部事项", None, Default::default())
+        .unwrap();
     let connector = runtime
         .register_connector_adapter(&spec.id, "paged", source.to_str().unwrap(), "fixture.paged")
         .unwrap();
@@ -951,7 +971,9 @@ fn paginated_backfill_resumes_from_continuation_after_restart() {
 fn linear_webhook_id_only_hydrates_from_connector_source() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("处理 Linear 更新", None).unwrap();
+    let spec = runtime
+        .create_thread("处理 Linear 更新", None, Default::default())
+        .unwrap();
     let source = dir.path().join("linear.json");
     std::fs::write(&source, linear_payload().to_string()).unwrap();
     let connector = runtime
@@ -981,7 +1003,9 @@ fn linear_webhook_id_only_hydrates_from_connector_source() {
 fn notion_documents_and_database_rows_flow_through_generic_pipeline() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("准备发布资料", None).unwrap();
+    let spec = runtime
+        .create_thread("准备发布资料", None, Default::default())
+        .unwrap();
     let path = dir.path().join("notion.json");
     std::fs::write(&path, notion_payload().to_string()).unwrap();
     let connector = runtime

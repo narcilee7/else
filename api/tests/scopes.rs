@@ -19,7 +19,9 @@ fn root_scope(runtime: &Runtime, thread_id: &ThreadId) -> ScopeId {
 }
 
 fn setup_tree(runtime: &Runtime) -> (else_protocol::thread::ThreadSpec, ScopeId, ScopeId, ScopeId) {
-    let spec = runtime.create_thread("验证委托树", None).unwrap();
+    let spec = runtime
+        .create_thread("验证委托树", None, Default::default())
+        .unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(runtime, &spec.id);
     let child = runtime
@@ -77,7 +79,9 @@ fn assert_tree_cancelled(
 fn delegation_is_replayable_and_cannot_widen_authority() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("权限收窄", None).unwrap();
+    let spec = runtime
+        .create_thread("权限收窄", None, Default::default())
+        .unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
 
@@ -111,7 +115,9 @@ fn delegation_is_replayable_and_cannot_widen_authority() {
 fn completing_subagent_does_not_complete_root_thread() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("父子终态隔离", None).unwrap();
+    let spec = runtime
+        .create_thread("父子终态隔离", None, Default::default())
+        .unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
     let child = runtime

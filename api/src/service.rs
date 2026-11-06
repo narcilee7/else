@@ -39,6 +39,7 @@ enum Command {
     CreateThread {
         outcome: String,
         project: Option<String>,
+        mode: else_protocol::thread::ThreadMode,
         reply: Reply<ThreadSpec>,
     },
     Projection {
@@ -418,10 +419,16 @@ pub struct RuntimeHandle {
 }
 
 impl RuntimeHandle {
-    pub fn create_thread(&self, outcome: &str, project: Option<String>) -> Result<ThreadSpec> {
+    pub fn create_thread(
+        &self,
+        outcome: &str,
+        project: Option<String>,
+        mode: else_protocol::thread::ThreadMode,
+    ) -> Result<ThreadSpec> {
         self.request(|reply| Command::CreateThread {
             outcome: outcome.to_string(),
             project,
+            mode,
             reply,
         })
     }
@@ -1296,9 +1303,10 @@ fn handle_command(runtime: &Runtime, command: Command) {
         Command::CreateThread {
             outcome,
             project,
+            mode,
             reply,
         } => {
-            let _ = reply.send(runtime.create_thread(&outcome, project));
+            let _ = reply.send(runtime.create_thread(&outcome, project, mode));
         }
         Command::Projection { thread_id, reply } => {
             let _ = reply.send(runtime.projection(&thread_id));

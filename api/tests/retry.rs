@@ -44,7 +44,9 @@ fn failing_harness() -> ProcessHarness<EmptyParser> {
 fn explicit_retry_resets_failed_scope_and_returns_to_kernel() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("retry failed scope", None).unwrap();
+    let spec = runtime
+        .create_thread("retry failed scope", None, Default::default())
+        .unwrap();
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let harness = failing_harness();
     for _ in 0..3 {

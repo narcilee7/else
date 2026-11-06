@@ -24,6 +24,7 @@ mod resources;
 mod runtime_settings;
 mod scope;
 mod service;
+mod target;
 mod tool_gateway;
 mod wake;
 mod world;
@@ -75,6 +76,8 @@ pub enum ApiError {
     WorkerStopped,
     #[error("subagent authority exceeds parent: {0}")]
     PermissionEscalation(String),
+    #[error("invalid thread mode: {0}")]
+    InvalidThreadMode(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -103,6 +106,7 @@ pub(crate) struct ThreadDraft {
     pub attention_policy: AttentionPolicy,
     pub deadline: Option<chrono::DateTime<chrono::Utc>>,
     pub origin: Option<ThreadOrigin>,
+    pub mode: else_protocol::thread::ThreadMode,
 }
 
 impl Runtime {
@@ -162,11 +166,18 @@ impl Runtime {
 
     /// 提交一个抽象 Thread（Thread Resolution 最小实现）：
     /// 系统补全默认验收标准与显式假设，补全内容可修正，不是隐蔽事实。
-    /// `project` 决定 Episodic/Semantic 记忆的项目召回作用域。
-    pub fn create_thread(&self, outcome: &str, project: Option<String>) -> Result<ThreadSpec> {
+    /// `project` 决定 Episodic/Semantic 记忆的项目召回作用域；
+    /// `mode` 声明在哪里做 —— 这一步必须由创建者说清楚，没有全局默认。
+    pub fn create_thread(
+        &self,
+        outcome: &str,
+        project: Option<String>,
+        mode: else_protocol::thread::ThreadMode,
+    ) -> Result<ThreadSpec> {
         self.create_thread_with_done_when(
             outcome,
             project,
+            mode,
             vec![else_protocol::thread::Criterion::file_exists(
                 "计划产物写入工作区且校验通过",
                 "plan.md",
@@ -179,11 +190,13 @@ impl Runtime {
         &self,
         outcome: &str,
         project: Option<String>,
+        mode: else_protocol::thread::ThreadMode,
         done_when: Vec<else_protocol::thread::Criterion>,
     ) -> Result<ThreadSpec> {
         self.create_thread_from_parts(ThreadDraft {
             outcome: outcome.into(),
             project,
+            mode,
             done_when,
             constraints: vec![],
             authority: Authority {
@@ -207,6 +220,7 @@ impl Runtime {
     }
 
     pub(crate) fn create_thread_from_parts(&self, draft: ThreadDraft) -> Result<ThreadSpec> {
+        Self::validate_thread_mode(&draft.mode)?;
         let root_scope_id = ScopeId::new();
         let spec = ThreadSpec {
             id: ThreadId::new(),
@@ -216,16 +230,25 @@ impl Runtime {
             constraints: draft.constraints,
             authority: draft.authority,
             attention_policy: draft.attention_policy,
+            mode: draft.mode.clone(),
             opaque_harness_policy: else_protocol::thread::OpaqueHarnessPolicy::default(),
             deadline: draft.deadline,
             assumptions: vec![else_protocol::thread::Assumption {
-                text: "假设：在当前工作区推进该目标（系统补全，可修正）".into(),
+                text: format!(
+                    "假设：在 {} 里推进该目标（系统补全，可修正）",
+                    draft.mode.label()
+                ),
                 confirmed: false,
             }],
             project: draft.project,
             origin: draft.origin,
             connector_policy: else_protocol::connector::ConnectorPolicy::default(),
         };
+        // Scratch 的目录在创建时就存在：任何表面都可以直接指向它，
+        // 不会出现"Thread 有了但没地方干活"的中间态。Directory 不创建。
+        if spec.mode.is_scratch() {
+            std::fs::create_dir_all(self.thread_workspace(&spec)?)?;
+        }
         self.ledger.append(&EventEnvelope::new(
             spec.id.clone(),
             root_scope_id.clone(),
@@ -265,7 +288,9 @@ impl Runtime {
         )?;
         let sandbox_started = self.start_sandbox(&ctx, &lease)?;
 
-        let tools = ToolGateway::new(&self.ledger, self.workspace.clone());
+        let workspace = self.thread_workspace(&ctx.spec)?;
+        std::fs::create_dir_all(&workspace)?;
+        let tools = ToolGateway::new(&self.ledger, workspace);
         let model = ModelGateway::new(&self.ledger, self.provider()?);
         let result = else_harness::run(
             &ctx,
@@ -295,7 +320,9 @@ impl Runtime {
         let Some((ctx, snapshot)) = self.prepare_root_run(thread_id, true)? else {
             return self.projection(thread_id);
         };
-        let tool_gateway = self.start_tool_gateway(&ctx.spec, &ctx, &self.workspace, None)?;
+        let workspace = self.thread_workspace(&ctx.spec)?;
+        std::fs::create_dir_all(&workspace)?;
+        let tool_gateway = self.start_tool_gateway(&ctx.spec, &ctx, &workspace, None)?;
         let tool_gateway_endpoint = tool_gateway.as_ref().map(|gateway| {
             let endpoint = gateway.endpoint();
             else_harness::adapter::ToolGatewayEndpoint {
@@ -318,7 +345,7 @@ impl Runtime {
         let request = else_harness::adapter::HarnessRequest {
             ctx: &ctx,
             ledger: &self.ledger,
-            workspace: &self.workspace,
+            workspace: &workspace,
             private_dir: &self.harness_private,
             snapshot: &snapshot,
             egress_proxy: egress_proxy.as_ref().map(|proxy| proxy.endpoint()),
@@ -532,12 +559,23 @@ impl Runtime {
     }
 
     /// 创建检查点：事件水位 + 工作区快照 + 在途副作用结论，三者缺一不可。
+    /// 只对 `Scratch` 成立：把一个用户目录整体快照下来既不安全也没意义，
+    /// `Directory` 的版本由那个目录自己（git 或别的）负责。
     pub fn checkpoint(&self, thread_id: &ThreadId) -> Result<else_protocol::artifact::Checkpoint> {
         let projection = self.projection(thread_id)?;
         let spec = projection
             .spec
             .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
-        let artifact = self.store.snapshot(&self.workspace, &RunId::new())?;
+        if !spec.mode.is_scratch() {
+            return Err(ApiError::Conflict(format!(
+                "checkpoints need a scratch thread; this thread works in {} and is \
+                 versioned by that directory instead",
+                spec.mode.label()
+            )));
+        }
+        let workspace = self.thread_workspace(&spec)?;
+        std::fs::create_dir_all(&workspace)?;
+        let artifact = self.store.snapshot(&workspace, &RunId::new())?;
         let cursor = self.ledger.cursor()?;
         let ctx = ExecContext {
             spec: spec.clone(),
@@ -746,6 +784,7 @@ impl Runtime {
     /// 三维度 Compare（按 Generation）：Outcome Evidence、模型与副作用账、工件差异。
     pub fn compare(&self, thread_id: &ThreadId) -> Result<String> {
         let events = self.ledger.read_thread(thread_id)?;
+        let thread_workspace = self.workspace_of(&self.projection(thread_id)?)?;
         let mut tool_names = std::collections::HashMap::new();
         for event in &events {
             match &event.envelope.payload {
@@ -844,17 +883,13 @@ impl Runtime {
                     std::path::PathBuf::from(relative)
                 } else {
                     let branch = self.branches.join(scope_id.to_string()).join(relative);
-                    let scoped = self
-                        .workspace
-                        .join("scopes")
-                        .join(scope_id.to_string())
-                        .join(relative);
+                    let scoped = self.scope_workspace(thread_id, &scope_id).join(relative);
                     if branch.exists() {
                         branch
                     } else if scoped.exists() {
                         scoped
                     } else {
-                        self.workspace.join(relative)
+                        thread_workspace.join(relative)
                     }
                 };
                 match else_workspace::Store::hash_file(&path) {

@@ -52,10 +52,11 @@ pub struct ExportFile {
 
 impl Runtime {
     pub fn export_data(&self) -> Result<RuntimeDataExport> {
-        let workspace_root = self.workspace.canonicalize()?;
         let mut threads = Vec::new();
         for spec in self.list_threads()? {
             let projection = self.projection(&spec.id)?;
+            // 工件路径相对于该 Thread 的执行位置，不是 Runtime 根目录。
+            let workspace_root = self.workspace_of(&projection)?.canonicalize()?;
             let events = self
                 .events(&spec.id)?
                 .into_iter()

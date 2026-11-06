@@ -257,8 +257,13 @@ impl RuntimeClient {
     }
 
     /// 创建一个 Thread。
-    pub fn create_thread(&self, outcome: &str, project: Option<&str>) -> Result<ThreadSnapshot> {
-        let body = json!({ "outcome": outcome, "project": project });
+    pub fn create_thread(
+        &self,
+        outcome: &str,
+        project: Option<&str>,
+        mode: &else_protocol::thread::ThreadMode,
+    ) -> Result<ThreadSnapshot> {
+        let body = json!({ "outcome": outcome, "project": project, "mode": mode });
         let key = unique_key("create-thread");
         let value = self.post_value("/v1/threads", &body, None, &key)?;
         self.snapshot_of(value)

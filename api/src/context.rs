@@ -69,6 +69,7 @@ impl Runtime {
         let projection = self.projection(thread_id)?;
         let memory = self.memory_projection()?;
         let now = Utc::now();
+        let workspace = self.thread_workspace(spec)?;
         let artifact_refs = || {
             projection
                 .artifacts
@@ -80,7 +81,7 @@ impl Runtime {
             projection
                 .artifacts
                 .iter()
-                .map(|artifact| self.relative_artifact_locator(&artifact.locator))
+                .map(|artifact| self.relative_artifact_locator(&artifact.locator, &workspace))
                 .collect::<Vec<_>>()
         };
         let (facts, artifact_refs, artifact_paths, assumptions) = match audience {
@@ -190,9 +191,9 @@ impl Runtime {
         }
     }
 
-    fn relative_artifact_locator(&self, locator: &str) -> String {
+    fn relative_artifact_locator(&self, locator: &str, workspace: &std::path::Path) -> String {
         std::path::Path::new(locator)
-            .strip_prefix(&self.workspace)
+            .strip_prefix(workspace)
             .map(|path| path.to_string_lossy().to_string())
             .unwrap_or_else(|_| locator.to_string())
     }

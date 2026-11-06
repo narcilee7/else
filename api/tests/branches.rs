@@ -10,7 +10,7 @@ fn checkpoint_fork_rerun_compare() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_thread("把发布推进到可对外状态", None)
+        .create_thread("把发布推进到可对外状态", None, Default::default())
         .unwrap();
     let projection = runtime.run(&spec.id).unwrap();
 
@@ -30,7 +30,7 @@ fn checkpoint_fork_rerun_compare() {
         )
         .unwrap();
     assert_eq!(main.state, Some(ThreadState::Completed));
-    let main_plan = std::fs::read_to_string(dir.path().join("workspace/plan.md")).unwrap();
+    let main_plan = std::fs::read_to_string(workspace(&runtime, &spec).join("plan.md")).unwrap();
 
     // 回检查点，换替代路径重跑：Generation 递增、分支工作区隔离
     let (scope_id, generation) = runtime.rerun(&spec.id, &checkpoint.id, true).unwrap();
@@ -45,7 +45,7 @@ fn checkpoint_fork_rerun_compare() {
 
     // 主线工作区未被分支修改
     assert_eq!(
-        std::fs::read_to_string(dir.path().join("workspace/plan.md")).unwrap(),
+        std::fs::read_to_string(workspace(&runtime, &spec).join("plan.md")).unwrap(),
         main_plan
     );
 
@@ -62,4 +62,9 @@ fn checkpoint_fork_rerun_compare() {
     // 重开后 Compare 可完整重建（恢复测试）
     let reopened = Runtime::open(dir.path()).unwrap();
     assert_eq!(reopened.compare(&spec.id).unwrap(), report);
+}
+
+/// Thread 的执行位置：Scratch 模式下每个 Thread 一个目录。
+fn workspace(runtime: &Runtime, spec: &else_protocol::thread::ThreadSpec) -> std::path::PathBuf {
+    runtime.thread_workspace(spec).unwrap()
 }

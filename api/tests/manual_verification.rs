@@ -53,6 +53,7 @@ fn approving_manual_verification_completes_without_rerunning_harness() {
         .create_thread_with_done_when(
             "人工验收",
             None,
+            Default::default(),
             vec![Criterion::manual("业务结论符合预期")],
         )
         .unwrap();
@@ -100,6 +101,7 @@ fn rejecting_manual_verification_leaves_kernel_retryable() {
         .create_thread_with_done_when(
             "人工验收",
             None,
+            Default::default(),
             vec![Criterion::manual("业务结论符合预期")],
         )
         .unwrap();

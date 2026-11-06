@@ -405,7 +405,12 @@ fn route(
                     .as_str()
                     .ok_or_else(|| DaemonError::InvalidRequest("missing outcome".into()))?;
                 let project = value["project"].as_str().map(str::to_string);
-                let spec = state.handle.create_thread(outcome, project)?;
+                // 缺省是隔离目录；显式声明目录时必须给绝对路径。
+                let mode = match value.get("mode") {
+                    None | Some(Value::Null) => else_protocol::thread::ThreadMode::Scratch,
+                    Some(raw) => serde_json::from_value(raw.clone()).map_err(json_error)?,
+                };
+                let spec = state.handle.create_thread(outcome, project, mode)?;
                 let projection = state.handle.projection(&spec.id)?;
                 Ok((200, json_string(&snapshot(&projection))?))
             }
@@ -1486,6 +1491,7 @@ fn snapshot(projection: &ThreadProjection) -> ThreadSnapshot {
                     allow_interrupt: true,
                     batch_interval_minutes: 30,
                 },
+                mode: Default::default(),
                 opaque_harness_policy: Default::default(),
                 deadline: None,
                 assumptions: vec![],

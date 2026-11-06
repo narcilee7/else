@@ -84,7 +84,9 @@ fn successful_child_harness() -> ProcessHarness<CompletedParser> {
 fn kernel_drives_one_step_and_waits_for_real_decisions() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
+    let spec = runtime
+        .create_thread("整理会议纪要", None, Default::default())
+        .unwrap();
 
     let initial = runtime.projection(&spec.id).unwrap();
     let root = initial.root_scope_id.expect("root scope");
@@ -126,7 +128,9 @@ fn kernel_drives_one_step_and_waits_for_real_decisions() {
 fn failed_run_is_retried_with_a_new_generation() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
+    let spec = runtime
+        .create_thread("整理会议纪要", None, Default::default())
+        .unwrap();
     runtime
         .run_adapter(&spec.id, &failing_harness())
         .unwrap_err();
@@ -154,7 +158,9 @@ fn failed_run_is_retried_with_a_new_generation() {
 fn kernel_respects_scope_dependencies_and_fair_root_order() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
+    let spec = runtime
+        .create_thread("整理会议纪要", None, Default::default())
+        .unwrap();
     runtime
         .run_adapter(&spec.id, &failing_harness())
         .unwrap_err();
@@ -200,7 +206,9 @@ fn kernel_respects_scope_dependencies_and_fair_root_order() {
 fn due_timer_wakes_drive_until_the_next_wait_state() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
+    let spec = runtime
+        .create_thread("整理会议纪要", None, Default::default())
+        .unwrap();
     runtime
         .schedule_timer(
             &spec.id,
@@ -220,7 +228,9 @@ fn due_timer_wakes_drive_until_the_next_wait_state() {
 fn future_timer_is_a_durable_wait_condition() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
+    let spec = runtime
+        .create_thread("整理会议纪要", None, Default::default())
+        .unwrap();
     let fire_at = chrono::Utc::now() + chrono::Duration::hours(1);
     runtime
         .schedule_timer(&spec.id, fire_at, "follow up later")
@@ -240,7 +250,9 @@ fn future_timer_is_a_durable_wait_condition() {
 fn external_event_is_durable_and_can_wake_kernel_progress() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
+    let spec = runtime
+        .create_thread("整理会议纪要", None, Default::default())
+        .unwrap();
     runtime
         .record_external_event(&spec.id, "mail", "合作方已回复")
         .unwrap();
@@ -257,7 +269,9 @@ fn external_event_is_durable_and_can_wake_kernel_progress() {
 fn waiting_external_blocks_execution_and_feeds_the_next_context() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
+    let spec = runtime
+        .create_thread("整理会议纪要", None, Default::default())
+        .unwrap();
     runtime
         .wait_for_external(&spec.id, "等待合作方回复")
         .unwrap();
@@ -285,7 +299,9 @@ fn waiting_external_blocks_execution_and_feeds_the_next_context() {
 fn due_timer_resumes_an_external_wait() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
+    let spec = runtime
+        .create_thread("整理会议纪要", None, Default::default())
+        .unwrap();
     runtime.wait_for_external(&spec.id, "等待异步任务").unwrap();
     runtime
         .schedule_timer(

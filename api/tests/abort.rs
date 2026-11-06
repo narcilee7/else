@@ -8,7 +8,9 @@ use else_protocol::event::{EventPayload, ScopeState};
 use else_protocol::thread::ThreadState;
 
 fn waiting_thread(runtime: &Runtime) -> else_protocol::thread::ThreadSpec {
-    let spec = runtime.create_thread("验证取消语义", None).unwrap();
+    let spec = runtime
+        .create_thread("验证取消语义", None, Default::default())
+        .unwrap();
     let projection = runtime.run(&spec.id).unwrap();
     assert_eq!(projection.state, Some(ThreadState::NeedsDecision));
     spec

@@ -423,7 +423,9 @@ mod tests {
     fn orphan_lease_cleanup_skips_active_runs_and_revokes_finished_runs() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_thread("lease cleanup", None).unwrap();
+        let spec = runtime
+            .create_thread("lease cleanup", None, Default::default())
+            .unwrap();
         let projection = runtime.projection(&spec.id).unwrap();
         let scope_id = projection.root_scope_id.unwrap();
         let revision = projection.spec.unwrap().revision;

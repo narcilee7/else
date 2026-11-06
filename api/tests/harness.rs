@@ -90,7 +90,9 @@ const SUCCESS_SCRIPT: &str = r#"{"type":"output","text":"开始执行任务"}
 fn process_harness_bridges_events_and_verifies() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("桥接契约验证", None).unwrap();
+    let spec = runtime
+        .create_thread("桥接契约验证", None, Default::default())
+        .unwrap();
 
     let projection = runtime
         .run_adapter(&spec.id, &fake_harness(SUCCESS_SCRIPT))
@@ -144,7 +146,9 @@ fn process_harness_bridges_events_and_verifies() {
 fn failed_harness_converges_without_completing() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("失败收敛", None).unwrap();
+    let spec = runtime
+        .create_thread("失败收敛", None, Default::default())
+        .unwrap();
     let script = r#"{"type":"output","text":"尝试中"}
 {"type":"failed","reason":"依赖服务不可达"}
 "#;
@@ -180,7 +184,9 @@ fn failed_harness_converges_without_completing() {
 fn harness_exit_without_completion_is_failure() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("静默退出", None).unwrap();
+    let spec = runtime
+        .create_thread("静默退出", None, Default::default())
+        .unwrap();
     // 进程正常退出但从未报告 Completed：不能当成成功
     let error = runtime
         .run_adapter(
@@ -197,7 +203,9 @@ fn harness_exit_without_completion_is_failure() {
 fn terminal_thread_rerun_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_thread("终态幂等", None).unwrap();
+    let spec = runtime
+        .create_thread("终态幂等", None, Default::default())
+        .unwrap();
     runtime
         .run_adapter(&spec.id, &fake_harness(SUCCESS_SCRIPT))
         .unwrap();

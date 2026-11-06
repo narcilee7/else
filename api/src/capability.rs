@@ -48,7 +48,8 @@ impl Runtime {
                 },
             ))?;
         }
-        let result = else_gateway::mcp_session::list_tools(&self.workspace, command)
+        let mcp_workspace = self.workspace_of(&projection)?;
+        let result = else_gateway::mcp_session::list_tools(&mcp_workspace, command)
             .map_err(ApiError::NotFound)?;
         let tools = result["tools"].as_array().cloned().unwrap_or_default();
         let mut registrations = Vec::new();
@@ -277,12 +278,13 @@ impl Runtime {
     pub fn restore_mcp_sessions(&self) -> Result<()> {
         for spec in self.list_threads()? {
             let projection = self.projection(&spec.id)?;
+            let workspace = self.workspace_of(&projection)?;
             for server in projection
                 .mcp_servers
                 .values()
                 .filter(|server| server.enabled)
             {
-                else_gateway::mcp_session::list_tools(&self.workspace, &server.command)
+                else_gateway::mcp_session::list_tools(&workspace, &server.command)
                     .map_err(ApiError::NotFound)?;
             }
         }
