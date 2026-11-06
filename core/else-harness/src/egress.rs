@@ -1,5 +1,4 @@
 //! 本地 HTTPS CONNECT 代理：Harness 只能访问显式域名 Allowlist。
-
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -95,9 +94,15 @@ fn handle_connection(
     allowlist: &[String],
     decisions: &Mutex<Vec<EgressDecision>>,
 ) {
+    // 监听器是非阻塞的，macOS 上 accept 出来的连接会继承这个标志；
+    // 不显式改回阻塞，隧道里的第一次 read 就拿到 EAGAIN，隧道当场断掉。
+    let _ = client.set_nonblocking(false);
     let _ = client.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = client.set_write_timeout(Some(Duration::from_secs(10)));
-    let Some(header) = read_header(&mut client) else {
+    // `read_header` 会把同一次 read 里多出来的字节一并交回来：
+    // 客户端经常把 CONNECT 与 TLS ClientHello 连在一起发，
+    // 丢掉那几个字节，握手就废了，对端看到的就是连接被重置。
+    let Some((header, mut leftover)) = read_header(&mut client) else {
         return;
     };
     let first_line = header.lines().next().unwrap_or_default();
@@ -125,24 +130,37 @@ fn handle_connection(
             .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         return;
     }
-    let Ok(upstream) = TcpStream::connect((host.as_str(), port)) else {
+    let Ok(mut upstream) = TcpStream::connect((host.as_str(), port)) else {
         let _ = client.write_all(
             b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
         );
         return;
     };
-    let _ = upstream.set_read_timeout(Some(Duration::from_secs(60)));
-    let _ = upstream.set_write_timeout(Some(Duration::from_secs(60)));
+    // 读 CONNECT 头用的 10s 超时到此为止。隧道里两侧都会长时间安静
+    // （模型正在思考），超时会把 `io::copy` 变成“写端半关”，对端看到的就是
+    // 连接被重置。隧道阶段不设任何读超时。
+    let _ = client.set_read_timeout(None);
+    let _ = client.set_write_timeout(None);
+    let _ = upstream.set_read_timeout(None);
+    let _ = upstream.set_write_timeout(None);
     if client
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .is_err()
     {
         return;
     }
+    if !leftover.is_empty() && upstream.write_all(&leftover).is_err() {
+        return;
+    }
+    leftover.clear();
     tunnel(client, upstream);
 }
 
-fn read_header(stream: &mut TcpStream) -> Option<String> {
+/// 读到 `\r\n\r\n` 为止，返回 （头部文本, 头部之后多出来的字节）。
+///
+/// 多出来的字节必须交给调用方转给上游：CONNECT 与 TLS 握手经常在同一个
+/// TCP 段里到达，把它们当成“头部的一部分”丢掉是最隐蔽的隧道 bug。
+fn read_header(stream: &mut TcpStream) -> Option<(String, Vec<u8>)> {
     let mut buffer = Vec::new();
     let mut chunk = [0_u8; 1024];
     while buffer.len() < MAX_HEADER_BYTES {
@@ -151,8 +169,10 @@ fn read_header(stream: &mut TcpStream) -> Option<String> {
             return None;
         }
         buffer.extend_from_slice(&chunk[..read]);
-        if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
-            return String::from_utf8(buffer).ok();
+        if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            let end = position + 4;
+            let header = String::from_utf8(buffer[..end].to_vec()).ok()?;
+            return Some((header, buffer[end..].to_vec()));
         }
     }
     None
@@ -225,5 +245,46 @@ mod tests {
         let decisions = proxy.decisions();
         assert_eq!(decisions.len(), 1);
         assert!(!decisions[0].allowed);
+    }
+
+    /// 隧道必须真的能双向转发字节。
+    ///
+    /// 回归的是两个真实缺陷：accept 出来的连接继承了监听器的非阻塞标志
+    /// （第一次 read 就是 EAGAIN，隧道当场断），以及头部后多出来的字节
+    /// （TLS ClientHello 常与 CONNECT 同时到达）被当成头部丢掉。
+    #[test]
+    fn tunnel_relays_bytes_after_the_connect_header() {
+        use std::net::TcpListener;
+
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
+        let echo = std::thread::spawn(move || {
+            let (mut stream, _) = upstream.accept().unwrap();
+            let mut buffer = [0_u8; 64];
+            let read = stream.read(&mut buffer).unwrap();
+            stream.write_all(&buffer[..read]).unwrap();
+        });
+
+        let proxy = EgressProxy::start(vec!["127.0.0.1".into()]).unwrap();
+        let mut client =
+            TcpStream::connect((proxy.endpoint().host.as_str(), proxy.endpoint().port)).unwrap();
+        // CONNECT 与随后的负载在同一次写入里：这正是丢字节路径。
+        client
+            .write_all(
+                format!(
+                    "CONNECT 127.0.0.1:{upstream_port} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\nping"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+
+        let mut header = [0_u8; 64];
+        let read = client.read(&mut header).unwrap();
+        assert!(String::from_utf8_lossy(&header[..read]).contains("200"));
+
+        let mut echoed = [0_u8; 8];
+        let read = client.read(&mut echoed).unwrap();
+        assert_eq!(&echoed[..read], b"ping");
+        let _ = echo.join();
     }
 }
