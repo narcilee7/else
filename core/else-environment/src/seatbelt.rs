@@ -96,7 +96,16 @@ fn profile(
     }
     let extra_writes = writes.join(" ");
     let mut metadata = Vec::new();
-    for path in metadata_paths {
+    // firmlink 两边都要：路径写作 `/tmp/...` 时，`canonicalize()` 会得到
+    // `/private/tmp/...`，而 Seatbelt 按字面匹配。只放原始拼写会让
+    // 子进程的 canonicalize 返回 EPERM（Codex 就是这样挂的）。
+    let mut all_metadata = metadata_paths.clone();
+    all_metadata.extend(
+        metadata_paths
+            .iter()
+            .filter_map(|path| path.canonicalize().ok()),
+    );
+    for path in all_metadata {
         if let Some(path) = path.to_str() {
             let rule = format!("(literal {})", quoted(path));
             if !metadata.contains(&rule) {

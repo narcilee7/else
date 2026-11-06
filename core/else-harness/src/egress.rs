@@ -278,13 +278,19 @@ mod tests {
             )
             .unwrap();
 
-        let mut header = [0_u8; 64];
-        let read = client.read(&mut header).unwrap();
-        assert!(String::from_utf8_lossy(&header[..read]).contains("200"));
-
-        let mut echoed = [0_u8; 8];
-        let read = client.read(&mut echoed).unwrap();
-        assert_eq!(&echoed[..read], b"ping");
+        // 200 与回显可能同一次到达（都是小包），所以边读边找。
+        let mut received = Vec::new();
+        let mut chunk = [0_u8; 64];
+        while received.len() < 39 + 4 {
+            let read = client.read(&mut chunk).unwrap();
+            if read == 0 {
+                break;
+            }
+            received.extend_from_slice(&chunk[..read]);
+        }
+        let text = String::from_utf8_lossy(&received).to_string();
+        assert!(text.contains("200"), "未收到 200：{text:?}");
+        assert!(text.ends_with("ping"), "负载未转发：{text:?}");
         let _ = echo.join();
     }
 }

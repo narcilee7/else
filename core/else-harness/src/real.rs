@@ -440,7 +440,28 @@ fn summarize_input(input: &serde_json::Value) -> String {
 /// 用户把 Codex 指向自建/中转端点时，真实流量不走官方域名。
 /// 名单跟着端点走：否则 egress 代理会把合法请求当成外联拒绝。
 fn codex_extra_hosts() -> Vec<String> {
-    base_url_host("OPENAI_BASE_URL").into_iter().collect()
+    let mut hosts: Vec<String> = base_url_host("OPENAI_BASE_URL").into_iter().collect();
+    hosts.extend(codex_config_base_url_hosts());
+    hosts
+}
+
+/// `~/.codex/config.toml` 里的 `base_url`（可能有多个 provider 段落）。
+/// 只做行扫描：这里只需要域名，不需要一个 TOML 解析器。
+fn codex_config_base_url_hosts() -> Vec<String> {
+    let Some(path) = host_home().map(|home| home.join(".codex").join("config.toml")) else {
+        return vec![];
+    };
+    let Ok(body) = std::fs::read_to_string(path) else {
+        return vec![];
+    };
+    body.lines()
+        .filter_map(|line| {
+            let line = line.split('#').next()?.trim();
+            let value = line.strip_prefix("base_url")?.trim_start();
+            let value = value.strip_prefix('=')?.trim();
+            host_of(value.trim_matches('"').trim_matches('\''))
+        })
+        .collect()
 }
 
 fn claude_extra_hosts() -> Vec<String> {
