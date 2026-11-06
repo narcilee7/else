@@ -33,6 +33,7 @@ ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
 libc = "0.2"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+unicode-width = "0.2"
 crossterm = "0.29"
 
 [profile.release]

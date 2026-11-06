@@ -1,12 +1,15 @@
-//! Decisions 队列与详情。列表只负责导航，真正的选择在详情中发生。
+//! 决策队列与单条复核。
+//!
+//! 队列是一张"现在还挂着几件事"的清单；真正的选择在复核里发生，而那一步
+//! 只有一屏：为什么需要你、你的选项、键。
 
 use else_protocol::attention::{AttentionRequest, DecisionChoice, ExpectedLoss};
 use else_protocol::ids::{AttentionId, ThreadId};
 
 use super::super::app::DecisionFocus;
 use super::super::data::{Data, DecisionsData};
-use super::super::row::{Pane, Row, RowAction};
-use super::super::theme;
+use super::super::row::{Row, RowAction};
+use super::{loss_label, loss_style, short_id};
 
 pub fn all_requests(data: &DecisionsData) -> Vec<(ThreadId, AttentionRequest)> {
     let mut requests = Vec::new();
@@ -26,122 +29,118 @@ pub fn all_requests(data: &DecisionsData) -> Vec<(ThreadId, AttentionRequest)> {
     requests
 }
 
+/// 找一个待决请求。决策既可能从队列点开，也可能在 Thread 时间线上直接选，
+/// 所以两种数据都要能回答"这一条的预期损失有多大" —— 高风险批准要靠它
+/// 触发二次确认。
 pub fn find_request<'a>(data: &'a Data, request_id: &AttentionId) -> Option<&'a AttentionRequest> {
-    let Data::Decisions(data) = data else {
-        return None;
-    };
-    data.windows
-        .iter()
-        .flat_map(|window| window.requests.iter())
-        .chain(data.loose.iter().map(|(_, request)| request))
-        .find(|request| &request.id == request_id)
+    match data {
+        Data::Decisions(data) => data
+            .windows
+            .iter()
+            .flat_map(|window| window.requests.iter())
+            .chain(data.loose.iter().map(|(_, request)| request))
+            .find(|request| &request.id == request_id),
+        Data::ThreadDetail(detail) => detail
+            .thread
+            .decisions
+            .iter()
+            .find(|request| &request.id == request_id),
+        _ => None,
+    }
 }
 
-pub fn pane(data: &DecisionsData) -> Pane {
+pub fn rows(data: &DecisionsData) -> Vec<Row> {
     let requests = all_requests(data);
-    let mut rows = Vec::new();
     if requests.is_empty() {
-        rows.push(Row::muted("Nothing needs your decision right now."));
-        rows.push(Row::muted(
-            "New requests will appear here without interrupting your work.",
-        ));
-        return Pane {
-            title: "Decisions".into(),
-            rows,
-        };
+        return vec![
+            Row::blank(),
+            Row::muted(" Nothing is waiting for your judgment."),
+            Row::muted(" New requests will show up here without interrupting you."),
+        ];
     }
-    rows.push(Row::muted(format!(
-        "{} request(s) · Enter to review before choosing",
-        requests.len()
-    )));
+    let mut rows = vec![Row::heading(" WAITING ON YOU")];
     for (thread_id, request) in requests {
-        rows.push(Row::action(
-            format!("  {}", request.summary),
-            loss_style(request.expected_loss),
-            RowAction::OpenDecision {
-                thread_id,
-                request_id: request.id.clone(),
-            },
-        ));
-        rows.push(Row::muted(format!(
-            "      {} · {} impact",
-            request.blocked_reason,
-            loss_label(request.expected_loss)
-        )));
+        rows.push(
+            Row::action(
+                format!(" {}", request.summary),
+                loss_style(request.expected_loss),
+                RowAction::OpenDecision {
+                    thread_id: thread_id.clone(),
+                    request_id: request.id.clone(),
+                },
+            )
+            .with_meta(format!(
+                "{} · {}",
+                loss_label(request.expected_loss),
+                short_id(&thread_id)
+            ))
+            .with_note(request.blocked_reason.clone()),
+        );
     }
-    Pane {
-        title: "Needs your judgment".into(),
-        rows,
-    }
+    rows
 }
 
-pub fn detail_pane(data: &DecisionsData, focus: Option<&DecisionFocus>) -> Pane {
-    let mut rows = Vec::new();
+pub fn detail_rows(data: &DecisionsData, focus: Option<&DecisionFocus>) -> Vec<Row> {
     let Some(focus) = focus else {
-        rows.push(Row::muted("Choose a decision from the queue first."));
-        return Pane {
-            title: "Decision".into(),
-            rows,
-        };
+        return vec![Row::muted(" Pick a request from the queue first.")];
     };
     let Some((_, request)) = all_requests(data).into_iter().find(|(thread_id, request)| {
         thread_id == &focus.thread_id && request.id == focus.request_id
     }) else {
-        rows.push(Row::muted(
-            "This request is no longer waiting for a decision.",
-        ));
-        rows.push(Row::muted("Press Esc to return to the queue."));
-        return Pane {
-            title: "Decision resolved".into(),
-            rows,
-        };
+        return vec![
+            Row::blank(),
+            Row::muted(" This request is no longer waiting for a decision."),
+            Row::muted(" Esc goes back to the queue."),
+        ];
     };
 
-    rows.push(Row::heading("What needs you"));
-    rows.push(Row::styled(format!("  {}", request.summary), theme::text()));
-    rows.push(Row::heading("Why the runtime cannot decide"));
-    rows.push(Row::muted(format!("  {}", request.blocked_reason)));
-    rows.push(Row::muted(format!(
-        "  {} impact · {} · {}",
-        loss_label(request.expected_loss),
-        if request.blocking {
-            "blocks the thread"
-        } else {
-            "does not block the thread"
-        },
-        if request.reversible {
-            "waiting is reversible"
-        } else {
-            "waiting is not reversible"
-        }
-    )));
+    let mut rows = vec![
+        Row::styled(
+            format!(" {}", request.summary),
+            loss_style(request.expected_loss),
+        ),
+        Row::blank(),
+        Row::muted(format!(" {}", request.blocked_reason)),
+        Row::muted(format!(
+            " {} impact · {} · {}",
+            loss_label(request.expected_loss),
+            if request.blocking {
+                "blocks the thread"
+            } else {
+                "does not block the thread"
+            },
+            if request.reversible {
+                "waiting is reversible"
+            } else {
+                "waiting is not reversible"
+            }
+        )),
+    ];
     if let Some(deadline) = request.decide_by {
         rows.push(Row::muted(format!(
-            "  Decide by {}",
-            deadline.format("%Y-%m-%d %H:%M UTC")
+            " decide by {}",
+            deadline.format("%m-%d %H:%M")
         )));
     }
+    rows.push(Row::blank());
 
-    rows.push(Row::heading("Your options"));
+    rows.push(Row::heading(" CHOOSE ONE"));
     if request.options.is_empty() {
-        rows.push(Row::muted(
-            "  No predefined options. Press e to write a response.",
-        ));
+        rows.push(Row::muted(" no predefined option · e writes one"));
     }
     for option in &request.options {
-        let suffix = if option.recommended
-            || request.default_option.as_deref() == Some(option.id.as_str())
-        {
-            "  · recommended"
-        } else {
-            ""
-        };
+        let recommended =
+            option.recommended || request.default_option.as_deref() == Some(option.id.as_str());
         rows.push(Row::action(
-            format!("  {}{suffix}", option.label),
-            if option.recommended {
-                theme::focused()
+            format!(
+                " ▸ {}{}",
+                option.label,
+                if recommended { " (recommended)" } else { "" }
+            ),
+            if recommended {
+                super::super::theme::focused()
             } else {
-                theme::text()
+                super::super::theme::text()
             },
             RowAction::Decide {
                 thread_id: focus.thread_id.clone(),
@@ -150,33 +149,12 @@ pub fn detail_pane(data: &DecisionsData, focus: Option<&DecisionFocus>) -> Pane 
             },
         ));
     }
-    rows.push(Row::muted("  e  write a custom response"));
-    rows.push(Row::muted("  x  dismiss this request"));
     if request.expected_loss >= ExpectedLoss::High {
+        rows.push(Row::blank());
         rows.push(Row::styled(
-            "  Approval requires one more confirmation because the impact is high.",
-            theme::warning(),
+            " High impact: approving asks you to confirm once more.",
+            super::super::theme::warning(),
         ));
     }
-    Pane {
-        title: "Review before choosing".into(),
-        rows,
-    }
-}
-
-fn loss_label(loss: ExpectedLoss) -> &'static str {
-    match loss {
-        ExpectedLoss::Low => "low",
-        ExpectedLoss::Medium => "medium",
-        ExpectedLoss::High => "high",
-        ExpectedLoss::Critical => "critical",
-    }
-}
-
-fn loss_style(loss: ExpectedLoss) -> ratatui::style::Style {
-    match loss {
-        ExpectedLoss::Low => theme::text(),
-        ExpectedLoss::Medium => theme::waiting(),
-        ExpectedLoss::High | ExpectedLoss::Critical => theme::critical(),
-    }
+    rows
 }

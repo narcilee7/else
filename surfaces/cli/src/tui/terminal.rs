@@ -42,6 +42,14 @@ impl Tui {
     {
         self.terminal.draw(render).map(|_| ())
     }
+
+    /// 改窗口标题。用户切到别的标签页时，标题是唯一还在的提醒。
+    pub fn set_title(&mut self, title: &str) -> std::io::Result<()> {
+        execute!(
+            self.terminal.backend_mut(),
+            crossterm::terminal::SetTitle(title)
+        )
+    }
 }
 
 impl Drop for Tui {

@@ -1,4 +1,6 @@
-//! 帮助浮层。
+//! 帮助浮层：按 `?` 才出现的那张卡。
+//!
+//! 页脚只放此刻用得上的键，其余的都在这里 —— 而这里只写真的存在的键。
 
 use super::super::theme;
 use ratatui::text::{Line, Span};
@@ -19,38 +21,28 @@ pub fn lines() -> Vec<Line<'static>> {
         lines.push(Line::from(""));
     };
     section(
-        "Navigate",
+        "Moving",
         &[
-            ("j / k / ↑ / ↓", "move"),
-            ("PgUp / PgDn", "move faster"),
-            ("Home / End", "first / last row"),
+            ("j / k / ↑ / ↓", "one row"),
+            ("PgUp / PgDn", "ten rows"),
+            ("Home / End", "first / last"),
             ("Enter", "open or choose"),
-            ("Esc", "back"),
-            ("mouse wheel", "scroll"),
+            ("Esc", "go back"),
         ],
     );
     section(
-        "Surfaces",
+        "Working",
         &[
-            ("1", "Today"),
-            ("2", "Decisions"),
-            ("3", "Results"),
-            ("4", "Settings / connectors"),
+            ("n", "describe a new thread"),
+            ("a", "let the runtime advance"),
+            ("e", "write your own answer"),
+            ("x", "dismiss a request"),
+            ("d", "decisions · debug (in a thread)"),
+            ("c", "connections"),
+            ("r", "reload"),
         ],
     );
-    section(
-        "Work",
-        &[
-            ("n", "new thread"),
-            ("r", "refresh"),
-            ("a", "advance an thread"),
-            ("d", "toggle thread debug details"),
-            ("e", "write a custom decision"),
-            ("x", "dismiss a decision"),
-            ("s", "sync a connector"),
-        ],
-    );
-    section("Quit", &[("q", "quit"), ("Ctrl-C", "quit")]);
+    section("Leaving", &[("q", "quit"), ("Ctrl-C", "quit")]);
     lines.push(Line::from(Span::styled(
         "  press any key to close",
         theme::muted(),

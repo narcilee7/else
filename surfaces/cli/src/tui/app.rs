@@ -27,20 +27,6 @@ pub enum Screen {
     Composer,
 }
 
-impl Screen {
-    pub fn title(&self) -> &'static str {
-        match self {
-            Self::Overview => "Today",
-            Self::Decisions => "Decisions",
-            Self::Results => "Results",
-            Self::ThreadDetail => "Thread",
-            Self::DecisionDetail => "Decision",
-            Self::Connectors => "Settings",
-            Self::Composer => "New thread",
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct DecisionFocus {
     pub thread_id: ThreadId,
@@ -76,6 +62,12 @@ pub struct App {
     last_refresh: std::time::Instant,
     pub dirty: bool,
     pub should_quit: bool,
+    /// 页脚常驻提示：这条命令接的是常驻 Runtime 还是临时替身。
+    pub runtime_note: Option<String>,
+    /// 最近一次看到"有几件事在等人"。写进终端标题，切走窗口也不会错过。
+    waiting: usize,
+    /// 刚提交的是"开一件事"：做完就带我去看它，不要把我丢回列表。
+    open_after_create: bool,
     pub show_help: bool,
     pub focused_thread: Option<ThreadId>,
     pub focused_decision: Option<DecisionFocus>,
@@ -102,6 +94,9 @@ impl App {
             last_refresh: std::time::Instant::now(),
             dirty: true,
             should_quit: false,
+            runtime_note: None,
+            waiting: 0,
+            open_after_create: false,
             show_help: false,
             focused_thread: None,
             focused_decision: None,
@@ -116,6 +111,14 @@ impl App {
 
     pub fn rows(&self) -> Vec<Row> {
         views::flat_rows(self)
+    }
+
+    /// 终端标签页标题。人不在这个窗口里的时候，这里就是通知。
+    pub fn window_title(&self) -> String {
+        if self.waiting > 0 {
+            return format!("[!] {} waiting · else", self.waiting);
+        }
+        "else".to_string()
     }
 
     pub fn is_loading(&self) -> bool {
@@ -234,6 +237,11 @@ impl App {
                     return;
                 }
                 let selected = self.selected_action().map(|action| action.stable_key());
+                if let Data::Overview(overview) = &data {
+                    // 首屏之外的行没有总账；把"有多少事在等人"记在 App 上，
+                    // 切到 Thread 时窗口标题仍然说实话。
+                    self.waiting = views::waiting_count(overview);
+                }
                 self.data = data;
                 if let Some(selected) = selected {
                     if let Some(index) = self.rows().iter().position(|row| {
@@ -285,7 +293,13 @@ impl App {
                 if let Some(thread_id) = thread_id {
                     self.focused_thread = Some(thread_id);
                 }
-                if self.screen == Screen::DecisionDetail {
+                if self.open_after_create {
+                    // 新建之后直接进那条 Thread：你刚说要做的事，就是你现在想看的事。
+                    self.open_after_create = false;
+                    if self.focused_thread.is_some() {
+                        self.goto(Screen::ThreadDetail);
+                    }
+                } else if self.screen == Screen::DecisionDetail {
                     self.back();
                 }
                 self.refresh_again = true;
@@ -348,10 +362,11 @@ impl App {
                 self.dirty = true;
                 return;
             }
-            KeyCode::Char('1') => self.goto(Screen::Overview),
-            KeyCode::Char('2') => self.goto(Screen::Decisions),
-            KeyCode::Char('3') => self.goto(Screen::Results),
-            KeyCode::Char('4') => self.goto(Screen::Connectors),
+            // 不做数字标签页：屏幕不是并列的功能模块，是任务的不同深度。
+            KeyCode::Char('d') if self.screen != Screen::ThreadDetail => {
+                self.goto(Screen::Decisions)
+            }
+            KeyCode::Char('c') => self.goto(Screen::Connectors),
             KeyCode::Char('r') => self.request_load(),
             KeyCode::Char('n') => {
                 self.composer.clear();
@@ -402,6 +417,17 @@ impl App {
                         self.dispatch(ActionRequest::AdvanceThread { thread_id });
                     }
                 }
+                // 时间线上待决的事就地回答，不必先退回去找那条请求。
+                KeyCode::Char('e') => {
+                    if let Some((thread_id, request_id)) = self.pending_decision() {
+                        self.composer.clear();
+                        self.composer_mode = ComposerMode::Decision {
+                            thread_id,
+                            request_id,
+                        };
+                        self.goto(Screen::Composer);
+                    }
+                }
                 KeyCode::Char('d') => self.debug_detail = !self.debug_detail,
                 _ => {}
             },
@@ -448,6 +474,7 @@ impl App {
                         choice: DecisionChoice::FreeText(text),
                     },
                 };
+                self.open_after_create = matches!(action, ActionRequest::CreateThread { .. });
                 self.dispatch(action);
                 self.back();
                 return;
@@ -505,6 +532,7 @@ impl App {
                 self.focused_thread = Some(thread_id);
                 self.goto(Screen::ThreadDetail);
             }
+            RowAction::OpenResults => self.goto(Screen::Results),
             RowAction::OpenDecision {
                 thread_id,
                 request_id,
@@ -519,9 +547,6 @@ impl App {
                 self.focused_thread = Some(thread_id);
                 self.data = Data::Empty;
                 self.request_load();
-            }
-            RowAction::AdvanceThread(thread_id) => {
-                self.dispatch(ActionRequest::AdvanceThread { thread_id });
             }
             RowAction::Decide {
                 thread_id,
@@ -574,20 +599,49 @@ impl App {
             .is_some_and(|request| request.expected_loss >= ExpectedLoss::High)
     }
 
+    /// 当前 Thread 上还挂着的第一条请求。
+    fn pending_decision(&self) -> Option<(ThreadId, AttentionId)> {
+        let Data::ThreadDetail(detail) = &self.data else {
+            return self
+                .focused_decision
+                .as_ref()
+                .map(|focus| (focus.thread_id.clone(), focus.request_id.clone()));
+        };
+        detail
+            .thread
+            .decisions
+            .first()
+            .map(|request| (detail.thread.spec.id.clone(), request.id.clone()))
+    }
+
     fn selected_action(&self) -> Option<RowAction> {
         self.rows()
             .get(self.cursor)
             .and_then(|row| row.action.clone())
     }
 
+    /// 选中项只在能做的事之间移动 —— 分组标题和空行不是选项。
     pub fn move_cursor(&mut self, delta: isize) {
-        let count = self.rows().len();
-        if count == 0 {
+        let actionable: Vec<usize> = self
+            .rows()
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.action.is_some())
+            .map(|(index, _)| index)
+            .collect();
+        if actionable.is_empty() {
             self.cursor = 0;
             return;
         }
-        let next = self.cursor as isize + delta;
-        self.cursor = next.clamp(0, count as isize - 1) as usize;
+        let current = actionable.iter().position(|index| *index == self.cursor);
+        let next = match current {
+            Some(position) => {
+                (position as isize + delta).clamp(0, actionable.len() as isize - 1) as usize
+            }
+            None if delta > 0 => 0,
+            None => actionable.len() - 1,
+        };
+        self.cursor = actionable[next];
         self.dirty = true;
     }
 
@@ -596,18 +650,32 @@ impl App {
         self.clamp_cursor();
     }
 
+    /// 刷新后行会变，光标可能落在一个没有动作的行上；把它拉回最近的可选项。
     fn clamp_cursor(&mut self) {
-        let count = self.rows().len();
-        self.cursor = if count == 0 {
-            0
-        } else {
-            self.cursor.min(count - 1)
-        };
+        let rows = self.rows();
+        if rows.is_empty() {
+            self.cursor = 0;
+            return;
+        }
+        let start = self.cursor.min(rows.len() - 1);
+        if rows[start].action.is_some() {
+            self.cursor = start;
+            return;
+        }
+        if let Some(offset) = rows[start..].iter().position(|row| row.action.is_some()) {
+            self.cursor = start + offset;
+            return;
+        }
+        self.cursor = rows
+            .iter()
+            .position(|row| row.action.is_some())
+            .unwrap_or(0);
     }
 }
 
 pub fn run(mut app: App, events: Receiver<AppEvent>, tui: &mut Tui) -> std::io::Result<()> {
     app.request_load();
+    let mut title = String::new();
     while !app.should_quit {
         while let Ok(event) = events.try_recv() {
             app.handle(event);
@@ -629,6 +697,11 @@ pub fn run(mut app: App, events: Receiver<AppEvent>, tui: &mut Tui) -> std::io::
         if app.dirty {
             tui.draw(|frame| views::render(frame, &app))?;
             app.dirty = false;
+        }
+        let wanted = app.window_title();
+        if wanted != title {
+            tui.set_title(&wanted)?;
+            title = wanted;
         }
     }
     Ok(())
@@ -840,6 +913,37 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.action_pending);
         assert!(actions.try_recv().is_ok());
+    }
+
+    #[test]
+    fn selection_only_lands_on_rows_that_do_something() {
+        let (mut app, _loads, _actions) = app();
+        app.screen = Screen::Decisions;
+        app.data = Data::Decisions(Box::new(DecisionsData {
+            windows: Vec::new(),
+            loose: vec![
+                (ThreadId::from("thread-1"), request("request-1")),
+                (ThreadId::from("thread-2"), request("request-2")),
+            ],
+        }));
+        app.set_cursor(0);
+        // 第 0 行是分组标题：它不是一个能选的东西。
+        assert!(app.selected_action().is_some());
+        app.move_cursor(1);
+        assert!(matches!(
+            app.selected_action(),
+            Some(RowAction::OpenDecision { request_id, .. })
+                if request_id == AttentionId::from("request-2")
+        ));
+        app.move_cursor(10);
+        assert!(
+            matches!(
+                app.selected_action(),
+                Some(RowAction::OpenDecision { request_id, .. })
+                    if request_id == AttentionId::from("request-2")
+            ),
+            "the cursor stops at the last actionable row"
+        );
     }
 
     #[test]

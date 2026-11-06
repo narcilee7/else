@@ -31,7 +31,10 @@ pub fn launch(session: Session) -> Result<()> {
     let mut tui = terminal::Tui::enter().map_err(|error| {
         crate::error::CliError::usage(format!("cannot enter terminal: {error}"))
     })?;
-    let application = app::App::new(loads, actions);
+    let mut application = app::App::new(loads, actions);
+    if session.embedded() {
+        application.runtime_note = Some("runtime 临时：后台没有常驻服务".into());
+    }
     let result = app::run(application, receiver, &mut tui)
         .map_err(|error| crate::error::CliError::usage(format!("terminal error: {error}")));
     drop(tui);

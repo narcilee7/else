@@ -1,40 +1,46 @@
-//! Settings 中的 Connector 健康与同步。
+//! 连接器：外部来源的健康与同步。
+//!
+//! 一行一个来源，右边是"能不能用"。细节（凭据、上次成功、下次同步）放到
+//! 选中时的 note 里 —— 平时不占地方，需要时就在页脚。
+
+use else_protocol::connector::ConnectorHealth;
 
 use super::super::data::ConnectorRow;
-use super::super::row::{Pane, Row, RowAction};
+use super::super::row::{Row, RowAction};
 use super::super::theme;
-use super::short_id;
 
-pub fn pane(rows: &[ConnectorRow], thread_id: Option<&else_protocol::ids::ThreadId>) -> Pane {
-    let mut lines = Vec::new();
+pub fn rows(rows: &[ConnectorRow], thread_id: Option<&else_protocol::ids::ThreadId>) -> Vec<Row> {
     if rows.is_empty() {
-        lines.push(Row::muted("No connectors registered for this thread."));
-        lines.push(Row::muted(
-            "Use the CLI connector commands to connect Calendar, Linear or Notion.",
-        ));
-        return Pane {
-            title: "Connectors".into(),
-            rows: lines,
-        };
+        return vec![
+            Row::blank(),
+            Row::muted(" No connector is connected to this thread."),
+            Row::muted(" Use `else-bot connector` to connect Calendar, Linear or Notion."),
+        ];
     }
-    lines.push(Row::muted("Enter or s to sync the selected connector."));
+
+    let mut rows_out = vec![Row::heading(" SOURCES")];
     for row in rows {
-        let health = &row.health;
-        let style = match health.health {
-            else_protocol::connector::ConnectorHealth::Healthy => theme::done(),
-            else_protocol::connector::ConnectorHealth::Degraded => theme::warning(),
-            else_protocol::connector::ConnectorHealth::Error => theme::critical(),
+        let (style, label) = match row.health.health {
+            ConnectorHealth::Healthy => (theme::done(), "healthy"),
+            ConnectorHealth::Degraded => (theme::warning(), "degraded"),
+            ConnectorHealth::Error => (theme::critical(), "error"),
         };
-        let health_label = match health.health {
-            else_protocol::connector::ConnectorHealth::Healthy => "healthy",
-            else_protocol::connector::ConnectorHealth::Degraded => "degraded",
-            else_protocol::connector::ConnectorHealth::Error => "error",
-        };
-        lines.push(Row::action(
-            format!(
-                "  {} · {} · {health_label}",
-                row.connector.name, row.connector.adapter
-            ),
+        let note = format!(
+            "source {} · credential {} · last success {} · next sync {}",
+            row.connector.source,
+            if row.health.credential_configured {
+                "configured"
+            } else {
+                "missing"
+            },
+            row.health
+                .last_success_at
+                .map(|value| value.format("%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| "never".into()),
+            row.health.next_sync_at.format("%m-%d %H:%M")
+        );
+        let mut line = Row::action(
+            format!(" {} · {}", row.connector.name, row.connector.adapter),
             style,
             RowAction::SyncConnector {
                 thread_id: thread_id
@@ -42,32 +48,13 @@ pub fn pane(rows: &[ConnectorRow], thread_id: Option<&else_protocol::ids::Thread
                     .unwrap_or_else(|| else_protocol::ids::ThreadId::from("unknown")),
                 connector_id: row.connector.id.clone(),
             },
-        ));
-        lines.push(Row::muted(format!(
-            "      source={} · credential={}",
-            row.connector.source,
-            if health.credential_configured {
-                "configured"
-            } else {
-                "missing"
-            }
-        )));
-        lines.push(Row::muted(format!(
-            "      last success={} · next sync={}",
-            health
-                .last_success_at
-                .map(|value| value.format("%Y-%m-%d %H:%M UTC").to_string())
-                .unwrap_or_else(|| "never".into()),
-            health.next_sync_at.format("%Y-%m-%d %H:%M UTC")
-        )));
-        if let Some(error) = &health.last_error {
-            lines.push(Row::styled(format!("      {error}"), theme::critical()));
+        )
+        .with_meta(label)
+        .with_note(note);
+        if let Some(error) = &row.health.last_error {
+            line = line.with_note(error.to_string());
         }
+        rows_out.push(line);
     }
-    Pane {
-        title: thread_id
-            .map(|id| format!("Connectors · {}", short_id(id)))
-            .unwrap_or_else(|| "Connectors".into()),
-        rows: lines,
-    }
+    rows_out
 }

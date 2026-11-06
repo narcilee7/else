@@ -25,6 +25,7 @@ else-context = { path = "../../core/else-context", version = "0.1.2" }
 else-daemon = { path = "../daemon", version = "0.1.2" }
 clap = { version = "4", features = ["derive"] }
 ratatui.workspace = true
+unicode-width.workspace = true
 crossterm.workspace = true
 chrono.workspace = true
 libc.workspace = true

@@ -216,28 +216,16 @@ fn fetch(client: &RuntimeClient, request: &LoadRequest) -> else_client::Result<D
 }
 
 fn fetch_overview(client: &RuntimeClient) -> else_client::Result<Data> {
-    let (brief, attention, threads, projects, identities) = thread::scope(|scope| {
+    let (brief, attention, threads) = thread::scope(|scope| {
         let brief = scope.spawn(|| client.brief());
         let attention = scope.spawn(|| client.attention_windows());
         let threads = scope.spawn(|| client.list_threads());
-        let projects = scope.spawn(|| client.project_worlds(None, false));
-        let identities = scope.spawn(|| client.identity_worlds(None, false));
-        (
-            join(brief),
-            join(attention),
-            join(threads),
-            join(projects),
-            join(identities),
-        )
+        (join(brief), join(attention), join(threads))
     });
-    let mut identities = identities?;
-    identities.truncate(5);
     Ok(Data::Overview(Box::new(OverviewData {
         brief: brief?,
         attention: attention?,
         threads: threads?,
-        projects: projects?,
-        identities,
     })))
 }
 

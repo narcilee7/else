@@ -8,7 +8,7 @@ use expectrl::{Eof, Expect};
 /// 冷启动必须走完真实 PTY：没有预启动 daemon，也不复用用户 Runtime。
 /// 这覆盖内嵌 daemon 的 Session 生命周期，而不只是视图状态机。
 #[test]
-fn cold_start_reaches_today_and_quits_cleanly() {
+fn cold_start_shows_an_empty_now_screen_and_quits_cleanly() {
     let runtime = tempfile::tempdir().expect("temporary runtime directory");
     let mut command = Command::new(env!("CARGO_BIN_EXE_else-bot"));
     command
@@ -18,10 +18,16 @@ fn cold_start_reaches_today_and_quits_cleanly() {
     let mut terminal = expectrl::session::OsSession::spawn(command).expect("spawn TUI in a PTY");
     terminal.set_expect_timeout(Some(Duration::from_secs(20)));
 
-    terminal.expect("Today").expect("Today screen");
+    // 增量重绘会把一行拆成几段写入，所以这里只认单词；状态条本身的排版
+    // 由 views 里的帧测试负责。
+    terminal.expect("else").expect("status line");
+    // 空状态不摆空表格，而是给下一个动作。
     terminal
-        .expect("No active threads")
+        .expect("Nothing is running yet.")
         .expect("loaded empty state proves the embedded runtime stayed alive");
+    terminal
+        .expect("Press n and describe an outcome")
+        .expect("empty state teaches the next action");
     terminal.send("q").expect("quit key");
     terminal.expect(Eof).expect("clean process exit");
 
@@ -40,15 +46,24 @@ fn thread_can_be_created_through_the_real_terminal() {
     let mut terminal = expectrl::session::OsSession::spawn(command).expect("spawn TUI in a PTY");
     terminal.set_expect_timeout(Some(Duration::from_secs(20)));
 
-    terminal.expect("No active threads").expect("Today loaded");
+    terminal
+        .expect("Nothing is running yet.")
+        .expect("Now screen loaded");
     terminal.send("n").expect("open composer");
     terminal
-        .expect("What outcome should Else own?")
+        .expect("What should else take care of?")
         .expect("composer visible");
     terminal
         .send("Verify the terminal product flow")
         .expect("enter outcome");
     terminal.send("\r").expect("submit thread");
+    // 提交之后直接落到那条 Thread 上，而不是被丢回列表再自己找。
+    terminal
+        .expect("works in")
+        .expect("the new thread opens with its facts");
+    terminal
+        .expect("nothing produced yet")
+        .expect("a fresh thread says so plainly");
     terminal.send("q").expect("quit key");
     terminal.expect(Eof).expect("clean process exit");
 

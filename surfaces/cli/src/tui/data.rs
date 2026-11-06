@@ -8,7 +8,7 @@ use else_protocol::api::{
 };
 use else_protocol::attention::AttentionRequest;
 use else_protocol::connector::{ConnectorHealthReport, ConnectorRegistration};
-use else_protocol::world::{IdentityWorld, PersonalBrief, ProjectWorld};
+use else_protocol::world::PersonalBrief;
 
 /// Overview 屏幕的数据：一天里真正要你管的事。
 #[derive(Debug, Clone)]
@@ -16,8 +16,6 @@ pub struct OverviewData {
     pub brief: PersonalBrief,
     pub attention: Vec<AttentionWindowSnapshot>,
     pub threads: Vec<ThreadSnapshot>,
-    pub projects: Vec<ProjectWorld>,
-    pub identities: Vec<IdentityWorld>,
 }
 
 /// Thread 详情：目标、委托树、计划、资源账与事件流。

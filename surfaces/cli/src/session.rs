@@ -104,6 +104,11 @@ impl Session {
         }
     }
 
+    /// 当前会话是否用的是命令自己起的临时 Runtime。
+    pub fn embedded(&self) -> bool {
+        self._embedded.is_some()
+    }
+
     /// Runtime 客户端。
     pub fn client(&self) -> &RuntimeClient {
         &self.client
