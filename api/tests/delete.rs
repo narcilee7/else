@@ -4,7 +4,7 @@ use else_protocol::connector::ConnectorCredential;
 use else_secrets::{CredentialBackend, CredentialStore};
 
 #[test]
-fn explicit_intent_delete_removes_events_credentials_and_scope_workspaces() {
+fn explicit_thread_delete_removes_events_credentials_and_scope_workspaces() {
     let dir = tempfile::tempdir().unwrap();
     let credential_store =
         CredentialStore::with_backend(dir.path(), CredentialBackend::PrivateFile).unwrap();
@@ -15,7 +15,7 @@ fn explicit_intent_delete_removes_events_credentials_and_scope_workspaces() {
         credential_store,
     )
     .unwrap();
-    let spec = runtime.create_intent("待删除 Intent", None).unwrap();
+    let spec = runtime.create_thread("待删除 Thread", None).unwrap();
     let connector = runtime
         .register_connector_adapter_with_credential(
             &spec.id,
@@ -45,7 +45,7 @@ fn explicit_intent_delete_removes_events_credentials_and_scope_workspaces() {
     std::fs::create_dir_all(&branch_path).unwrap();
     std::fs::write(scope_path.join("artifact.txt"), "delete me").unwrap();
 
-    let report = runtime.delete_intent(&spec.id).unwrap();
+    let report = runtime.delete_thread(&spec.id).unwrap();
     assert!(report.deleted_events > 0);
     assert_eq!(report.removed_credentials, 1);
     assert!(report.removed_workspace_paths >= 2);
@@ -54,7 +54,7 @@ fn explicit_intent_delete_removes_events_credentials_and_scope_workspaces() {
     assert!(!branch_path.exists());
     assert!(runtime.events(&spec.id).unwrap().is_empty());
     assert!(runtime.projection(&spec.id).unwrap().spec.is_none());
-    assert!(runtime.list_intents().unwrap().is_empty());
+    assert!(runtime.list_threads().unwrap().is_empty());
 
     let reopened_store =
         CredentialStore::with_backend(dir.path(), CredentialBackend::PrivateFile).unwrap();

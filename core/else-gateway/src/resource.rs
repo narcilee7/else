@@ -2,14 +2,14 @@
 
 use std::collections::BTreeSet;
 
-use else_ledger::{IntentProjection, Ledger, Projection};
+use else_ledger::{Ledger, Projection, ThreadProjection};
 use else_protocol::event::EventPayload;
 use else_protocol::resource::ModelUsage;
 
 use crate::{ExecContext, GatewayError, Result};
 
 pub fn ensure_active_lease(ledger: &Ledger, ctx: &ExecContext) -> Result<()> {
-    let events = ledger.read_intent(&ctx.spec.id)?;
+    let events = ledger.read_thread(&ctx.spec.id)?;
     let revoked: BTreeSet<_> = events
         .iter()
         .filter_map(|event| match &event.envelope.payload {
@@ -90,9 +90,9 @@ pub fn ensure_capacity(
     Ok(())
 }
 
-fn projection(ledger: &Ledger, ctx: &ExecContext) -> Result<IntentProjection> {
-    let mut projection = IntentProjection::default();
-    for event in ledger.read_intent(&ctx.spec.id)? {
+fn projection(ledger: &Ledger, ctx: &ExecContext) -> Result<ThreadProjection> {
+    let mut projection = ThreadProjection::default();
+    for event in ledger.read_thread(&ctx.spec.id)? {
         projection.apply(&event);
     }
     Ok(projection)

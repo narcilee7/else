@@ -5,37 +5,37 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use else_gateway::ExecContext;
-use else_ledger::{IntentProjection, StoredEvent};
+use else_ledger::{StoredEvent, ThreadProjection};
 use else_protocol::attention::{Decision, DecisionChoice};
 use else_protocol::effect::{EffectConclusion, ToolCall};
 use else_protocol::event::{Actor, EventPayload, ScopeState};
-use else_protocol::ids::{IntentId, RunId, ScopeId, ToolCallId};
-use else_protocol::intent::IntentState;
+use else_protocol::ids::{RunId, ScopeId, ThreadId, ToolCallId};
+use else_protocol::thread::ThreadState;
 
 use crate::scope::scope_spec;
 use crate::{ApiError, Result, Runtime};
 
 impl Runtime {
     /// 请求取消根执行及其全部后代。重复 Abort 与终态 Abort 都是幂等操作。
-    pub fn abort(&self, intent_id: &IntentId, reason: &str) -> Result<IntentProjection> {
-        let projection = self.projection(intent_id)?;
+    pub fn abort(&self, thread_id: &ThreadId, reason: &str) -> Result<ThreadProjection> {
+        let projection = self.projection(thread_id)?;
         let spec = projection
             .spec
             .clone()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         if matches!(
             projection.state,
-            Some(IntentState::Completed | IntentState::Failed | IntentState::Cancelled)
+            Some(ThreadState::Completed | ThreadState::Failed | ThreadState::Cancelled)
         ) {
             return Ok(projection);
         }
 
-        let events = self.ledger.read_intent(intent_id)?;
+        let events = self.ledger.read_thread(thread_id)?;
         let source = events
             .last()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let root = self
-            .latest_root_scope(intent_id)?
+            .latest_root_scope(thread_id)?
             .unwrap_or_else(|| source.envelope.scope_id.clone());
         let generation = projection
             .scopes
@@ -58,48 +58,48 @@ impl Runtime {
                 scope_only: None,
             },
         )?;
-        self.recover_abort(intent_id)?;
-        self.projection(intent_id)
+        self.recover_abort(thread_id)?;
+        self.projection(thread_id)
     }
 
     /// 打开 Runtime 时恢复所有未完成的 Abort。状态完全来自事件，不依赖内存。
     pub(crate) fn recover_aborts(&self) -> Result<()> {
-        let intent_ids: BTreeSet<_> = self
+        let thread_ids: BTreeSet<_> = self
             .ledger
             .read_all()?
             .into_iter()
-            .map(|event| event.envelope.intent_id)
+            .map(|event| event.envelope.thread_id)
             .collect();
-        for intent_id in intent_ids {
-            self.recover_abort(&intent_id)?;
+        for thread_id in thread_ids {
+            self.recover_abort(&thread_id)?;
         }
         Ok(())
     }
 
-    /// 补齐传播、逐 Scope 收敛，最后关闭 Decision 与根 Intent。每一步都可重入。
-    /// scope_only 取消（Intent Revision 联动）只收敛子树，不关闭 Intent。
-    pub(crate) fn recover_abort(&self, intent_id: &IntentId) -> Result<()> {
-        let events = self.ledger.read_intent(intent_id)?;
+    /// 补齐传播、逐 Scope 收敛，最后关闭 Decision 与根 Thread。每一步都可重入。
+    /// scope_only 取消（Thread Revision 联动）只收敛子树，不关闭 Thread。
+    pub(crate) fn recover_abort(&self, thread_id: &ThreadId) -> Result<()> {
+        let events = self.ledger.read_thread(thread_id)?;
         let Some(latest_abort_seq) = abort_events(&events).last().map(|event| event.seq) else {
             return Ok(());
         };
-        if has_intent_cancelled_after(&events, latest_abort_seq) {
+        if has_thread_cancelled_after(&events, latest_abort_seq) {
             return Ok(());
         }
 
         // 根取消事件先持久化；即使传播中途崩溃，也能按委托树补齐后代取消。
-        self.propagate_abort(intent_id)?;
-        let propagated = self.ledger.read_intent(intent_id)?;
+        self.propagate_abort(thread_id)?;
+        let propagated = self.ledger.read_thread(thread_id)?;
         let aborts = abort_events(&propagated);
         for abort in aborts {
-            self.recover_scope_abort(intent_id, abort.seq)?;
+            self.recover_scope_abort(thread_id, abort.seq)?;
         }
-        self.expire_requests_for_cancelled_scopes(intent_id)?;
+        self.expire_requests_for_cancelled_scopes(thread_id)?;
 
-        let events = self.ledger.read_intent(intent_id)?;
+        let events = self.ledger.read_thread(thread_id)?;
         let aborts = abort_events(&events);
-        let intent_level: Vec<_> = aborts.iter().filter(|abort| !scope_only(abort)).collect();
-        if intent_level.is_empty() {
+        let thread_level: Vec<_> = aborts.iter().filter(|abort| !scope_only(abort)).collect();
+        if thread_level.is_empty() {
             return Ok(());
         }
         let all_cancelled = aborts.iter().all(|abort| {
@@ -114,13 +114,13 @@ impl Runtime {
             return Ok(());
         }
 
-        let projection = self.projection(intent_id)?;
-        let latest_abort = *intent_level
+        let projection = self.projection(thread_id)?;
+        let latest_abort = *thread_level
             .last()
             .ok_or_else(|| ApiError::NotFound("abort event".into()))?;
         let ctx = ExecContext {
             spec: scope_spec(&projection, &latest_abort.envelope.scope_id)
-                .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?,
+                .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?,
             scope_id: latest_abort.envelope.scope_id.clone(),
             run_id: latest_abort.envelope.run_id.clone().unwrap_or_default(),
             generation: latest_abort.envelope.generation,
@@ -135,19 +135,19 @@ impl Runtime {
                     decision: Decision {
                         request_id: request_id.clone(),
                         choice: DecisionChoice::Dismissed,
-                        rationale: Some("Intent 已取消，旧决策请求失效".into()),
+                        rationale: Some("Thread 已取消，旧决策请求失效".into()),
                         decided_by: Actor::System,
                     },
                 },
             )?;
         }
-        self.close_empty_attention_windows(intent_id)?;
-        if !has_intent_cancelled_after(&events, latest_abort.seq) {
+        self.close_empty_attention_windows(thread_id)?;
+        if !has_thread_cancelled_after(&events, latest_abort.seq) {
             ctx.record(
                 &self.ledger,
                 Actor::System,
-                EventPayload::IntentStateChanged {
-                    state: IntentState::Cancelled,
+                EventPayload::ThreadStateChanged {
+                    state: ThreadState::Cancelled,
                 },
             )?;
         }
@@ -155,9 +155,9 @@ impl Runtime {
     }
 
     /// 取消沿 Scope 树只向后代传播，权限与生命周期都不会反向扩大。
-    fn propagate_abort(&self, intent_id: &IntentId) -> Result<()> {
-        let events = self.ledger.read_intent(intent_id)?;
-        let projection = self.projection(intent_id)?;
+    fn propagate_abort(&self, thread_id: &ThreadId) -> Result<()> {
+        let events = self.ledger.read_thread(thread_id)?;
+        let projection = self.projection(thread_id)?;
         let aborts = abort_events(&events);
         let mut requested: BTreeSet<(ScopeId, u64)> = aborts
             .iter()
@@ -177,7 +177,7 @@ impl Runtime {
                 }
                 let ctx = ExecContext {
                     spec: scope_spec(&projection, &scope_id)
-                        .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?,
+                        .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?,
                     scope_id: scope_id.clone(),
                     run_id: latest_run_id(&events, &scope_id).unwrap_or_default(),
                     generation: abort.envelope.generation,
@@ -200,8 +200,8 @@ impl Runtime {
         Ok(())
     }
 
-    fn recover_scope_abort(&self, intent_id: &IntentId, abort_seq: u64) -> Result<()> {
-        let events = self.ledger.read_intent(intent_id)?;
+    fn recover_scope_abort(&self, thread_id: &ThreadId, abort_seq: u64) -> Result<()> {
+        let events = self.ledger.read_thread(thread_id)?;
         let abort = events
             .iter()
             .find(|event| event.seq == abort_seq)
@@ -216,10 +216,10 @@ impl Runtime {
                 && event.envelope.scope_id == scope_id
                 && event.envelope.generation == generation
         };
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let ctx = ExecContext {
             spec: scope_spec(&projection, &scope_id)
-                .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?,
+                .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?,
             scope_id: scope_id.clone(),
             run_id: abort.envelope.run_id.clone().unwrap_or_default(),
             generation,
@@ -334,7 +334,7 @@ fn abort_events(events: &[StoredEvent]) -> Vec<&StoredEvent> {
         .collect()
 }
 
-/// scope_only 取消只收敛 Scope 子树（Intent Revision 联动），不关闭 Intent。
+/// scope_only 取消只收敛 Scope 子树（Thread Revision 联动），不关闭 Thread。
 fn scope_only(event: &StoredEvent) -> bool {
     matches!(
         event.envelope.payload,
@@ -345,7 +345,7 @@ fn scope_only(event: &StoredEvent) -> bool {
     )
 }
 
-fn descendants(projection: &IntentProjection, root: &ScopeId) -> BTreeSet<ScopeId> {
+fn descendants(projection: &ThreadProjection, root: &ScopeId) -> BTreeSet<ScopeId> {
     let mut result = BTreeSet::new();
     loop {
         let mut changed = false;
@@ -392,13 +392,13 @@ fn has_scope_cancelled_after(
     })
 }
 
-fn has_intent_cancelled_after(events: &[StoredEvent], seq: u64) -> bool {
+fn has_thread_cancelled_after(events: &[StoredEvent], seq: u64) -> bool {
     events.iter().any(|event| {
         event.seq > seq
             && matches!(
                 event.envelope.payload,
-                EventPayload::IntentStateChanged {
-                    state: IntentState::Cancelled
+                EventPayload::ThreadStateChanged {
+                    state: ThreadState::Cancelled
                 }
             )
     })

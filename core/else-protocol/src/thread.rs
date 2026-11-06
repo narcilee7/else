@@ -1,15 +1,15 @@
-//! Intent：用户目标及其边界。
+//! Thread：用户目标及其边界。
 //!
 //! 核心不变量：Runtime 可以更新进度、计划和世界状态，
-//! 但不能通过执行过程悄悄修改用户目标——`IntentSpec` 只有用户
+//! 但不能通过执行过程悄悄修改用户目标——`ThreadSpec` 只有用户
 //! 或其明确授权的决策能改变，每次改变递增 `revision`。
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::connector::{ConnectorPolicy, IntentOrigin};
+use crate::connector::{ConnectorPolicy, ThreadOrigin};
 use crate::effect::SideEffectKind;
-use crate::ids::IntentId;
+use crate::ids::ThreadId;
 
 /// 验收检查。Harness 报告完成只是候选结果，Verifier 必须独立执行检查。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -88,7 +88,7 @@ pub struct AttentionPolicy {
 }
 
 /// 无法经过 Tool Gateway 的 Harness 需要用户显式开启 Opaque Profile。
-/// 默认全关；Policy 不扩大 Intent Authority，只声明可观察风险的上限。
+/// 默认全关；Policy 不扩大 Thread Authority，只声明可观察风险的上限。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpaqueHarnessPolicy {
     pub enabled: bool,
@@ -109,11 +109,11 @@ impl Default for OpaqueHarnessPolicy {
     }
 }
 
-/// Intent 的用户目标契约（IntentSpec）。
+/// Thread 的用户目标契约（ThreadSpec）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IntentSpec {
-    pub id: IntentId,
-    /// Intent Revision：目标语义的版本，每次用户变更递增。
+pub struct ThreadSpec {
+    pub id: ThreadId,
+    /// Thread Revision：目标语义的版本，每次用户变更递增。
     /// 与 Execution Generation（哪些执行与写入仍有效）是两个独立版本。
     pub revision: u64,
     /// 希望现实发生什么变化。
@@ -132,18 +132,18 @@ pub struct IntentSpec {
     /// 缺省 None 只召回 Global。
     #[serde(default)]
     pub project: Option<String>,
-    /// 来源血缘；旧事件缺省为未知，新 Intent 创建时显式记录。
+    /// 来源血缘；旧事件缺省为未知，新 Thread 创建时显式记录。
     #[serde(default)]
-    pub origin: Option<IntentOrigin>,
+    pub origin: Option<ThreadOrigin>,
     /// Connector Resolver 的受限自动接受策略；默认完全关闭。
     #[serde(default)]
     pub connector_policy: ConnectorPolicy,
 }
 
-/// IntentState：由 Runtime 根据执行事件持续更新的投影状态。
+/// ThreadState：由 Runtime 根据执行事件持续更新的投影状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum IntentState {
+pub enum ThreadState {
     Active,
     WaitingExternal,
     NeedsDecision,

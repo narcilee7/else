@@ -1,10 +1,10 @@
 //! 人工 Outcome 确认：Decision 只确认 Manual 标准，不重新执行 Harness。
 
 use else_gateway::{ensure_not_fenced, ExecContext, GatewayError};
-use else_ledger::IntentProjection;
+use else_ledger::ThreadProjection;
 use else_protocol::event::{Actor, EventPayload, ScopeState};
-use else_protocol::ids::{IntentId, RunId, ScopeId};
-use else_protocol::intent::IntentState;
+use else_protocol::ids::{RunId, ScopeId, ThreadId};
+use else_protocol::thread::ThreadState;
 
 use crate::scope::scope_spec;
 use crate::{ApiError, Result, Runtime};
@@ -12,14 +12,14 @@ use crate::{ApiError, Result, Runtime};
 impl Runtime {
     pub(crate) fn confirm_manual_verification(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
         generation: u64,
         run_id: RunId,
-    ) -> Result<IntentProjection> {
-        let projection = self.projection(intent_id)?;
+    ) -> Result<ThreadProjection> {
+        let projection = self.projection(thread_id)?;
         let spec = scope_spec(&projection, scope_id)
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let scope = projection
             .scopes
             .get(scope_id)
@@ -56,12 +56,12 @@ impl Runtime {
             ctx.record(
                 &self.ledger,
                 Actor::System,
-                EventPayload::IntentStateChanged {
-                    state: IntentState::Completed,
+                EventPayload::ThreadStateChanged {
+                    state: ThreadState::Completed,
                 },
             )?;
-            self.record_episode_if_terminal(intent_id)?;
+            self.record_episode_if_terminal(thread_id)?;
         }
-        self.projection(intent_id)
+        self.projection(thread_id)
     }
 }

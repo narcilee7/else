@@ -8,11 +8,11 @@ use std::time::Duration;
 
 use else_client::{ClientError, RuntimeClient};
 use else_protocol::attention::DecisionChoice;
-use else_protocol::ids::{AttentionId, ConnectorId, IntentId, WorldItemId};
+use else_protocol::ids::{AttentionId, ConnectorId, ThreadId, WorldItemId};
 use else_protocol::world::WorldItemResolutionKind;
 
 use super::app_event::AppEvent;
-use super::data::{ConnectorRow, Data, DecisionsData, IntentDetailData, OverviewData};
+use super::data::{ConnectorRow, Data, DecisionsData, OverviewData, ThreadDetailData};
 
 /// 一次加载请求。
 #[derive(Debug, Clone)]
@@ -20,19 +20,19 @@ pub enum LoadRequest {
     Overview {
         generation: u64,
     },
-    Intents {
+    Threads {
         generation: u64,
     },
-    IntentDetail {
+    ThreadDetail {
         generation: u64,
-        intent_id: IntentId,
+        thread_id: ThreadId,
     },
     Decisions {
         generation: u64,
     },
     Connectors {
         generation: u64,
-        intent_id: IntentId,
+        thread_id: ThreadId,
     },
 }
 
@@ -40,8 +40,8 @@ impl LoadRequest {
     pub fn generation(&self) -> u64 {
         match self {
             Self::Overview { generation }
-            | Self::Intents { generation }
-            | Self::IntentDetail { generation, .. }
+            | Self::Threads { generation }
+            | Self::ThreadDetail { generation, .. }
             | Self::Decisions { generation }
             | Self::Connectors { generation, .. } => *generation,
         }
@@ -51,24 +51,24 @@ impl LoadRequest {
 /// 一次用户动作。
 #[derive(Debug, Clone)]
 pub enum ActionRequest {
-    CreateIntent {
+    CreateThread {
         outcome: String,
     },
-    AdvanceIntent {
-        intent_id: IntentId,
+    AdvanceThread {
+        thread_id: ThreadId,
     },
     Decide {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         request_id: AttentionId,
         choice: DecisionChoice,
     },
     ResolveWorld {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         item_id: WorldItemId,
         kind: WorldItemResolutionKind,
     },
     SyncConnector {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         connector_id: ConnectorId,
     },
 }
@@ -76,8 +76,8 @@ pub enum ActionRequest {
 impl ActionRequest {
     pub fn pending_label(&self) -> &'static str {
         match self {
-            Self::CreateIntent { .. } => "Creating intent…",
-            Self::AdvanceIntent { .. } => "Advancing intent…",
+            Self::CreateThread { .. } => "Creating thread…",
+            Self::AdvanceThread { .. } => "Advancing thread…",
             Self::Decide { .. } => "Saving decision…",
             Self::ResolveWorld { .. } => "Updating item…",
             Self::SyncConnector { .. } => "Syncing connector…",
@@ -153,18 +153,18 @@ pub fn spawn_event_stream(client: RuntimeClient, events: Sender<AppEvent>) -> Jo
 fn fetch(client: &RuntimeClient, request: &LoadRequest) -> else_client::Result<Data> {
     match request {
         LoadRequest::Overview { .. } => fetch_overview(client),
-        LoadRequest::Intents { .. } => Ok(Data::Intents(client.list_intents()?)),
-        LoadRequest::IntentDetail { intent_id, .. } => {
-            let intent = client.intent(intent_id)?;
+        LoadRequest::Threads { .. } => Ok(Data::Threads(client.list_threads()?)),
+        LoadRequest::ThreadDetail { thread_id, .. } => {
+            let thread = client.thread(thread_id)?;
             let (scopes, plan, resources, events) = thread::scope(|scope| {
-                let scopes = scope.spawn(|| client.scopes(intent_id));
-                let plan = scope.spawn(|| client.plan(intent_id));
-                let resources = scope.spawn(|| client.resources(intent_id));
-                let events = scope.spawn(|| client.events(intent_id));
+                let scopes = scope.spawn(|| client.scopes(thread_id));
+                let plan = scope.spawn(|| client.plan(thread_id));
+                let resources = scope.spawn(|| client.resources(thread_id));
+                let events = scope.spawn(|| client.events(thread_id));
                 (join(scopes), join(plan), join(resources), join(events))
             });
-            Ok(Data::IntentDetail(Box::new(IntentDetailData {
-                intent,
+            Ok(Data::ThreadDetail(Box::new(ThreadDetailData {
+                thread,
                 scopes: scopes?,
                 plan: plan?,
                 resources: resources?,
@@ -172,10 +172,10 @@ fn fetch(client: &RuntimeClient, request: &LoadRequest) -> else_client::Result<D
             })))
         }
         LoadRequest::Decisions { .. } => {
-            let (windows, intents) = thread::scope(|scope| {
+            let (windows, threads) = thread::scope(|scope| {
                 let windows = scope.spawn(|| client.attention_windows());
-                let intents = scope.spawn(|| client.list_intents());
-                (join(windows), join(intents))
+                let threads = scope.spawn(|| client.list_threads());
+                (join(windows), join(threads))
             });
             let windows = windows?;
             let grouped: Vec<_> = windows
@@ -183,23 +183,23 @@ fn fetch(client: &RuntimeClient, request: &LoadRequest) -> else_client::Result<D
                 .flat_map(|window| window.requests.iter().map(|request| request.id.clone()))
                 .collect();
             let mut loose = Vec::new();
-            for intent in intents? {
-                for request in &intent.decisions {
+            for thread in threads? {
+                for request in &thread.decisions {
                     if !grouped.contains(&request.id) {
-                        loose.push((intent.spec.id.clone(), request.clone()));
+                        loose.push((thread.spec.id.clone(), request.clone()));
                     }
                 }
             }
             Ok(Data::Decisions(Box::new(DecisionsData { windows, loose })))
         }
-        LoadRequest::Connectors { intent_id, .. } => {
-            let connectors = client.connectors(intent_id)?;
+        LoadRequest::Connectors { thread_id, .. } => {
+            let connectors = client.connectors(thread_id)?;
             let rows = thread::scope(|scope| {
                 let jobs: Vec<_> = connectors
                     .into_iter()
                     .map(|connector| {
                         scope.spawn(move || {
-                            let health = client.connector_health(intent_id, &connector.id)?;
+                            let health = client.connector_health(thread_id, &connector.id)?;
                             Ok::<ConnectorRow, ClientError>(ConnectorRow { connector, health })
                         })
                     })
@@ -216,16 +216,16 @@ fn fetch(client: &RuntimeClient, request: &LoadRequest) -> else_client::Result<D
 }
 
 fn fetch_overview(client: &RuntimeClient) -> else_client::Result<Data> {
-    let (brief, attention, intents, projects, identities) = thread::scope(|scope| {
+    let (brief, attention, threads, projects, identities) = thread::scope(|scope| {
         let brief = scope.spawn(|| client.brief());
         let attention = scope.spawn(|| client.attention_windows());
-        let intents = scope.spawn(|| client.list_intents());
+        let threads = scope.spawn(|| client.list_threads());
         let projects = scope.spawn(|| client.project_worlds(None, false));
         let identities = scope.spawn(|| client.identity_worlds(None, false));
         (
             join(brief),
             join(attention),
-            join(intents),
+            join(threads),
             join(projects),
             join(identities),
         )
@@ -235,7 +235,7 @@ fn fetch_overview(client: &RuntimeClient) -> else_client::Result<Data> {
     Ok(Data::Overview(Box::new(OverviewData {
         brief: brief?,
         attention: attention?,
-        intents: intents?,
+        threads: threads?,
         projects: projects?,
         identities,
     })))
@@ -248,56 +248,56 @@ fn join<T>(handle: thread::ScopedJoinHandle<'_, else_client::Result<T>>) -> else
 }
 
 fn perform(client: &RuntimeClient, action: &ActionRequest) -> AppEvent {
-    let result: else_client::Result<(String, String, Option<IntentId>)> = match action {
-        ActionRequest::CreateIntent { outcome } => {
-            client.create_intent(outcome, None).map(|snapshot| {
+    let result: else_client::Result<(String, String, Option<ThreadId>)> = match action {
+        ActionRequest::CreateThread { outcome } => {
+            client.create_thread(outcome, None).map(|snapshot| {
                 (
-                    "Intent created".to_string(),
+                    "Thread created".to_string(),
                     snapshot.spec.outcome.clone(),
                     Some(snapshot.spec.id),
                 )
             })
         }
-        ActionRequest::AdvanceIntent { intent_id } => {
-            client.advance(intent_id, Some("auto")).map(|snapshot| {
+        ActionRequest::AdvanceThread { thread_id } => {
+            client.advance(thread_id, Some("auto")).map(|snapshot| {
                 (
-                    "Intent updated".to_string(),
-                    super::views::intent_state_label(snapshot.state).to_string(),
-                    Some(intent_id.clone()),
+                    "Thread updated".to_string(),
+                    super::views::thread_state_label(snapshot.state).to_string(),
+                    Some(thread_id.clone()),
                 )
             })
         }
         ActionRequest::Decide {
-            intent_id,
+            thread_id,
             request_id,
             choice,
         } => client
-            .decide(intent_id, request_id, choice.clone())
+            .decide(thread_id, request_id, choice.clone())
             .map(|_| {
                 (
                     "Decision saved".to_string(),
                     "The runtime is continuing from your choice".to_string(),
-                    Some(intent_id.clone()),
+                    Some(thread_id.clone()),
                 )
             }),
         ActionRequest::ResolveWorld {
-            intent_id,
+            thread_id,
             item_id,
             kind,
         } => client
-            .resolve_world_item(intent_id, item_id, *kind, None)
+            .resolve_world_item(thread_id, item_id, *kind, None)
             .map(|item| {
                 (
                     "Item updated".to_string(),
                     item.title.clone(),
-                    Some(intent_id.clone()),
+                    Some(thread_id.clone()),
                 )
             }),
         ActionRequest::SyncConnector {
-            intent_id,
+            thread_id,
             connector_id,
         } => client
-            .sync_connector(intent_id, connector_id)
+            .sync_connector(thread_id, connector_id)
             .map(|result| {
                 (
                     "Sync complete".to_string(),
@@ -305,15 +305,15 @@ fn perform(client: &RuntimeClient, action: &ActionRequest) -> AppEvent {
                         "{} observed · {} new signals",
                         result.observed, result.inserted
                     ),
-                    Some(intent_id.clone()),
+                    Some(thread_id.clone()),
                 )
             }),
     };
     match result {
-        Ok((label, detail, intent_id)) => AppEvent::ActionDone {
+        Ok((label, detail, thread_id)) => AppEvent::ActionDone {
             label,
             detail,
-            intent_id,
+            thread_id,
         },
         Err(error) => AppEvent::ActionFailed {
             error: error.to_string(),

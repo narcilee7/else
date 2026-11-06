@@ -6,8 +6,8 @@ public enum ElseDeepLink: Equatable, Sendable {
     case connectors
     case decisions
     case results
-    case newIntent
-    case intent(IntentID)
+    case newThread
+    case thread(ThreadID)
 
     public init?(url: URL) {
         guard url.scheme?.lowercased() == "else",
@@ -26,14 +26,14 @@ public enum ElseDeepLink: Equatable, Sendable {
             self = .decisions
         case "results":
             self = .results
-        case "new-intent":
-            self = .newIntent
-        case "intent":
+        case "new-thread":
+            self = .newThread
+        case "thread":
             let components = url.pathComponents.filter { $0 != "/" }
             guard let value = components.first, !value.isEmpty else {
                 return nil
             }
-            self = .intent(IntentID(value))
+            self = .thread(ThreadID(value))
         default:
             return nil
         }
@@ -51,10 +51,10 @@ public enum ElseDeepLink: Equatable, Sendable {
             URL(string: "else://decisions")
         case .results:
             URL(string: "else://results")
-        case .newIntent:
-            URL(string: "else://new-intent")
-        case let .intent(id):
-            URL(string: "else://intent/\(id.rawValue)")
+        case .newThread:
+            URL(string: "else://new-thread")
+        case let .thread(id):
+            URL(string: "else://thread/\(id.rawValue)")
         }
     }
 }

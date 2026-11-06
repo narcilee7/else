@@ -1,26 +1,26 @@
 //! Decisions 队列与详情。列表只负责导航，真正的选择在详情中发生。
 
 use else_protocol::attention::{AttentionRequest, DecisionChoice, ExpectedLoss};
-use else_protocol::ids::{AttentionId, IntentId};
+use else_protocol::ids::{AttentionId, ThreadId};
 
 use super::super::app::DecisionFocus;
 use super::super::data::{Data, DecisionsData};
 use super::super::row::{Pane, Row, RowAction};
 use super::super::theme;
 
-pub fn all_requests(data: &DecisionsData) -> Vec<(IntentId, AttentionRequest)> {
+pub fn all_requests(data: &DecisionsData) -> Vec<(ThreadId, AttentionRequest)> {
     let mut requests = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for window in &data.windows {
         for request in &window.requests {
             if seen.insert(request.id.clone()) {
-                requests.push((window.intent_id.clone(), request.clone()));
+                requests.push((window.thread_id.clone(), request.clone()));
             }
         }
     }
-    for (intent_id, request) in &data.loose {
+    for (thread_id, request) in &data.loose {
         if seen.insert(request.id.clone()) {
-            requests.push((intent_id.clone(), request.clone()));
+            requests.push((thread_id.clone(), request.clone()));
         }
     }
     requests
@@ -54,12 +54,12 @@ pub fn pane(data: &DecisionsData) -> Pane {
         "{} request(s) · Enter to review before choosing",
         requests.len()
     )));
-    for (intent_id, request) in requests {
+    for (thread_id, request) in requests {
         rows.push(Row::action(
             format!("  {}", request.summary),
             loss_style(request.expected_loss),
             RowAction::OpenDecision {
-                intent_id,
+                thread_id,
                 request_id: request.id.clone(),
             },
         ));
@@ -84,8 +84,8 @@ pub fn detail_pane(data: &DecisionsData, focus: Option<&DecisionFocus>) -> Pane 
             rows,
         };
     };
-    let Some((_, request)) = all_requests(data).into_iter().find(|(intent_id, request)| {
-        intent_id == &focus.intent_id && request.id == focus.request_id
+    let Some((_, request)) = all_requests(data).into_iter().find(|(thread_id, request)| {
+        thread_id == &focus.thread_id && request.id == focus.request_id
     }) else {
         rows.push(Row::muted(
             "This request is no longer waiting for a decision.",
@@ -105,9 +105,9 @@ pub fn detail_pane(data: &DecisionsData, focus: Option<&DecisionFocus>) -> Pane 
         "  {} impact · {} · {}",
         loss_label(request.expected_loss),
         if request.blocking {
-            "blocks the intent"
+            "blocks the thread"
         } else {
-            "does not block the intent"
+            "does not block the thread"
         },
         if request.reversible {
             "waiting is reversible"
@@ -144,7 +144,7 @@ pub fn detail_pane(data: &DecisionsData, focus: Option<&DecisionFocus>) -> Pane 
                 theme::text()
             },
             RowAction::Decide {
-                intent_id: focus.intent_id.clone(),
+                thread_id: focus.thread_id.clone(),
                 request_id: request.id.clone(),
                 choice: DecisionChoice::Option(option.id.clone()),
             },

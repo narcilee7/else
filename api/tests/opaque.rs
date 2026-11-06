@@ -8,7 +8,7 @@ use else_protocol::event::EventPayload;
 use else_protocol::harness::{
     CancelSupport, HarnessCapabilities, ToolEffectVisibility, UsageSupport,
 };
-use else_protocol::intent::OpaqueHarnessPolicy;
+use else_protocol::thread::OpaqueHarnessPolicy;
 
 struct JsonParser;
 
@@ -121,7 +121,7 @@ fn policy(network: bool, max_observed_effect: SideEffectKind) -> OpaqueHarnessPo
 fn opaque_harness_is_denied_before_any_run_event_by_default() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("Opaque 默认拒绝", None).unwrap();
+    let spec = runtime.create_thread("Opaque 默认拒绝", None).unwrap();
     let before = runtime.events(&spec.id).unwrap().len();
 
     let error = runtime
@@ -141,7 +141,7 @@ fn opaque_harness_is_denied_before_any_run_event_by_default() {
 fn opaque_observation_is_not_recorded_as_authorized_gateway_call() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("Opaque 观察记账", None).unwrap();
+    let spec = runtime.create_thread("Opaque 观察记账", None).unwrap();
     runtime
         .configure_opaque_harness(&spec.id, policy(false, SideEffectKind::Reversible))
         .unwrap();
@@ -169,7 +169,7 @@ fn opaque_observation_is_not_recorded_as_authorized_gateway_call() {
 fn observed_effect_above_profile_aborts_the_harness() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("Opaque 副作用上限", None).unwrap();
+    let spec = runtime.create_thread("Opaque 副作用上限", None).unwrap();
     runtime
         .configure_opaque_harness(&spec.id, policy(false, SideEffectKind::ReadOnly))
         .unwrap();
@@ -191,7 +191,7 @@ fn observed_effect_above_profile_aborts_the_harness() {
 fn native_provider_network_requires_a_separate_explicit_opt_in() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("Opaque 网络授权", None).unwrap();
+    let spec = runtime.create_thread("Opaque 网络授权", None).unwrap();
     runtime
         .configure_opaque_harness(&spec.id, policy(false, SideEffectKind::Reversible))
         .unwrap();
@@ -223,7 +223,7 @@ fn egress_proxy_denies_unlisted_host_and_records_decision() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_intent("Opaque 域名 Allowlist", None)
+        .create_thread("Opaque 域名 Allowlist", None)
         .unwrap();
     runtime
         .configure_opaque_harness(&spec.id, policy(true, SideEffectKind::Reversible))
@@ -253,7 +253,7 @@ fn tool_gateway_forces_workspace_writes_and_records_authorized_events() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_intent("Tool Gateway 强制写入", None)
+        .create_thread("Tool Gateway 强制写入", None)
         .unwrap();
     runtime
         .configure_opaque_harness(

@@ -41,10 +41,10 @@ pub fn lines() -> Vec<Line<'static>> {
     section(
         "Work",
         &[
-            ("n", "new intent"),
+            ("n", "new thread"),
             ("r", "refresh"),
-            ("a", "advance an intent"),
-            ("d", "toggle intent debug details"),
+            ("a", "advance an thread"),
+            ("d", "toggle thread debug details"),
             ("e", "write a custom decision"),
             ("x", "dismiss a decision"),
             ("s", "sync a connector"),

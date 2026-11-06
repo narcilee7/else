@@ -5,20 +5,20 @@ import Testing
 @Suite("Deep links")
 struct DeepLinkTests {
     @Test
-    func parsesSectionsAndIntentRoutes() throws {
+    func parsesSectionsAndThreadRoutes() throws {
         #expect(
             ElseDeepLink(url: URL(string: "else://today")!) == .today
         )
         #expect(
-            ElseDeepLink(url: URL(string: "else://new-intent")!)
-                == .newIntent
+            ElseDeepLink(url: URL(string: "else://new-thread")!)
+                == .newThread
         )
         #expect(
             ElseDeepLink(
-                url: URL(string: "else://intent/73f66f45-d08e-414b-a2f6-24034eaf12ab")!
+                url: URL(string: "else://thread/73f66f45-d08e-414b-a2f6-24034eaf12ab")!
             )
-                == .intent(
-                    IntentID("73f66f45-d08e-414b-a2f6-24034eaf12ab")
+                == .thread(
+                    ThreadID("73f66f45-d08e-414b-a2f6-24034eaf12ab")
                 )
         )
     }
@@ -32,7 +32,7 @@ struct DeepLinkTests {
             ElseDeepLink(url: URL(string: "else://unknown")!) == nil
         )
         #expect(
-            ElseDeepLink(url: URL(string: "else://intent")!) == nil
+            ElseDeepLink(url: URL(string: "else://thread")!) == nil
         )
     }
 
@@ -44,8 +44,8 @@ struct DeepLinkTests {
             .connectors,
             .decisions,
             .results,
-            .newIntent,
-            .intent(IntentID("intent-1")),
+            .newThread,
+            .thread(ThreadID("thread-1")),
         ]
         for route in routes {
             let url = try #require(route.url)

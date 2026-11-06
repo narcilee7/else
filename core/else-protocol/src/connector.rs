@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::effect::{SideEffectKind, ToolOutcome};
-use crate::ids::{ConnectorActionId, ConnectorId, IntentCandidateId, IntentId, WorldSignalId};
-use crate::intent::{AttentionPolicy, Authority, Criterion};
+use crate::ids::{ConnectorActionId, ConnectorId, ThreadCandidateId, ThreadId, WorldSignalId};
+use crate::thread::{AttentionPolicy, Authority, Criterion};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -413,7 +413,7 @@ pub struct WorldSignal {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum IntentOriginKind {
+pub enum ThreadOriginKind {
     UserDirect,
     ExternalRequest,
     Commitment,
@@ -424,28 +424,28 @@ pub enum IntentOriginKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum IntentAcceptedBy {
+pub enum ThreadAcceptedBy {
     User,
     DelegatedPolicy,
     AutonomousRule,
 }
 
-/// Intent 的完整来源血缘。它只解释来源，不扩大 Intent Authority。
+/// Thread 的完整来源血缘。它只解释来源，不扩大 Thread Authority。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IntentOrigin {
-    pub kind: IntentOriginKind,
+pub struct ThreadOrigin {
+    pub kind: ThreadOriginKind,
     #[serde(default)]
     pub connector_ids: Vec<ConnectorId>,
     #[serde(default)]
     pub signal_ids: Vec<WorldSignalId>,
-    pub candidate_id: Option<IntentCandidateId>,
-    pub accepted_by: IntentAcceptedBy,
+    pub candidate_id: Option<ThreadCandidateId>,
+    pub accepted_by: ThreadAcceptedBy,
     pub accepted_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum IntentCandidateState {
+pub enum ThreadCandidateState {
     Proposed,
     Accepted,
     Rejected,
@@ -454,9 +454,9 @@ pub enum IntentCandidateState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IntentCandidate {
-    pub id: IntentCandidateId,
-    pub origin: IntentOriginKind,
+pub struct ThreadCandidate {
+    pub id: ThreadCandidateId,
+    pub origin: ThreadOriginKind,
     pub proposed_outcome: String,
     pub done_when: Vec<Criterion>,
     pub constraints: Vec<String>,
@@ -465,13 +465,13 @@ pub struct IntentCandidate {
     pub deadline: Option<DateTime<Utc>>,
     pub related_signal_ids: Vec<WorldSignalId>,
     #[serde(default)]
-    pub related_intent_id: Option<IntentId>,
+    pub related_thread_id: Option<ThreadId>,
     pub confidence: u8,
     pub dedupe_key: String,
-    pub state: IntentCandidateState,
-    pub accepted_intent_id: Option<IntentId>,
+    pub state: ThreadCandidateState,
+    pub accepted_thread_id: Option<ThreadId>,
     #[serde(default)]
-    pub accepted_by: Option<IntentAcceptedBy>,
+    pub accepted_by: Option<ThreadAcceptedBy>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -517,15 +517,17 @@ pub struct SyncCursor {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorldSignalRecord {
     pub seq: u64,
-    pub intent_id: IntentId,
+    #[serde(alias = "intent_id")]
+    pub thread_id: ThreadId,
     pub signal: WorldSignal,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IntentCandidateRecord {
+pub struct ThreadCandidateRecord {
     pub seq: u64,
-    pub intent_id: IntentId,
-    pub candidate: IntentCandidate,
+    #[serde(alias = "intent_id")]
+    pub thread_id: ThreadId,
+    pub candidate: ThreadCandidate,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -542,7 +544,7 @@ pub struct ConnectorPullPage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectorPolicy {
     pub auto_accept_low_risk: bool,
-    pub allowed_origins: Vec<IntentOriginKind>,
+    pub allowed_origins: Vec<ThreadOriginKind>,
     pub min_confidence: u8,
     pub max_autonomous_effect: SideEffectKind,
 }
@@ -551,7 +553,7 @@ impl Default for ConnectorPolicy {
     fn default() -> Self {
         Self {
             auto_accept_low_risk: false,
-            allowed_origins: vec![IntentOriginKind::Commitment, IntentOriginKind::InferredNeed],
+            allowed_origins: vec![ThreadOriginKind::Commitment, ThreadOriginKind::InferredNeed],
             min_confidence: 80,
             max_autonomous_effect: SideEffectKind::ReadOnly,
         }

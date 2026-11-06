@@ -5,8 +5,8 @@ use else_api::Runtime;
 use else_protocol::attention::DecisionChoice;
 use else_protocol::effect::SideEffectKind;
 use else_protocol::ids::{PlanId, PlanStepId};
-use else_protocol::intent::Criterion;
 use else_protocol::plan::{Plan, PlanEvidence, PlanEvidenceKind, PlanStep, PlanStepStatus};
+use else_protocol::thread::Criterion;
 
 fn step(title: &str, scope_id: else_protocol::ids::ScopeId) -> PlanStep {
     PlanStep {
@@ -26,7 +26,7 @@ fn external_fact_invalidates_only_declared_plan_steps_and_scopes() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_intent_with_done_when(
+        .create_thread_with_done_when(
             "完成发布准备",
             None,
             vec![Criterion::file_exists("计划存在", "plan.md")],
@@ -59,11 +59,11 @@ fn external_fact_invalidates_only_declared_plan_steps_and_scopes() {
         id: PlanId::new(),
         revision: 1,
         supersedes: None,
-        intent_revision: spec.revision,
+        thread_revision: spec.revision,
         summary: "两个独立分支，只有发布说明依赖合作方回复".into(),
         steps: vec![affected_step, unaffected_step],
         evidence: vec![PlanEvidence {
-            kind: PlanEvidenceKind::UserIntent,
+            kind: PlanEvidenceKind::UserThread,
             event_id: None,
             summary: spec.outcome.clone(),
         }],
@@ -113,7 +113,7 @@ fn external_fact_invalidates_only_declared_plan_steps_and_scopes() {
 fn reject_creates_a_replayable_plan_revision_and_keeps_original_done_when() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("验证自动重规划", None).unwrap();
+    let spec = runtime.create_thread("验证自动重规划", None).unwrap();
     let projection = runtime.run(&spec.id).unwrap();
     let request = projection.open_requests.keys().next().unwrap().clone();
     runtime
@@ -146,7 +146,7 @@ fn external_fact_triggers_replan_before_the_next_execution_continues() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_intent_with_done_when(
+        .create_thread_with_done_when(
             "根据合作方回复更新计划",
             None,
             vec![Criterion::file_exists("计划存在", "plan.md")],
@@ -160,7 +160,7 @@ fn external_fact_triggers_replan_before_the_next_execution_continues() {
         id: PlanId::new(),
         revision: 1,
         supersedes: None,
-        intent_revision: spec.revision,
+        thread_revision: spec.revision,
         summary: "先等待合作方事实".into(),
         steps: vec![watched],
         evidence: vec![],
@@ -172,7 +172,7 @@ fn external_fact_triggers_replan_before_the_next_execution_continues() {
     let waiting = runtime.run(&spec.id).unwrap();
     assert_eq!(
         waiting.state,
-        Some(else_protocol::intent::IntentState::NeedsDecision)
+        Some(else_protocol::thread::ThreadState::NeedsDecision)
     );
     let request = waiting.open_requests.keys().next().unwrap().clone();
     runtime
@@ -183,7 +183,7 @@ fn external_fact_triggers_replan_before_the_next_execution_continues() {
         .unwrap();
     assert_eq!(
         completed.state,
-        Some(else_protocol::intent::IntentState::Completed)
+        Some(else_protocol::thread::ThreadState::Completed)
     );
     let history = runtime.plan_history(&spec.id).unwrap();
     assert_eq!(history.len(), 2);

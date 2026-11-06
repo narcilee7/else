@@ -2,7 +2,7 @@
 //!
 //! ScriptedHarness 是确定性的内置执行器，W3 起可重入：
 //! 从事件流恢复进度，Decision 后续跑；本人否决路径时自动重规划
-//! （Plan 易失，Intent 不失败）；最后按原始 DoneWhen 验收。
+//! （Plan 易失，Thread 不失败）；最后按原始 DoneWhen 验收。
 //! 真实 Harness 经 MVP-2 适配契约（adapter 模块）接入，控制面契约不变。
 
 pub mod adapter;
@@ -21,8 +21,8 @@ use else_protocol::attention::{
 use else_protocol::effect::{SideEffectKind, ToolCall};
 use else_protocol::event::{Actor, EventPayload};
 use else_protocol::ids::{ArtifactId, AttentionId, PlanId, PlanStepId, ToolCallId};
-use else_protocol::intent::{Criterion, IntentState};
 use else_protocol::plan::{Plan, PlanEvidence, PlanEvidenceKind, PlanStep, PlanStepStatus};
+use else_protocol::thread::{Criterion, ThreadState};
 
 pub const SCRIPTED: &str = "scripted";
 
@@ -162,7 +162,7 @@ pub struct RunOptions {
     pub force_replan: bool,
     /// 强制走不依赖 shell 的替代路径（换路径重跑）。
     pub alternative: bool,
-    /// Subagent 验收只结束自身 Scope，不直接把根 Intent 标记为完成。
+    /// Subagent 验收只结束自身 Scope，不直接把根 Thread 标记为完成。
     pub subagent: bool,
 }
 
@@ -180,7 +180,7 @@ pub fn run(
     // 事件可见性：Subagent 只看自身 Scope；分支看检查点水位之前 + 当前 Generation。
     let visible_events = |ledger: &Ledger| -> Result<Vec<StoredEvent>> {
         Ok(ledger
-            .read_intent(&ctx.spec.id)?
+            .read_thread(&ctx.spec.id)?
             .into_iter()
             .filter(|e| {
                 if options.subagent {
@@ -231,16 +231,16 @@ pub fn run(
             if impact_drives_replan {
                 "外部事实使计划步骤失效，自动重规划"
             } else {
-                "本人否决原路径，自动重规划（计划失败不等于 Intent 失败）"
+                "本人否决原路径，自动重规划（计划失败不等于 Thread 失败）"
             }
         } else {
             "首次生成结构化执行计划"
         };
         let plan_id = PlanId::new();
         let mut evidence = vec![PlanEvidence {
-            kind: PlanEvidenceKind::UserIntent,
+            kind: PlanEvidenceKind::UserThread,
             event_id: events.iter().rev().find_map(|event| {
-                matches!(event.envelope.payload, EventPayload::IntentCreated { .. })
+                matches!(event.envelope.payload, EventPayload::ThreadCreated { .. })
                     .then(|| event.envelope.event_id.clone())
             }),
             summary: ctx.spec.outcome.clone(),
@@ -275,7 +275,7 @@ pub fn run(
             id: plan_id.clone(),
             revision: previous.as_ref().map_or(1, |plan| plan.revision + 1),
             supersedes: previous.as_ref().map(|plan| plan.id.clone()),
-            intent_revision: ctx.spec.revision,
+            thread_revision: ctx.spec.revision,
             summary: model_plan.text.clone(),
             steps: vec![PlanStep {
                 id: PlanStepId::new(),
@@ -443,8 +443,8 @@ pub(crate) fn request_manual_verification(
     ctx.record(
         ledger,
         Actor::System,
-        EventPayload::IntentStateChanged {
-            state: IntentState::NeedsDecision,
+        EventPayload::ThreadStateChanged {
+            state: ThreadState::NeedsDecision,
         },
     )?;
     Err(GatewayError::NeedsApproval(request_id))
@@ -474,8 +474,8 @@ pub(crate) fn verify_with_evidence(
         ctx.record(
             ledger,
             Actor::System,
-            EventPayload::IntentStateChanged {
-                state: else_protocol::intent::IntentState::Completed,
+            EventPayload::ThreadStateChanged {
+                state: else_protocol::thread::ThreadState::Completed,
             },
         )?;
     }

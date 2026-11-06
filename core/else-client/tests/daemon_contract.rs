@@ -5,7 +5,7 @@
 
 use else_client::{ClientConfig, RuntimeClient};
 use else_daemon::{Daemon, DaemonConfig};
-use else_protocol::ids::IntentId;
+use else_protocol::ids::ThreadId;
 
 fn start() -> (tempfile::TempDir, Daemon) {
     let dir = tempfile::tempdir().unwrap();
@@ -23,60 +23,60 @@ fn client(daemon: &Daemon) -> RuntimeClient {
 }
 
 #[test]
-fn client_creates_reads_and_advances_an_intent_over_http() {
+fn client_creates_reads_and_advances_an_thread_over_http() {
     let (_dir, daemon) = start();
     let client = client(&daemon);
 
     let snapshot = client
-        .create_intent("契约测试目标", Some("contract"))
+        .create_thread("契约测试目标", Some("contract"))
         .expect("create over http");
     assert_eq!(snapshot.spec.outcome, "契约测试目标");
     assert_eq!(snapshot.spec.project.as_deref(), Some("contract"));
-    let intent_id = snapshot.spec.id.clone();
+    let thread_id = snapshot.spec.id.clone();
 
-    // 列表必须包含刚建的 Intent。
-    let intents = client.list_intents().expect("list over http");
-    assert!(intents.iter().any(|item| item.spec.id == intent_id));
+    // 列表必须包含刚建的 Thread。
+    let threads = client.list_threads().expect("list over http");
+    assert!(threads.iter().any(|item| item.spec.id == thread_id));
 
     // 再读一次快照必须一致。
-    let reread = client.intent(&intent_id).expect("intent over http");
-    assert_eq!(reread.spec.id, intent_id);
+    let reread = client.thread(&thread_id).expect("thread over http");
+    assert_eq!(reread.spec.id, thread_id);
     assert_eq!(reread.spec.revision, snapshot.spec.revision);
 
     // 推进一个 Kernel 步。
     let advanced = client
-        .advance(&intent_id, Some("scripted"))
+        .advance(&thread_id, Some("scripted"))
         .expect("advance");
-    assert_eq!(advanced.spec.id, intent_id);
+    assert_eq!(advanced.spec.id, thread_id);
 
     // Scope 树：至少有一个根 Scope。
-    let scopes = client.scopes(&intent_id).expect("scopes over http");
+    let scopes = client.scopes(&thread_id).expect("scopes over http");
     assert!(!scopes.is_empty());
 
     daemon.shutdown();
 }
 
 #[test]
-fn client_rejects_unknown_intents_without_hiding_system_memory() {
+fn client_rejects_unknown_threads_without_hiding_system_memory() {
     let (_dir, daemon) = start();
     let client = client(&daemon);
-    let missing = IntentId::from("missing-intent");
+    let missing = ThreadId::from("missing-thread");
 
-    // Memory 是系统级接口，不要求存在名为 else-system 的普通 Intent。
+    // Memory 是系统级接口，不要求存在名为 else-system 的普通 Thread。
     client.memory().expect("system memory over http");
 
     for error in [
-        client.intent(&missing).expect_err("unknown intent read"),
-        client.plan(&missing).expect_err("unknown intent plan"),
+        client.thread(&missing).expect_err("unknown thread read"),
+        client.plan(&missing).expect_err("unknown thread plan"),
         client
             .advance(&missing, Some("scripted"))
-            .expect_err("unknown intent advance"),
+            .expect_err("unknown thread advance"),
     ] {
         match error {
             else_client::ClientError::Rejected(message) => {
                 assert!(message.contains("404"), "{message}");
                 assert!(
-                    message.contains("intent not found: missing-intent"),
+                    message.contains("thread not found: missing-thread"),
                     "{message}"
                 );
             }
@@ -92,7 +92,7 @@ fn client_reads_the_personal_brief_and_world() {
     let (_dir, daemon) = start();
     let client = client(&daemon);
 
-    client.create_intent("简报目标", None).expect("create");
+    client.create_thread("简报目标", None).expect("create");
 
     // Brief 是跨 Provider 聚合的；没有 Connector 时应为空而不是报错。
     let brief = client.brief().expect("brief over http");
@@ -109,17 +109,17 @@ fn client_writes_require_a_matching_revision() {
     let (_dir, daemon) = start();
     let client = client(&daemon);
 
-    let snapshot = client.create_intent("Revision 冲突", None).expect("create");
-    let intent_id = snapshot.spec.id.clone();
+    let snapshot = client.create_thread("Revision 冲突", None).expect("create");
+    let thread_id = snapshot.spec.id.clone();
 
     // 先改一次目标，Revision 前进。
     client
-        .revise_intent(&intent_id, Some("改过的目标"), &[], "测试修订")
+        .revise_thread(&thread_id, Some("改过的目标"), &[], "测试修订")
         .expect("revise");
 
     // 客户端缓存了最新 Revision，写操作应当成功。
     client
-        .record_external_event(&intent_id, "mail", "已回复")
+        .record_external_event(&thread_id, "mail", "已回复")
         .expect("record event with fresh revision");
 
     daemon.shutdown();
@@ -202,7 +202,7 @@ fn client_reports_an_unreachable_runtime_clearly() {
 }
 
 #[test]
-fn client_resolves_intent_ids_from_strings() {
-    let id = IntentId::from("demo-intent");
-    assert_eq!(id.to_string(), "demo-intent");
+fn client_resolves_thread_ids_from_strings() {
+    let id = ThreadId::from("demo-thread");
+    assert_eq!(id.to_string(), "demo-thread");
 }

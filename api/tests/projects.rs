@@ -77,10 +77,10 @@ fn notion_json() -> serde_json::Value {
 }
 
 #[test]
-fn project_world_correlates_connectors_and_intents_by_project_key() {
+fn project_world_correlates_connectors_and_threads_by_project_key() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let first = runtime.create_intent("推进 Launch", None).unwrap();
+    let first = runtime.create_thread("推进 Launch", None).unwrap();
     let linear_path = dir.path().join("linear.json");
     let notion_path = dir.path().join("notion.json");
     let calendar_path = dir.path().join("calendar.ics");
@@ -106,9 +106,9 @@ fn project_world_correlates_connectors_and_intents_by_project_key() {
     assert_eq!(launch.title, "Launch");
     assert_eq!(launch.items.len(), 3);
     assert_eq!(launch.connector_ids.len(), 3);
-    assert_eq!(launch.intent_ids, vec![first.id.clone()]);
+    assert_eq!(launch.thread_ids, vec![first.id.clone()]);
 
-    let second = runtime.create_intent("准备 Launch 评审", None).unwrap();
+    let second = runtime.create_thread("准备 Launch 评审", None).unwrap();
     let calendar = runtime
         .register_connector_adapter(
             &second.id,
@@ -127,7 +127,7 @@ fn project_world_correlates_connectors_and_intents_by_project_key() {
         .find(|project| project.key == "project:launch")
         .unwrap();
     assert_eq!(launch.items.len(), 4);
-    assert_eq!(launch.intent_ids.len(), 2);
+    assert_eq!(launch.thread_ids.len(), 2);
     assert!(launch.connector_ids.len() >= 4);
 
     let identities = runtime.identity_worlds(None, false).unwrap();
@@ -138,7 +138,7 @@ fn project_world_correlates_connectors_and_intents_by_project_key() {
         })
         .unwrap();
     assert_eq!(alice.items.len(), 4);
-    assert_eq!(alice.intent_ids.len(), 2);
+    assert_eq!(alice.thread_ids.len(), 2);
     assert!(identities.iter().any(|identity| {
         identity.kind == CorrelationKind::Customer
             && identity.key == "customer:acme"

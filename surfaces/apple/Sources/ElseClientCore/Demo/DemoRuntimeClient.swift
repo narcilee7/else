@@ -1,10 +1,10 @@
 import Foundation
 
 public actor DemoRuntimeClient: RuntimeClient {
-    private var snapshots: [IntentSnapshot]
+    private var snapshots: [ThreadSnapshot]
     private var brief: PersonalBrief
-    private var actions: [IntentID: [ConnectorAction]]
-    private var connectorsByIntent: [IntentID: [ConnectorRegistration]]
+    private var actions: [ThreadID: [ConnectorAction]]
+    private var connectorsByThread: [ThreadID: [ConnectorRegistration]]
     private var correlationRenames: [String: String] = [:]
     private var correlationMerges: [String: String] = [:]
     private var correlationSplits: Set<String> = []
@@ -14,29 +14,29 @@ public actor DemoRuntimeClient: RuntimeClient {
         snapshots = Self.samples
         brief = Self.sampleBrief()
         actions = Self.sampleActions
-        connectorsByIntent = Self.sampleConnectors
+        connectorsByThread = Self.sampleConnectors
     }
 
-    public func listIntents() async throws -> [IntentSnapshot] {
+    public func listThreads() async throws -> [ThreadSnapshot] {
         snapshots
     }
 
-    public func intent(id: IntentID) async throws -> IntentSnapshot {
+    public func thread(id: ThreadID) async throws -> ThreadSnapshot {
         guard let snapshot = snapshots.first(where: { $0.id == id }) else {
-            throw RuntimeClientError.http(status: 404, message: "Intent not found")
+            throw RuntimeClientError.http(status: 404, message: "Thread not found")
         }
         return snapshot
     }
 
-    public func deleteIntent(id: IntentID) async throws -> IntentDeletionReport {
+    public func deleteThread(id: ThreadID) async throws -> ThreadDeletionReport {
         guard let index = snapshots.firstIndex(where: { $0.id == id }) else {
-            throw RuntimeClientError.http(status: 404, message: "Intent not found")
+            throw RuntimeClientError.http(status: 404, message: "Thread not found")
         }
         snapshots.remove(at: index)
         actions[id] = nil
-        connectorsByIntent[id] = nil
-        return IntentDeletionReport(
-            intentID: id,
+        connectorsByThread[id] = nil
+        return ThreadDeletionReport(
+            threadID: id,
             deletedEvents: 1,
             removedCredentials: 0,
             removedWorkspacePaths: 0,
@@ -45,7 +45,7 @@ public actor DemoRuntimeClient: RuntimeClient {
         )
     }
 
-    public func retryFailedIntent(id: IntentID) async throws -> IntentSnapshot {
+    public func retryFailedThread(id: ThreadID) async throws -> ThreadSnapshot {
         try update(id: id) { snapshot in
             guard snapshot.state == .failed else {
                 return snapshot
@@ -54,10 +54,10 @@ public actor DemoRuntimeClient: RuntimeClient {
         }
     }
 
-    public func createIntent(outcome: String, project: String?) async throws -> IntentSnapshot {
-        let snapshot = IntentSnapshot(
-            spec: IntentSpec(
-                id: IntentID(UUID().uuidString),
+    public func createThread(outcome: String, project: String?) async throws -> ThreadSnapshot {
+        let snapshot = ThreadSnapshot(
+            spec: ThreadSpec(
+                id: ThreadID(UUID().uuidString),
                 revision: 1,
                 outcome: outcome,
                 doneWhen: [Criterion(description: "计划产物写入工作区且校验通过")],
@@ -89,20 +89,20 @@ public actor DemoRuntimeClient: RuntimeClient {
         return snapshot
     }
 
-    public func runIntent(id: IntentID) async throws -> IntentSnapshot {
+    public func runThread(id: ThreadID) async throws -> ThreadSnapshot {
         try update(id: id) { snapshot in
             snapshot.replacing(state: .active)
         }
     }
 
     public func resolveDecision(
-        intentID: IntentID,
+        threadID: ThreadID,
         decisionID: AttentionID,
         choice: DecisionChoice
-    ) async throws -> IntentSnapshot {
-        try update(id: intentID) { snapshot in
+    ) async throws -> ThreadSnapshot {
+        try update(id: threadID) { snapshot in
             let remaining = snapshot.decisions.filter { $0.id != decisionID }
-            let nextState: IntentState
+            let nextState: ThreadState
             switch choice {
             case .dismissed:
                 nextState = .paused
@@ -115,7 +115,7 @@ public actor DemoRuntimeClient: RuntimeClient {
                 artifacts: remaining.isEmpty
                     ? [
                         Artifact(
-                            id: ArtifactID("demo-artifact-\(intentID.rawValue.prefix(8))"),
+                            id: ArtifactID("demo-artifact-\(threadID.rawValue.prefix(8))"),
                             kind: .document,
                             locator: "store/result.md",
                             manifest: nil,
@@ -128,7 +128,7 @@ public actor DemoRuntimeClient: RuntimeClient {
         }
     }
 
-    public func abortIntent(id: IntentID, reason: String) async throws -> IntentSnapshot {
+    public func abortThread(id: ThreadID, reason: String) async throws -> ThreadSnapshot {
         _ = reason
         return try update(id: id) { snapshot in
             snapshot.replacing(state: .cancelled, decisions: [])
@@ -140,12 +140,12 @@ public actor DemoRuntimeClient: RuntimeClient {
     }
 
     public func resolveWorldItem(
-        intentID: IntentID,
+        threadID: ThreadID,
         itemID: WorldItemID,
         kind: WorldItemResolutionKind
     ) async throws -> WorldItem {
         guard let record = brief.allRecords.first(where: {
-            $0.intentID == intentID && $0.item.id == itemID
+            $0.threadID == threadID && $0.item.id == itemID
         }) else {
             throw RuntimeClientError.http(status: 404, message: "World item not found")
         }
@@ -154,33 +154,33 @@ public actor DemoRuntimeClient: RuntimeClient {
         return record.item.replacing(state: state)
     }
 
-    public func connectorActions(intentID: IntentID) async throws -> [ConnectorAction] {
-        actions[intentID] ?? []
+    public func connectorActions(threadID: ThreadID) async throws -> [ConnectorAction] {
+        actions[threadID] ?? []
     }
 
     public func executeConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         actionID: ConnectorActionID
     ) async throws -> ConnectorAction {
-        try updateAction(intentID: intentID, actionID: actionID) {
+        try updateAction(threadID: threadID, actionID: actionID) {
             $0.replacing(status: .applied)
         }
     }
 
     public func verifyConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         actionID: ConnectorActionID
     ) async throws -> ConnectorAction {
-        try updateAction(intentID: intentID, actionID: actionID) {
+        try updateAction(threadID: threadID, actionID: actionID) {
             $0.replacing(status: .applied)
         }
     }
 
     public func compensateConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         actionID: ConnectorActionID
     ) async throws -> ConnectorAction {
-        try updateAction(intentID: intentID, actionID: actionID) {
+        try updateAction(threadID: threadID, actionID: actionID) {
             $0.replacing(
                 status: .compensated,
                 outcome: ToolOutcome(status: .succeeded, effect: .compensated)
@@ -189,7 +189,7 @@ public actor DemoRuntimeClient: RuntimeClient {
     }
 
     public func proposeConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         request: ProposeConnectorActionRequest
     ) async throws -> ConnectorAction {
         let action = ConnectorAction(
@@ -202,12 +202,12 @@ public actor DemoRuntimeClient: RuntimeClient {
             status: .proposed,
             proposedAt: Date()
         )
-        actions[intentID, default: []].insert(action, at: 0)
+        actions[threadID, default: []].insert(action, at: 0)
         return action
     }
 
     public func capabilities(
-        intentID: IntentID
+        threadID: ThreadID
     ) async throws -> [RuntimeCapabilityRegistration] {
         []
     }
@@ -217,7 +217,7 @@ public actor DemoRuntimeClient: RuntimeClient {
             "export_version": .number(1),
             "protocol_version": .string("0.1.0"),
             "exported_at": .string(Date.now.formatted(.iso8601)),
-            "intents": .array([]),
+            "threads": .array([]),
         ])
     }
 
@@ -230,14 +230,14 @@ public actor DemoRuntimeClient: RuntimeClient {
             "database_integrity": .string("ok"),
             "event_count": .number(76),
             "event_cursor": .number(76),
-            "intent_count": .number(2),
+            "thread_count": .number(2),
             "connectors": .array([]),
         ])
     }
 
     public func cleanupOrphanLeases() async throws -> LeaseCleanupReport {
         LeaseCleanupReport(
-            scannedIntents: 2,
+            scannedThreads: 2,
             orphanLeases: 0,
             revokedLeases: 0,
             sandboxFinishRecords: 0,
@@ -257,7 +257,7 @@ public actor DemoRuntimeClient: RuntimeClient {
     }
 
     public func previewConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID,
         request: PreviewConnectorActionRequest
     ) async throws -> ConnectorActionPreview {
@@ -325,7 +325,7 @@ public actor DemoRuntimeClient: RuntimeClient {
             }
             let now = Date()
             return AttentionWindowRecord(
-                intentID: snapshot.id,
+                threadID: snapshot.id,
                 window: AttentionWindow(
                     id: AttentionWindowID("demo-attention-window"),
                     kind: .batch,
@@ -347,7 +347,7 @@ public actor DemoRuntimeClient: RuntimeClient {
                 key: group.key,
                 title: group.title,
                 items: group.records,
-                intentIDs: uniqueIntentIDs(group.records),
+                threadIDs: uniqueThreadIDs(group.records),
                 connectorIDs: uniqueConnectorIDs(group.records),
                 openItems: group.records.filter { !$0.item.state.isResolved }.count,
                 waitingExternal: group.records.filter {
@@ -367,7 +367,7 @@ public actor DemoRuntimeClient: RuntimeClient {
                     key: group.key,
                     title: group.title,
                     items: group.records,
-                    intentIDs: uniqueIntentIDs(group.records),
+                    threadIDs: uniqueThreadIDs(group.records),
                     connectorIDs: uniqueConnectorIDs(group.records),
                     openItems: group.records.filter { !$0.item.state.isResolved }.count,
                     overdue: group.records.filter { $0.item.state == .overdue }.count,
@@ -378,10 +378,10 @@ public actor DemoRuntimeClient: RuntimeClient {
     }
 
     public func correctWorldCorrelation(
-        intentID: IntentID,
+        threadID: ThreadID,
         correction: WorldCorrelationCorrection
     ) async throws -> WorldCorrelationCorrection {
-        _ = intentID
+        _ = threadID
         switch correction.kind {
         case .merge:
             if let target = correction.targetKey {
@@ -411,16 +411,16 @@ public actor DemoRuntimeClient: RuntimeClient {
         Self.sampleManifests
     }
 
-    public func connectors(intentID: IntentID) async throws -> [ConnectorRegistration] {
-        connectorsByIntent[intentID] ?? []
+    public func connectors(threadID: ThreadID) async throws -> [ConnectorRegistration] {
+        connectorsByThread[threadID] ?? []
     }
 
     public func connectorHealth(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async throws -> ConnectorHealthReport {
         guard
-            let connector = connectorsByIntent[intentID]?.first(where: {
+            let connector = connectorsByThread[threadID]?.first(where: {
                 $0.id == connectorID
             })
         else {
@@ -446,16 +446,16 @@ public actor DemoRuntimeClient: RuntimeClient {
     }
 
     public func attachConnectorCredential(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID,
         credential: ConnectorCredentialInput
     ) async throws -> ConnectorCredentialMetadata {
-        guard let index = connectorsByIntent[intentID]?.firstIndex(where: {
+        guard let index = connectorsByThread[threadID]?.firstIndex(where: {
             $0.id == connectorID
         }) else {
             throw RuntimeClientError.http(status: 404, message: "Connector not found")
         }
-        let old = connectorsByIntent[intentID]![index]
+        let old = connectorsByThread[threadID]![index]
         let metadata = ConnectorCredentialMetadata(
             reference: UUID().uuidString,
             authMode: old.manifest.authMode,
@@ -464,7 +464,7 @@ public actor DemoRuntimeClient: RuntimeClient {
             configuredAt: Date(),
             revokedAt: nil
         )
-        connectorsByIntent[intentID]![index] = ConnectorRegistration(
+        connectorsByThread[threadID]![index] = ConnectorRegistration(
             id: old.id,
             name: old.name,
             adapter: old.adapter,
@@ -479,15 +479,15 @@ public actor DemoRuntimeClient: RuntimeClient {
     }
 
     public func revokeConnectorCredential(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async throws -> ConnectorCredentialMetadata {
-        guard let index = connectorsByIntent[intentID]?.firstIndex(where: {
+        guard let index = connectorsByThread[threadID]?.firstIndex(where: {
             $0.id == connectorID
-        }), let existing = connectorsByIntent[intentID]?[index].credential else {
+        }), let existing = connectorsByThread[threadID]?[index].credential else {
             throw RuntimeClientError.http(status: 404, message: "Credential not found")
         }
-        let old = connectorsByIntent[intentID]![index]
+        let old = connectorsByThread[threadID]![index]
         let metadata = ConnectorCredentialMetadata(
             reference: existing.reference,
             authMode: existing.authMode,
@@ -496,7 +496,7 @@ public actor DemoRuntimeClient: RuntimeClient {
             configuredAt: existing.configuredAt,
             revokedAt: Date()
         )
-        connectorsByIntent[intentID]![index] = ConnectorRegistration(
+        connectorsByThread[threadID]![index] = ConnectorRegistration(
             id: old.id,
             name: old.name,
             adapter: old.adapter,
@@ -511,7 +511,7 @@ public actor DemoRuntimeClient: RuntimeClient {
     }
 
     public func registerConnector(
-        intentID: IntentID,
+        threadID: ThreadID,
         request: RegisterConnectorRequest
     ) async throws -> ConnectorRegistration {
         guard let manifest = Self.sampleManifests.first(where: {
@@ -540,15 +540,15 @@ public actor DemoRuntimeClient: RuntimeClient {
             registeredAt: Date(),
             credential: credential
         )
-        connectorsByIntent[intentID, default: []].append(connector)
+        connectorsByThread[threadID, default: []].append(connector)
         return connector
     }
 
     public func syncConnector(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async throws -> ConnectorSyncResult {
-        guard connectorsByIntent[intentID]?.contains(where: { $0.id == connectorID }) == true else {
+        guard connectorsByThread[threadID]?.contains(where: { $0.id == connectorID }) == true else {
             throw RuntimeClientError.http(status: 404, message: "Connector not found")
         }
         return ConnectorSyncResult(
@@ -566,11 +566,11 @@ public actor DemoRuntimeClient: RuntimeClient {
     }
 
     public func repairConnector(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async throws -> ConnectorRepairReport {
         let sync = try await syncConnector(
-            intentID: intentID,
+            threadID: threadID,
             connectorID: connectorID
         )
         return ConnectorRepairReport(
@@ -582,26 +582,26 @@ public actor DemoRuntimeClient: RuntimeClient {
     }
 
     private func update(
-        id: IntentID,
-        transform: (IntentSnapshot) -> IntentSnapshot
-    ) throws -> IntentSnapshot {
+        id: ThreadID,
+        transform: (ThreadSnapshot) -> ThreadSnapshot
+    ) throws -> ThreadSnapshot {
         guard let index = snapshots.firstIndex(where: { $0.id == id }) else {
-            throw RuntimeClientError.http(status: 404, message: "Intent not found")
+            throw RuntimeClientError.http(status: 404, message: "Thread not found")
         }
         snapshots[index] = transform(snapshots[index])
         return snapshots[index]
     }
 
     private func updateAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         actionID: ConnectorActionID,
         transform: (ConnectorAction) -> ConnectorAction
     ) throws -> ConnectorAction {
-        guard let index = actions[intentID]?.firstIndex(where: { $0.id == actionID }) else {
+        guard let index = actions[threadID]?.firstIndex(where: { $0.id == actionID }) else {
             throw RuntimeClientError.http(status: 404, message: "Connector action not found")
         }
-        let updated = transform(actions[intentID]![index])
-        actions[intentID]![index] = updated
+        let updated = transform(actions[threadID]![index])
+        actions[threadID]![index] = updated
         return updated
     }
 
@@ -657,26 +657,26 @@ public actor DemoRuntimeClient: RuntimeClient {
         "\(kind.rawValue):\(key)"
     }
 
-    private func uniqueIntentIDs(_ records: [WorldItemRecord]) -> [IntentID] {
-        Array(Set(records.map(\.intentID))).sorted()
+    private func uniqueThreadIDs(_ records: [WorldItemRecord]) -> [ThreadID] {
+        Array(Set(records.map(\.threadID))).sorted()
     }
 
     private func uniqueConnectorIDs(_ records: [WorldItemRecord]) -> [ConnectorID] {
         Array(Set(records.flatMap(\.item.connectorIDs))).sorted()
     }
 
-    public static let samples: [IntentSnapshot] = {
+    public static let samples: [ThreadSnapshot] = {
         let budget = defaultBudget
         let now = Date()
 
         return [
-            IntentSnapshot(
-                spec: IntentSpec(
-                    id: IntentID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0"),
+            ThreadSnapshot(
+                spec: ThreadSpec(
+                    id: ThreadID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0"),
                     revision: 2,
-                    outcome: "把 macOS 客户端的第一条 Intent 闭环跑通",
+                    outcome: "把 macOS 客户端的第一条 Thread 闭环跑通",
                     doneWhen: [
-                        Criterion(description: "Intent 可提交并开始执行"),
+                        Criterion(description: "Thread 可提交并开始执行"),
                         Criterion(description: "决策结果可回写 Runtime"),
                     ],
                     constraints: ["不绕过 Runtime API", "默认不产生外部副作用"],
@@ -714,9 +714,9 @@ public actor DemoRuntimeClient: RuntimeClient {
                 ),
                 cursor: 48
             ),
-            IntentSnapshot(
-                spec: IntentSpec(
-                    id: IntentID("D91E465C-09F8-49B1-8745-C45A67C00AE1"),
+            ThreadSnapshot(
+                spec: ThreadSpec(
+                    id: ThreadID("D91E465C-09F8-49B1-8745-C45A67C00AE1"),
                     revision: 1,
                     outcome: "确认发布前安全回归清单",
                     doneWhen: [Criterion(description: "所有阻塞项都有明确结论")],
@@ -768,9 +768,9 @@ public actor DemoRuntimeClient: RuntimeClient {
                 ),
                 cursor: 31
             ),
-            IntentSnapshot(
-                spec: IntentSpec(
-                    id: IntentID("08134A17-EC4C-4D1C-9364-9BC3D4C53A0C"),
+            ThreadSnapshot(
+                spec: ThreadSpec(
+                    id: ThreadID("08134A17-EC4C-4D1C-9364-9BC3D4C53A0C"),
                     revision: 1,
                     outcome: "整理本周所有客户反馈",
                     doneWhen: [Criterion(description: "形成按主题归并的反馈摘要")],
@@ -819,7 +819,7 @@ public actor DemoRuntimeClient: RuntimeClient {
     private static func sampleBrief() -> PersonalBrief {
         let now = Date()
         let overdue = worldRecord(
-            intentID: IntentID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0"),
+            threadID: ThreadID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0"),
             id: "world-overdue-release",
             kind: .actionItem,
             state: .overdue,
@@ -829,7 +829,7 @@ public actor DemoRuntimeClient: RuntimeClient {
             project: "else"
         )
         let waiting = worldRecord(
-            intentID: IntentID("D91E465C-09F8-49B1-8745-C45A67C00AE1"),
+            threadID: ThreadID("D91E465C-09F8-49B1-8745-C45A67C00AE1"),
             id: "world-waiting-security",
             kind: .waitingExternal,
             state: .waitingExternal,
@@ -839,7 +839,7 @@ public actor DemoRuntimeClient: RuntimeClient {
             project: "else"
         )
         let calendar = worldRecord(
-            intentID: IntentID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0"),
+            threadID: ThreadID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0"),
             id: "world-calendar-review",
             kind: .actionItem,
             state: .open,
@@ -856,8 +856,8 @@ public actor DemoRuntimeClient: RuntimeClient {
         )
     }
 
-    private static let sampleActions: [IntentID: [ConnectorAction]] = [
-        IntentID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0"): [
+    private static let sampleActions: [ThreadID: [ConnectorAction]] = [
+        ThreadID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0"): [
             ConnectorAction(
                 id: ConnectorActionID("demo-calendar-action"),
                 connectorID: ConnectorID("demo-google-calendar"),
@@ -912,10 +912,10 @@ public actor DemoRuntimeClient: RuntimeClient {
         ),
     ]
 
-    private static let sampleConnectors: [IntentID: [ConnectorRegistration]] = {
-        let intentID = IntentID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0")
+    private static let sampleConnectors: [ThreadID: [ConnectorRegistration]] = {
+        let threadID = ThreadID("9AA94E24-23DA-4D40-A417-07BBA3CA42A0")
         return [
-            intentID: [
+            threadID: [
                 ConnectorRegistration(
                     id: ConnectorID("demo-google-calendar"),
                     name: "calendar",
@@ -975,7 +975,7 @@ public actor DemoRuntimeClient: RuntimeClient {
     }()
 
     private static func worldRecord(
-        intentID: IntentID,
+        threadID: ThreadID,
         id: String,
         kind: WorldItemKind,
         state: WorldItemState,
@@ -985,7 +985,7 @@ public actor DemoRuntimeClient: RuntimeClient {
         project: String
     ) -> WorldItemRecord {
         WorldItemRecord(
-            intentID: intentID,
+            threadID: threadID,
             item: WorldItem(
                 id: WorldItemID(id),
                 entityRef: ExternalEntityRef(
@@ -1041,13 +1041,13 @@ private extension ResourceUsage {
     )
 }
 
-private extension IntentSnapshot {
+private extension ThreadSnapshot {
     func replacing(
-        state: IntentState? = nil,
+        state: ThreadState? = nil,
         decisions: [AttentionRequest]? = nil,
         artifacts: [Artifact]? = nil
-    ) -> IntentSnapshot {
-        IntentSnapshot(
+    ) -> ThreadSnapshot {
+        ThreadSnapshot(
             spec: spec,
             state: state ?? self.state,
             decisions: decisions ?? self.decisions,

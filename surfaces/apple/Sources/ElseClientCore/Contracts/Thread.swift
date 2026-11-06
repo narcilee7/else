@@ -56,8 +56,8 @@ public struct AttentionPolicy: Codable, Equatable, Sendable {
     }
 }
 
-public struct IntentSpec: Codable, Equatable, Identifiable, Sendable {
-    public let id: IntentID
+public struct ThreadSpec: Codable, Equatable, Identifiable, Sendable {
+    public let id: ThreadID
     public let revision: UInt64
     public let outcome: String
     public let doneWhen: [Criterion]
@@ -69,7 +69,7 @@ public struct IntentSpec: Codable, Equatable, Identifiable, Sendable {
     public let project: String?
 
     public init(
-        id: IntentID,
+        id: ThreadID,
         revision: UInt64,
         outcome: String,
         doneWhen: [Criterion],
@@ -106,7 +106,7 @@ public struct IntentSpec: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-public enum IntentState: String, Codable, Sendable {
+public enum ThreadState: String, Codable, Sendable {
     case active
     case waitingExternal = "waiting_external"
     case needsDecision = "needs_decision"
@@ -116,8 +116,8 @@ public enum IntentState: String, Codable, Sendable {
     case failed
 }
 
-public struct IntentDeletionReport: Codable, Equatable, Sendable {
-    public let intentID: IntentID
+public struct ThreadDeletionReport: Codable, Equatable, Sendable {
+    public let threadID: ThreadID
     public let deletedEvents: Int
     public let removedCredentials: Int
     public let removedWorkspacePaths: Int
@@ -125,7 +125,7 @@ public struct IntentDeletionReport: Codable, Equatable, Sendable {
     public let retainedSharedArtifacts: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case intentID = "intent_id"
+        case threadID = "thread_id"
         case deletedEvents = "deleted_events"
         case removedCredentials = "removed_credentials"
         case removedWorkspacePaths = "removed_workspace_paths"

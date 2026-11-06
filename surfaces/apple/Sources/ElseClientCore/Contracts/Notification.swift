@@ -3,7 +3,7 @@ import Foundation
 public enum ElseNotificationContract {
     public static let decisionCategory = "ELSE_DECISION"
     public static let openAction = "ELSE_OPEN"
-    public static let intentIDKey = "intent_id"
+    public static let threadIDKey = "thread_id"
 
     public static func decisionIdentifier(_ id: AttentionID) -> String {
         "decision:\(id.rawValue)"

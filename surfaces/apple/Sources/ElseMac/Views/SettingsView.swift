@@ -176,7 +176,7 @@ struct SettingsView: View {
                 )
                 MetricRow(
                     label: "连接器",
-                    value: "\(store.connectorsByIntent.values.reduce(0) { $0 + $1.count })"
+                    value: "\(store.connectorsByThread.values.reduce(0) { $0 + $1.count })"
                 )
                 MetricRow(
                     label: "健康",
@@ -228,12 +228,12 @@ struct SettingsView: View {
                     Text("只会回收 Run 已结束、Scope 已终态或 Generation 已失效的 Lease；活跃 Run 不会受影响。")
                 }
 
-                Text("导出 Event Ledger、Intent、工件内容与来源血缘；凭据和私有 Harness 状态不会写入导出包。")
+                Text("导出 Event Ledger、Thread、工件内容与来源血缘；凭据和私有 Harness 状态不会写入导出包。")
                     .font(ElseType.caption)
                     .foregroundStyle(ElseColor.textSecondary)
 
                 Picker(
-                    "终态 Intent 保留",
+                    "终态 Thread 保留",
                     selection: Binding(
                         get: { store.retentionDays },
                         set: { days in
@@ -252,7 +252,7 @@ struct SettingsView: View {
                     Text("90 天").tag(UInt64?.some(90))
                 }
 
-                Text("自动清理只作用于 Completed / Failed / Cancelled Intent；运行中、待决策与等待外部状态不会自动删除。")
+                Text("自动清理只作用于 Completed / Failed / Cancelled Thread；运行中、待决策与等待外部状态不会自动删除。")
                     .font(ElseType.caption)
                     .foregroundStyle(ElseColor.textSecondary)
 
@@ -290,7 +290,7 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("超过保留期的终态 Intent 会被永久删除，包括事件、关联凭据与 Scope Workspace。共享 CAS 工件不会盲目删除。")
+            Text("超过保留期的终态 Thread 会被永久删除，包括事件、关联凭据与 Scope Workspace。共享 CAS 工件不会盲目删除。")
         }
     }
 

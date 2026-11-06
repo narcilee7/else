@@ -21,7 +21,7 @@ pub enum SideEffectKind {
 }
 
 /// 一次工具调用。执行时由 Gateway 附加
-/// `intent_id / scope_id / run_id / generation`（见 EventEnvelope）。
+/// `thread_id / scope_id / run_id / generation`（见 EventEnvelope）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: ToolCallId,

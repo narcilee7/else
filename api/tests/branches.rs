@@ -3,14 +3,14 @@
 
 use else_api::Runtime;
 use else_protocol::attention::DecisionChoice;
-use else_protocol::intent::IntentState;
+use else_protocol::thread::ThreadState;
 
 #[test]
 fn checkpoint_fork_rerun_compare() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_intent("把发布推进到可对外状态", None)
+        .create_thread("把发布推进到可对外状态", None)
         .unwrap();
     let projection = runtime.run(&spec.id).unwrap();
 
@@ -29,7 +29,7 @@ fn checkpoint_fork_rerun_compare() {
             DecisionChoice::Option("approve".into()),
         )
         .unwrap();
-    assert_eq!(main.state, Some(IntentState::Completed));
+    assert_eq!(main.state, Some(ThreadState::Completed));
     let main_plan = std::fs::read_to_string(dir.path().join("workspace/plan.md")).unwrap();
 
     // 回检查点，换替代路径重跑：Generation 递增、分支工作区隔离

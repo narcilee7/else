@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use else_protocol::api::{
-    AttentionView, AttentionWindowSnapshot, DriveView, EventResponse, HarnessView, IntentSnapshot,
-    MemoryView, PlanView, ResourceView, ScopeView,
+    AttentionView, AttentionWindowSnapshot, DriveView, EventResponse, HarnessView, MemoryView,
+    PlanView, ResourceView, ScopeView, ThreadSnapshot,
 };
 use else_protocol::artifact::Checkpoint;
 use else_protocol::attention::{AttentionRequest, DecisionChoice};
@@ -18,17 +18,17 @@ use else_protocol::capability::{AgentBinding, CapabilityRegistration};
 use else_protocol::connector::{
     ConnectorAction, ConnectorCredential, ConnectorCredentialMetadata, ConnectorHealthReport,
     ConnectorManifest, ConnectorRegistration, ConnectorRepairReport, ConnectorSyncResult,
-    IntentCandidate, IntentCandidateRecord, WorldSignal, WorldSignalRecord,
+    ThreadCandidate, ThreadCandidateRecord, WorldSignal, WorldSignalRecord,
 };
 use else_protocol::effect::SideEffectKind;
 use else_protocol::ids::{
-    AttentionId, ConnectorActionId, ConnectorId, IntentCandidateId, IntentId, MemoryId, ScopeId,
+    AttentionId, ConnectorActionId, ConnectorId, MemoryId, ScopeId, ThreadCandidateId, ThreadId,
     WorldItemId,
 };
-use else_protocol::intent::{IntentSpec, OpaqueHarnessPolicy};
 use else_protocol::memory::{MemoryRecord, MemoryScope};
 use else_protocol::plan::PlanImpact;
 use else_protocol::runtime::RuntimeSettings;
+use else_protocol::thread::{OpaqueHarnessPolicy, ThreadSpec};
 use else_protocol::world::{
     IdentityWorld, PersonalBrief, ProjectWorld, WorldCorrelationCorrection, WorldItem,
     WorldItemResolutionKind,
@@ -51,7 +51,7 @@ pub struct RuntimeVersion {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeOperation {
     pub id: String,
-    pub intent_id: String,
+    pub thread_id: String,
     pub kind: String,
     /// `running` / `completed` / `failed`。
     pub status: String,
@@ -76,7 +76,7 @@ pub struct RuntimeClient {
     base: String,
     token: String,
     agent: ureq::Agent,
-    /// 每个 Intent 的当前 Revision。写操作用它做 `If-Match` 前置条件。
+    /// 每个 Thread 的当前 Revision。写操作用它做 `If-Match` 前置条件。
     ///
     /// 共享的：客户端被克隆给多个线程时，Revision 缓存也只有一份，
     /// 不会出现两个线程各写各的 Revision。
@@ -164,31 +164,31 @@ impl RuntimeClient {
 
     // ——————————————————————————— Revision ———————————————————————————
 
-    fn remember_revision(&self, intent_id: &IntentId, revision: u64) {
+    fn remember_revision(&self, thread_id: &ThreadId, revision: u64) {
         self.revisions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .insert(intent_id.to_string(), revision);
+            .insert(thread_id.to_string(), revision);
     }
 
-    fn cached_revision(&self, intent_id: &IntentId) -> Option<u64> {
+    fn cached_revision(&self, thread_id: &ThreadId) -> Option<u64> {
         self.revisions
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .get(&intent_id.to_string())
+            .get(&thread_id.to_string())
             .copied()
     }
 
-    /// 等一个异步操作结束，然后重新读 Intent 快照。
+    /// 等一个异步操作结束，然后重新读 Thread 快照。
     ///
     /// 写操作在 daemon 侧是异步的（202 + operation_id）。这里等到它结束再读，
     /// surface 拿到的就是**已经发生**的状态，而不是发起时的状态。
-    fn settle(&self, value: Value, intent_id: &IntentId) -> Result<IntentSnapshot> {
+    fn settle(&self, value: Value, thread_id: &ThreadId) -> Result<ThreadSnapshot> {
         let snapshot = self.snapshot_of(value)?;
         if let Some(operation_id) = snapshot.operation_id.clone() {
             self.wait_for_operation(&operation_id, Duration::from_secs(600))?;
         }
-        self.intent(intent_id)
+        self.thread(thread_id)
     }
 
     /// 轮询一个异步操作直到结束。
@@ -221,28 +221,28 @@ impl RuntimeClient {
 
     /// 取写操作需要的 Revision。
     ///
-    /// 缓存里没有就先读一次 Intent —— 读到的 Revision 立刻回填缓存。
-    fn revision_for(&self, intent_id: &IntentId) -> Result<u64> {
-        if let Some(revision) = self.cached_revision(intent_id) {
+    /// 缓存里没有就先读一次 Thread —— 读到的 Revision 立刻回填缓存。
+    fn revision_for(&self, thread_id: &ThreadId) -> Result<u64> {
+        if let Some(revision) = self.cached_revision(thread_id) {
             return Ok(revision);
         }
-        Ok(self.intent(intent_id)?.spec.revision)
+        Ok(self.thread(thread_id)?.spec.revision)
     }
 
     /// 把一份快照读成契约类型，并顺手记住它的 Revision。
-    fn snapshot_of(&self, value: Value) -> Result<IntentSnapshot> {
-        let snapshot: IntentSnapshot = serde_json::from_value(value)
+    fn snapshot_of(&self, value: Value) -> Result<ThreadSnapshot> {
+        let snapshot: ThreadSnapshot = serde_json::from_value(value)
             .map_err(|error| ClientError::Malformed(error.to_string()))?;
         self.remember_revision(&snapshot.spec.id, snapshot.spec.revision);
         Ok(snapshot)
     }
 
-    // ——————————————————————————— Intent 生命周期 ———————————————————————————
+    // ——————————————————————————— Thread 生命周期 ———————————————————————————
 
-    /// 列出全部 Intent。
-    pub fn list_intents(&self) -> Result<Vec<IntentSnapshot>> {
-        let value = self.get_value("/v1/intents")?;
-        let snapshots: Vec<IntentSnapshot> = serde_json::from_value(value)
+    /// 列出全部 Thread。
+    pub fn list_threads(&self) -> Result<Vec<ThreadSnapshot>> {
+        let value = self.get_value("/v1/threads")?;
+        let snapshots: Vec<ThreadSnapshot> = serde_json::from_value(value)
             .map_err(|error| ClientError::Malformed(error.to_string()))?;
         for snapshot in &snapshots {
             self.remember_revision(&snapshot.spec.id, snapshot.spec.revision);
@@ -250,51 +250,51 @@ impl RuntimeClient {
         Ok(snapshots)
     }
 
-    /// 读一个 Intent 的快照。
-    pub fn intent(&self, intent_id: &IntentId) -> Result<IntentSnapshot> {
-        let value = self.get_value(&format!("/v1/intents/{intent_id}"))?;
+    /// 读一个 Thread 的快照。
+    pub fn thread(&self, thread_id: &ThreadId) -> Result<ThreadSnapshot> {
+        let value = self.get_value(&format!("/v1/threads/{thread_id}"))?;
         self.snapshot_of(value)
     }
 
-    /// 创建一个 Intent。
-    pub fn create_intent(&self, outcome: &str, project: Option<&str>) -> Result<IntentSnapshot> {
+    /// 创建一个 Thread。
+    pub fn create_thread(&self, outcome: &str, project: Option<&str>) -> Result<ThreadSnapshot> {
         let body = json!({ "outcome": outcome, "project": project });
-        let key = unique_key("create-intent");
-        let value = self.post_value("/v1/intents", &body, None, &key)?;
+        let key = unique_key("create-thread");
+        let value = self.post_value("/v1/threads", &body, None, &key)?;
         self.snapshot_of(value)
     }
 
     /// 推进一个 Kernel 步。
-    pub fn advance(&self, intent_id: &IntentId, harness: Option<&str>) -> Result<IntentSnapshot> {
-        let revision = self.revision_for(intent_id)?;
+    pub fn advance(&self, thread_id: &ThreadId, harness: Option<&str>) -> Result<ThreadSnapshot> {
+        let revision = self.revision_for(thread_id)?;
         let body = json!({ "harness": harness });
-        let key = operation_key(&["advance", &intent_id.to_string(), &revision.to_string()]);
+        let key = operation_key(&["advance", &thread_id.to_string(), &revision.to_string()]);
         let value = self.post_value(
-            &format!("/v1/intents/{intent_id}/advance"),
+            &format!("/v1/threads/{thread_id}/advance"),
             &body,
             Some(revision),
             &key,
         )?;
-        self.settle(value, intent_id)
+        self.settle(value, thread_id)
     }
 
     /// 连续推进，直到等待用户、Run、Timer 或空闲。
     pub fn drive(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         harness: Option<&str>,
         max_steps: u64,
     ) -> Result<DriveView> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let body = json!({ "harness": harness, "max_steps": max_steps });
         let key = operation_key(&[
             "drive",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &revision.to_string(),
             &max_steps.to_string(),
         ]);
         let value = self.post_value(
-            &format!("/v1/intents/{intent_id}/drive"),
+            &format!("/v1/threads/{thread_id}/drive"),
             &body,
             Some(revision),
             &key,
@@ -310,33 +310,33 @@ impl RuntimeClient {
             }
         }
         Ok(DriveView {
-            snapshot: self.intent(intent_id)?,
+            snapshot: self.thread(thread_id)?,
             stopped,
             steps,
         })
     }
 
     /// 启动一次执行。
-    pub fn run(&self, intent_id: &IntentId, harness: Option<&str>) -> Result<IntentSnapshot> {
-        let revision = self.revision_for(intent_id)?;
+    pub fn run(&self, thread_id: &ThreadId, harness: Option<&str>) -> Result<ThreadSnapshot> {
+        let revision = self.revision_for(thread_id)?;
         let body = json!({ "harness": harness });
-        let key = operation_key(&["run", &intent_id.to_string(), &revision.to_string()]);
+        let key = operation_key(&["run", &thread_id.to_string(), &revision.to_string()]);
         let value = self.post_value(
-            &format!("/v1/intents/{intent_id}/run"),
+            &format!("/v1/threads/{thread_id}/run"),
             &body,
             Some(revision),
             &key,
         )?;
-        self.settle(value, intent_id)
+        self.settle(value, thread_id)
     }
 
     /// 取消执行并收敛在途副作用。
-    pub fn abort(&self, intent_id: &IntentId, reason: &str) -> Result<IntentSnapshot> {
-        let revision = self.revision_for(intent_id)?;
+    pub fn abort(&self, thread_id: &ThreadId, reason: &str) -> Result<ThreadSnapshot> {
+        let revision = self.revision_for(thread_id)?;
         let body = json!({ "reason": reason });
-        let key = operation_key(&["abort", &intent_id.to_string(), &revision.to_string()]);
+        let key = operation_key(&["abort", &thread_id.to_string(), &revision.to_string()]);
         let value = self.post_value(
-            &format!("/v1/intents/{intent_id}/abort"),
+            &format!("/v1/threads/{thread_id}/abort"),
             &body,
             Some(revision),
             &key,
@@ -344,70 +344,70 @@ impl RuntimeClient {
         self.snapshot_of(value)
     }
 
-    /// 修订 Intent 目标。
-    pub fn revise_intent(
+    /// 修订 Thread 目标。
+    pub fn revise_thread(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         outcome: Option<&str>,
         add_constraints: &[String],
         reason: &str,
-    ) -> Result<IntentSpec> {
-        let revision = self.revision_for(intent_id)?;
+    ) -> Result<ThreadSpec> {
+        let revision = self.revision_for(thread_id)?;
         let body = json!({
             "outcome": outcome,
             "add_constraints": add_constraints,
             "reason": reason,
         });
-        let key = operation_key(&["revise", &intent_id.to_string(), &revision.to_string()]);
-        let spec: IntentSpec = self.post_typed(
-            &format!("/v1/intents/{intent_id}/revise"),
+        let key = operation_key(&["revise", &thread_id.to_string(), &revision.to_string()]);
+        let spec: ThreadSpec = self.post_typed(
+            &format!("/v1/threads/{thread_id}/revise"),
             &body,
             Some(revision),
             &key,
         )?;
-        self.remember_revision(intent_id, spec.revision);
+        self.remember_revision(thread_id, spec.revision);
         Ok(spec)
     }
 
-    /// 删除一个 Intent 及其关联数据。
-    pub fn delete_intent(&self, intent_id: &IntentId) -> Result<Value> {
-        let revision = self.revision_for(intent_id)?;
+    /// 删除一个 Thread 及其关联数据。
+    pub fn delete_thread(&self, thread_id: &ThreadId) -> Result<Value> {
+        let revision = self.revision_for(thread_id)?;
         let request = self
             .authenticated(
                 self.agent
-                    .delete(&self.url(&format!("/v1/intents/{intent_id}"))),
+                    .delete(&self.url(&format!("/v1/threads/{thread_id}"))),
             )
             .set("If-Match", &revision.to_string())
-            .set("Idempotency-Key", &format!("delete-{intent_id}"));
+            .set("Idempotency-Key", &format!("delete-{thread_id}"));
         self.send(request.call())
     }
 
     // ——————————————————————————— Scope ———————————————————————————
 
     /// 读 Scope 委托树。
-    pub fn scopes(&self, intent_id: &IntentId) -> Result<Vec<ScopeView>> {
-        self.get_typed(&format!("/v1/intents/{intent_id}/scopes"))
+    pub fn scopes(&self, thread_id: &ThreadId) -> Result<Vec<ScopeView>> {
+        self.get_typed(&format!("/v1/threads/{thread_id}/scopes"))
     }
 
     /// 委托一个子 Scope。
     pub fn delegate(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         parent_scope: Option<&ScopeId>,
         task: &str,
         depends_on: &[ScopeId],
         max_effect: SideEffectKind,
     ) -> Result<ScopeId> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let body = json!({
             "parent_scope": parent_scope.map(|scope| scope.to_string()),
             "task": task,
             "depends_on": depends_on.iter().map(|scope| scope.to_string()).collect::<Vec<_>>(),
             "max_effect": side_effect_name(max_effect),
         });
-        let key = operation_key(&["scope", &intent_id.to_string(), &revision.to_string(), task]);
+        let key = operation_key(&["scope", &thread_id.to_string(), &revision.to_string(), task]);
         let value: Value = self.post_typed(
-            &format!("/v1/intents/{intent_id}/scopes"),
+            &format!("/v1/threads/{thread_id}/scopes"),
             &body,
             Some(revision),
             &key,
@@ -420,25 +420,25 @@ impl RuntimeClient {
     /// 启动或续跑一个 Scope。
     pub fn run_scope(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
         harness: Option<&str>,
-    ) -> Result<IntentSnapshot> {
-        let revision = self.revision_for(intent_id)?;
+    ) -> Result<ThreadSnapshot> {
+        let revision = self.revision_for(thread_id)?;
         let body = json!({ "harness": harness });
         let key = operation_key(&[
             "run-scope",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &scope_id.to_string(),
             &revision.to_string(),
         ]);
         let value = self.post_value(
-            &format!("/v1/intents/{intent_id}/scopes/{scope_id}/run"),
+            &format!("/v1/threads/{thread_id}/scopes/{scope_id}/run"),
             &body,
             Some(revision),
             &key,
         )?;
-        self.settle(value, intent_id)
+        self.settle(value, thread_id)
     }
 
     // ——————————————————————————— 注意力与决策 ———————————————————————————
@@ -448,55 +448,55 @@ impl RuntimeClient {
         self.get_typed("/v1/attention")
     }
 
-    /// 一个 Intent 的注意力视图：打断成本、全部窗口与待决请求。
-    pub fn attention(&self, intent_id: &IntentId) -> Result<AttentionView> {
-        self.get_typed(&format!("/v1/intents/{intent_id}/attention"))
+    /// 一个 Thread 的注意力视图：打断成本、全部窗口与待决请求。
+    pub fn attention(&self, thread_id: &ThreadId) -> Result<AttentionView> {
+        self.get_typed(&format!("/v1/threads/{thread_id}/attention"))
     }
 
     /// 提交一个决策。
     pub fn decide(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         request_id: &AttentionId,
         choice: DecisionChoice,
-    ) -> Result<IntentSnapshot> {
-        let revision = self.revision_for(intent_id)?;
+    ) -> Result<ThreadSnapshot> {
+        let revision = self.revision_for(thread_id)?;
         let body = json!({ "choice": choice });
         let key = operation_key(&[
             "decide",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &request_id.to_string(),
             &revision.to_string(),
         ]);
         let value = self.post_value(
-            &format!("/v1/intents/{intent_id}/decisions/{request_id}/resolve"),
+            &format!("/v1/threads/{thread_id}/decisions/{request_id}/resolve"),
             &body,
             Some(revision),
             &key,
         )?;
-        self.settle(value, intent_id)
+        self.settle(value, thread_id)
     }
 
     /// 提交一条注意力请求。
     pub fn submit_attention_request(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: Option<&ScopeId>,
         request: AttentionRequest,
     ) -> Result<AttentionId> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let body = json!({
             "scope_id": scope_id.map(|scope| scope.to_string()),
             "request": request,
         });
         let key = operation_key(&[
             "attention",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &revision.to_string(),
             &request.id.to_string(),
         ]);
         let value: Value = self.post_typed(
-            &format!("/v1/intents/{intent_id}/attention"),
+            &format!("/v1/threads/{thread_id}/attention"),
             &body,
             Some(revision),
             &key,
@@ -508,17 +508,17 @@ impl RuntimeClient {
 
     // ——————————————————————————— 唤醒 ———————————————————————————
 
-    /// 标记 Intent 正在等待外部事实。
-    pub fn wait_for_external(&self, intent_id: &IntentId, reason: &str) -> Result<IntentSnapshot> {
-        let revision = self.revision_for(intent_id)?;
+    /// 标记 Thread 正在等待外部事实。
+    pub fn wait_for_external(&self, thread_id: &ThreadId, reason: &str) -> Result<ThreadSnapshot> {
+        let revision = self.revision_for(thread_id)?;
         let body = json!({ "reason": reason });
         let key = operation_key(&[
             "wait-external",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &revision.to_string(),
         ]);
         let value = self.post_value(
-            &format!("/v1/intents/{intent_id}/wait-external"),
+            &format!("/v1/threads/{thread_id}/wait-external"),
             &body,
             Some(revision),
             &key,
@@ -526,24 +526,24 @@ impl RuntimeClient {
         self.snapshot_of(value)
     }
 
-    /// 记录一条外部事件并唤醒 Intent。
+    /// 记录一条外部事件并唤醒 Thread。
     pub fn record_external_event(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         source: &str,
         summary: &str,
-    ) -> Result<IntentSnapshot> {
-        let revision = self.revision_for(intent_id)?;
+    ) -> Result<ThreadSnapshot> {
+        let revision = self.revision_for(thread_id)?;
         let body = json!({ "source": source, "summary": summary });
         let key = operation_key(&[
             "event",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &revision.to_string(),
             source,
             summary,
         ]);
         let value = self.post_value(
-            &format!("/v1/intents/{intent_id}/events"),
+            &format!("/v1/threads/{thread_id}/events"),
             &body,
             Some(revision),
             &key,
@@ -554,20 +554,20 @@ impl RuntimeClient {
     /// 安排一个持久化唤醒 Timer。
     pub fn schedule_timer(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         seconds: i64,
         reason: &str,
     ) -> Result<String> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let body = json!({ "seconds": seconds, "reason": reason });
         let key = operation_key(&[
             "timer",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &revision.to_string(),
             &seconds.to_string(),
         ]);
         let value: Value = self.post_typed(
-            &format!("/v1/intents/{intent_id}/timers"),
+            &format!("/v1/threads/{thread_id}/timers"),
             &body,
             Some(revision),
             &key,
@@ -578,27 +578,27 @@ impl RuntimeClient {
     // ——————————————————————————— 计划 ———————————————————————————
 
     /// 当前计划、版本历史与影响分析。
-    pub fn plan(&self, intent_id: &IntentId) -> Result<PlanView> {
-        self.get_typed(&format!("/v1/intents/{intent_id}/plan"))
+    pub fn plan(&self, thread_id: &ThreadId) -> Result<PlanView> {
+        self.get_typed(&format!("/v1/threads/{thread_id}/plan"))
     }
 
     /// 分析一条外部事实对当前计划的影响。
     pub fn analyze_plan_impact(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         source_event_id: &str,
         source: &str,
         summary: &str,
     ) -> Result<Option<PlanImpact>> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let body = json!({
             "source_event_id": source_event_id,
             "source": source,
             "summary": summary,
         });
-        let key = operation_key(&["plan-impact", &intent_id.to_string(), &revision.to_string()]);
+        let key = operation_key(&["plan-impact", &thread_id.to_string(), &revision.to_string()]);
         self.post_typed(
-            &format!("/v1/intents/{intent_id}/plan/impact"),
+            &format!("/v1/threads/{thread_id}/plan/impact"),
             &body,
             Some(revision),
             &key,
@@ -609,7 +609,7 @@ impl RuntimeClient {
 
     /// 记忆投影。
     pub fn memory(&self) -> Result<MemoryView> {
-        self.get_typed("/v1/intents/else-system/memory")
+        self.get_typed("/v1/threads/else-system/memory")
     }
 
     /// 晋升一条记忆候选。
@@ -623,7 +623,7 @@ impl RuntimeClient {
             "scope": scope.map(memory_scope_name),
         });
         let key = operation_key(&["memory-promote", &memory_id.to_string()]);
-        self.post_typed("/v1/intents/else-system/memory/promote", &body, None, &key)
+        self.post_typed("/v1/threads/else-system/memory/promote", &body, None, &key)
     }
 
     /// 撤销一条记忆。
@@ -631,7 +631,7 @@ impl RuntimeClient {
         let body = json!({ "memory_id": memory_id.to_string(), "reason": reason });
         let key = operation_key(&["memory-revoke", &memory_id.to_string()]);
         let _: Value =
-            self.post_typed("/v1/intents/else-system/memory/revoke", &body, None, &key)?;
+            self.post_typed("/v1/threads/else-system/memory/revoke", &body, None, &key)?;
         Ok(())
     }
 
@@ -650,17 +650,17 @@ impl RuntimeClient {
             "value": value,
         });
         let key = operation_key(&["memory-correct", project, subject, predicate, value]);
-        self.post_typed("/v1/intents/else-system/memory/correct", &body, None, &key)
+        self.post_typed("/v1/threads/else-system/memory/correct", &body, None, &key)
     }
 
     // ——————————————————————————— 执行与工件 ———————————————————————————
 
     /// 创建一个检查点。
-    pub fn checkpoint(&self, intent_id: &IntentId) -> Result<Checkpoint> {
-        let revision = self.revision_for(intent_id)?;
-        let key = operation_key(&["checkpoint", &intent_id.to_string(), &revision.to_string()]);
+    pub fn checkpoint(&self, thread_id: &ThreadId) -> Result<Checkpoint> {
+        let revision = self.revision_for(thread_id)?;
+        let key = operation_key(&["checkpoint", &thread_id.to_string(), &revision.to_string()]);
         self.post_typed(
-            &format!("/v1/intents/{intent_id}/checkpoints"),
+            &format!("/v1/threads/{thread_id}/checkpoints"),
             &json!({}),
             Some(revision),
             &key,
@@ -670,20 +670,20 @@ impl RuntimeClient {
     /// 从检查点重跑一个 Scope。
     pub fn rerun(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         checkpoint_id: &str,
         alternative: bool,
     ) -> Result<(ScopeId, u64)> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let body = json!({ "checkpoint_id": checkpoint_id, "alternative": alternative });
         let key = operation_key(&[
             "rerun",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             checkpoint_id,
             &alternative.to_string(),
         ]);
         let value: Value = self.post_typed(
-            &format!("/v1/intents/{intent_id}/rerun"),
+            &format!("/v1/threads/{thread_id}/rerun"),
             &body,
             Some(revision),
             &key,
@@ -694,38 +694,38 @@ impl RuntimeClient {
         ))
     }
 
-    /// 对比同一 Intent 的两个 Scope。
-    pub fn compare(&self, intent_id: &IntentId) -> Result<String> {
-        let value: Value = self.get_typed(&format!("/v1/intents/{intent_id}/compare"))?;
+    /// 对比同一 Thread 的两个 Scope。
+    pub fn compare(&self, thread_id: &ThreadId) -> Result<String> {
+        let value: Value = self.get_typed(&format!("/v1/threads/{thread_id}/compare"))?;
         Ok(value["comparison"].as_str().unwrap_or_default().to_string())
     }
 
     /// 资源账：预算、累计用量与 Sandbox 证据。
-    pub fn resources(&self, intent_id: &IntentId) -> Result<ResourceView> {
-        self.get_typed(&format!("/v1/intents/{intent_id}/resources"))
+    pub fn resources(&self, thread_id: &ThreadId) -> Result<ResourceView> {
+        self.get_typed(&format!("/v1/threads/{thread_id}/resources"))
     }
 
     /// 配置 Opaque Harness Profile。
     pub fn configure_opaque_harness(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         policy: OpaqueHarnessPolicy,
-    ) -> Result<IntentSpec> {
-        let revision = self.revision_for(intent_id)?;
+    ) -> Result<ThreadSpec> {
+        let revision = self.revision_for(thread_id)?;
         let body = json!({
             "enabled": policy.enabled,
             "allow_native_provider_network": policy.allow_native_provider_network,
             "use_tool_gateway": policy.use_tool_gateway,
             "max_observed_effect": side_effect_name(policy.max_observed_effect),
         });
-        let key = operation_key(&["opaque", &intent_id.to_string(), &revision.to_string()]);
-        let spec: IntentSpec = self.post_typed(
-            &format!("/v1/intents/{intent_id}/opaque"),
+        let key = operation_key(&["opaque", &thread_id.to_string(), &revision.to_string()]);
+        let spec: ThreadSpec = self.post_typed(
+            &format!("/v1/threads/{thread_id}/opaque"),
             &body,
             Some(revision),
             &key,
         )?;
-        self.remember_revision(intent_id, spec.revision);
+        self.remember_revision(thread_id, spec.revision);
         Ok(spec)
     }
 
@@ -736,16 +736,16 @@ impl RuntimeClient {
         self.get_typed("/v1/world/brief")
     }
 
-    /// 一个 Intent 的 World 条目。
+    /// 一个 Thread 的 World 条目。
     pub fn world_items(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         include_resolved: bool,
     ) -> Result<Vec<WorldItem>> {
         let path = if include_resolved {
-            format!("/v1/intents/{intent_id}/world?include_resolved=1")
+            format!("/v1/threads/{thread_id}/world?include_resolved=1")
         } else {
-            format!("/v1/intents/{intent_id}/world")
+            format!("/v1/threads/{thread_id}/world")
         };
         self.get_typed(&path)
     }
@@ -753,12 +753,12 @@ impl RuntimeClient {
     /// 解决一个 World 条目。
     pub fn resolve_world_item(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         item_id: &WorldItemId,
         kind: WorldItemResolutionKind,
         note: Option<&str>,
     ) -> Result<WorldItem> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let body = json!({
             "item_id": item_id.to_string(),
             "kind": kind,
@@ -766,12 +766,12 @@ impl RuntimeClient {
         });
         let key = operation_key(&[
             "world-resolve",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &item_id.to_string(),
             &format!("{kind:?}"),
         ]);
         self.post_typed(
-            &format!("/v1/intents/{intent_id}/world/resolve"),
+            &format!("/v1/threads/{thread_id}/world/resolve"),
             &body,
             Some(revision),
             &key,
@@ -781,12 +781,12 @@ impl RuntimeClient {
     /// Project 世界。
     pub fn project_worlds(
         &self,
-        intent_id: Option<&IntentId>,
+        thread_id: Option<&ThreadId>,
         include_resolved: bool,
     ) -> Result<Vec<ProjectWorld>> {
         let mut path = "/v1/projects".to_string();
-        if let Some(intent_id) = intent_id {
-            path.push_str(&format!("?intent_id={intent_id}"));
+        if let Some(thread_id) = thread_id {
+            path.push_str(&format!("?thread_id={thread_id}"));
         }
         if include_resolved {
             path.push(if path.contains('?') { '&' } else { '?' });
@@ -798,12 +798,12 @@ impl RuntimeClient {
     /// 身份世界：联系人、客户、线程与里程碑。
     pub fn identity_worlds(
         &self,
-        intent_id: Option<&IntentId>,
+        thread_id: Option<&ThreadId>,
         include_resolved: bool,
     ) -> Result<Vec<IdentityWorld>> {
         let mut path = "/v1/identities".to_string();
-        if let Some(intent_id) = intent_id {
-            path.push_str(&format!("?intent_id={intent_id}"));
+        if let Some(thread_id) = thread_id {
+            path.push_str(&format!("?thread_id={thread_id}"));
         }
         if include_resolved {
             path.push(if path.contains('?') { '&' } else { '?' });
@@ -815,19 +815,19 @@ impl RuntimeClient {
     /// 纠正身份关联：Merge / Split / Rename。
     pub fn correct_world_correlation(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         correction: WorldCorrelationCorrection,
     ) -> Result<WorldCorrelationCorrection> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let body = serde_json::to_value(&correction)
             .map_err(|error| ClientError::Malformed(error.to_string()))?;
         let key = operation_key(&[
             "world-correction",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &revision.to_string(),
         ]);
         self.post_typed(
-            &format!("/v1/intents/{intent_id}/world/corrections"),
+            &format!("/v1/threads/{thread_id}/world/corrections"),
             &body,
             Some(revision),
             &key,
@@ -853,49 +853,49 @@ impl RuntimeClient {
         self.get_typed(&path)
     }
 
-    /// 解析 Signal，产出 Intent 候选。
-    pub fn resolve_signals(&self, intent_id: &IntentId) -> Result<Vec<IntentCandidate>> {
-        let revision = self.revision_for(intent_id)?;
+    /// 解析 Signal，产出 Thread 候选。
+    pub fn resolve_signals(&self, thread_id: &ThreadId) -> Result<Vec<ThreadCandidate>> {
+        let revision = self.revision_for(thread_id)?;
         let key = operation_key(&[
             "signals-resolve",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &revision.to_string(),
         ]);
         self.post_typed(
-            &format!("/v1/intents/{intent_id}/signals/resolve"),
+            &format!("/v1/threads/{thread_id}/signals/resolve"),
             &json!({}),
             Some(revision),
             &key,
         )
     }
 
-    /// 读取 Intent 候选。
-    pub fn intent_candidates(&self, cursor: u64) -> Result<Vec<IntentCandidateRecord>> {
+    /// 读取 Thread 候选。
+    pub fn thread_candidates(&self, cursor: u64) -> Result<Vec<ThreadCandidateRecord>> {
         self.get_typed(&format!("/v1/candidates?cursor={cursor}"))
     }
 
-    /// 读取一个 Intent 名下的候选。
-    pub fn intent_candidates_of(&self, intent_id: &IntentId) -> Result<Vec<IntentCandidateRecord>> {
-        self.get_typed(&format!("/v1/intents/{intent_id}/candidates"))
+    /// 读取一个 Thread 名下的候选。
+    pub fn thread_candidates_of(&self, thread_id: &ThreadId) -> Result<Vec<ThreadCandidateRecord>> {
+        self.get_typed(&format!("/v1/threads/{thread_id}/candidates"))
     }
 
-    /// 读取一个 Intent 收到的 World Signal。
-    pub fn world_signals_of(&self, intent_id: &IntentId) -> Result<Vec<WorldSignal>> {
-        self.get_typed(&format!("/v1/intents/{intent_id}/signals"))
+    /// 读取一个 Thread 收到的 World Signal。
+    pub fn world_signals_of(&self, thread_id: &ThreadId) -> Result<Vec<WorldSignal>> {
+        self.get_typed(&format!("/v1/threads/{thread_id}/signals"))
     }
 
-    /// 提出一个 Intent 候选。
-    pub fn propose_intent_candidate(
+    /// 提出一个 Thread 候选。
+    pub fn propose_thread_candidate(
         &self,
-        intent_id: &IntentId,
-        candidate: IntentCandidate,
-    ) -> Result<IntentCandidate> {
-        let revision = self.revision_for(intent_id)?;
+        thread_id: &ThreadId,
+        candidate: ThreadCandidate,
+    ) -> Result<ThreadCandidate> {
+        let revision = self.revision_for(thread_id)?;
         let body = serde_json::to_value(&candidate)
             .map_err(|error| ClientError::Malformed(error.to_string()))?;
-        let key = operation_key(&["candidate", &intent_id.to_string(), &revision.to_string()]);
+        let key = operation_key(&["candidate", &thread_id.to_string(), &revision.to_string()]);
         self.post_typed(
-            &format!("/v1/intents/{intent_id}/candidates"),
+            &format!("/v1/threads/{thread_id}/candidates"),
             &body,
             Some(revision),
             &key,
@@ -903,37 +903,37 @@ impl RuntimeClient {
     }
 
     /// 接受或拒绝一个候选。
-    pub fn resolve_intent_candidate(
+    pub fn resolve_thread_candidate(
         &self,
-        intent_id: &IntentId,
-        candidate_id: &IntentCandidateId,
+        thread_id: &ThreadId,
+        candidate_id: &ThreadCandidateId,
         accept: bool,
-    ) -> Result<(IntentCandidateRecord, Option<IntentSpec>)> {
-        let revision = self.revision_for(intent_id)?;
+    ) -> Result<(ThreadCandidateRecord, Option<ThreadSpec>)> {
+        let revision = self.revision_for(thread_id)?;
         let action = if accept { "accept" } else { "reject" };
         let key = operation_key(&[
             &format!("candidate-{action}"),
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &candidate_id.to_string(),
             &revision.to_string(),
         ]);
         let value: Value = self.post_typed(
-            &format!("/v1/intents/{intent_id}/candidates/{candidate_id}/{action}"),
+            &format!("/v1/threads/{thread_id}/candidates/{candidate_id}/{action}"),
             &json!({}),
             Some(revision),
             &key,
         )?;
-        let candidate: IntentCandidateRecord =
+        let candidate: ThreadCandidateRecord =
             serde_json::from_value(value["candidate"].clone())
                 .map_err(|error| ClientError::Malformed(error.to_string()))?;
-        let intent = match &value["intent"] {
+        let thread = match &value["thread"] {
             Value::Null => None,
             other => Some(
                 serde_json::from_value(other.clone())
                     .map_err(|error| ClientError::Malformed(error.to_string()))?,
             ),
         };
-        Ok((candidate, intent))
+        Ok((candidate, thread))
     }
 
     // ——————————————————————————— Connector ———————————————————————————
@@ -946,14 +946,14 @@ impl RuntimeClient {
     /// 注册一个 Connector。
     pub fn register_connector(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         name: &str,
         source: &str,
         adapter: &str,
         credential: Option<&ConnectorCredential>,
         sync_interval_seconds: u64,
     ) -> Result<ConnectorRegistration> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let body = json!({
             "name": name,
             "source": source,
@@ -963,53 +963,53 @@ impl RuntimeClient {
         });
         let key = operation_key(&[
             "connector",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &revision.to_string(),
             name,
             source,
         ]);
         self.post_typed(
-            &format!("/v1/intents/{intent_id}/connectors"),
+            &format!("/v1/threads/{thread_id}/connectors"),
             &body,
             Some(revision),
             &key,
         )
     }
 
-    /// 列出 Intent 的 Connector。
-    pub fn connectors(&self, intent_id: &IntentId) -> Result<Vec<ConnectorRegistration>> {
-        self.get_typed(&format!("/v1/intents/{intent_id}/connectors"))
+    /// 列出 Thread 的 Connector。
+    pub fn connectors(&self, thread_id: &ThreadId) -> Result<Vec<ConnectorRegistration>> {
+        self.get_typed(&format!("/v1/threads/{thread_id}/connectors"))
     }
 
     /// Connector 健康状况。
     pub fn connector_health(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
     ) -> Result<ConnectorHealthReport> {
         self.get_typed(&format!(
-            "/v1/intents/{intent_id}/connectors/{connector_id}/health"
+            "/v1/threads/{thread_id}/connectors/{connector_id}/health"
         ))
     }
 
     /// 替换 Connector 凭据。
     pub fn attach_connector_credential(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
         credential: ConnectorCredential,
     ) -> Result<ConnectorCredentialMetadata> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let body = serde_json::to_value(&credential)
             .map_err(|error| ClientError::Malformed(error.to_string()))?;
         let key = operation_key(&[
             "credential",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &connector_id.to_string(),
             &revision.to_string(),
         ]);
         self.post_typed(
-            &format!("/v1/intents/{intent_id}/connectors/{connector_id}/credential"),
+            &format!("/v1/threads/{thread_id}/connectors/{connector_id}/credential"),
             &body,
             Some(revision),
             &key,
@@ -1019,18 +1019,18 @@ impl RuntimeClient {
     /// 撤销 Connector 凭据。
     pub fn revoke_connector_credential(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
     ) -> Result<ConnectorCredentialMetadata> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let key = operation_key(&[
             "credential-revoke",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &connector_id.to_string(),
             &revision.to_string(),
         ]);
         self.post_typed(
-            &format!("/v1/intents/{intent_id}/connectors/{connector_id}/credential"),
+            &format!("/v1/threads/{thread_id}/connectors/{connector_id}/credential"),
             &json!({ "revoke": true }),
             Some(revision),
             &key,
@@ -1040,18 +1040,18 @@ impl RuntimeClient {
     /// 立即同步一个 Connector。
     pub fn sync_connector(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
     ) -> Result<ConnectorSyncResult> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let key = operation_key(&[
             "sync",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &connector_id.to_string(),
             &revision.to_string(),
         ]);
         self.post_typed(
-            &format!("/v1/intents/{intent_id}/connectors/{connector_id}/sync"),
+            &format!("/v1/threads/{thread_id}/connectors/{connector_id}/sync"),
             &json!({}),
             Some(revision),
             &key,
@@ -1061,18 +1061,18 @@ impl RuntimeClient {
     /// 重建游标并重新同步。
     pub fn repair_connector(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
     ) -> Result<ConnectorRepairReport> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let key = operation_key(&[
             "repair",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &connector_id.to_string(),
             &revision.to_string(),
         ]);
         self.post_typed(
-            &format!("/v1/intents/{intent_id}/connectors/{connector_id}/repair"),
+            &format!("/v1/threads/{thread_id}/connectors/{connector_id}/repair"),
             &json!({}),
             Some(revision),
             &key,
@@ -1082,45 +1082,45 @@ impl RuntimeClient {
     /// 配置 Connector 的受限自动接受策略。
     pub fn configure_connector_policy(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         policy: else_protocol::connector::ConnectorPolicy,
-    ) -> Result<IntentSpec> {
-        let revision = self.revision_for(intent_id)?;
+    ) -> Result<ThreadSpec> {
+        let revision = self.revision_for(thread_id)?;
         let body = serde_json::to_value(&policy)
             .map_err(|error| ClientError::Malformed(error.to_string()))?;
         let key = operation_key(&[
             "connector-policy",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &revision.to_string(),
         ]);
-        let spec: IntentSpec = self.post_typed(
-            &format!("/v1/intents/{intent_id}/connector-policy"),
+        let spec: ThreadSpec = self.post_typed(
+            &format!("/v1/threads/{thread_id}/connector-policy"),
             &body,
             Some(revision),
             &key,
         )?;
-        self.remember_revision(intent_id, spec.revision);
+        self.remember_revision(thread_id, spec.revision);
         Ok(spec)
     }
 
     // ——————————————————————————— 外部动作 ———————————————————————————
 
     /// 列出 Connector 动作。
-    pub fn connector_actions(&self, intent_id: &IntentId) -> Result<Vec<ConnectorAction>> {
-        self.get_typed(&format!("/v1/intents/{intent_id}/actions"))
+    pub fn connector_actions(&self, thread_id: &ThreadId) -> Result<Vec<ConnectorAction>> {
+        self.get_typed(&format!("/v1/threads/{thread_id}/actions"))
     }
 
     /// 提出一个外部动作。
     pub fn propose_connector_action(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
         capability: &str,
         target: &str,
         input: Value,
         idempotency_key: Option<&str>,
     ) -> Result<ConnectorAction> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let body = json!({
             "connector_id": connector_id.to_string(),
             "capability": capability,
@@ -1130,13 +1130,13 @@ impl RuntimeClient {
         });
         let key = operation_key(&[
             "action",
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &connector_id.to_string(),
             capability,
             target,
         ]);
         self.post_typed(
-            &format!("/v1/intents/{intent_id}/actions"),
+            &format!("/v1/threads/{thread_id}/actions"),
             &body,
             Some(revision),
             &key,
@@ -1146,19 +1146,19 @@ impl RuntimeClient {
     /// 执行 / 核验 / 补偿一个外部动作。
     pub fn connector_action(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         action_id: &ConnectorActionId,
         stage: &str,
     ) -> Result<ConnectorAction> {
-        let revision = self.revision_for(intent_id)?;
+        let revision = self.revision_for(thread_id)?;
         let key = operation_key(&[
             &format!("action-{stage}"),
-            &intent_id.to_string(),
+            &thread_id.to_string(),
             &action_id.to_string(),
             &revision.to_string(),
         ]);
         self.post_typed(
-            &format!("/v1/intents/{intent_id}/actions/{action_id}/{stage}"),
+            &format!("/v1/threads/{thread_id}/actions/{action_id}/{stage}"),
             &json!({}),
             Some(revision),
             &key,
@@ -1172,21 +1172,21 @@ impl RuntimeClient {
         self.get_typed("/v1/harnesses")
     }
 
-    /// Intent 的能力注册表。
-    pub fn capabilities(&self, intent_id: &IntentId) -> Result<Vec<CapabilityRegistration>> {
-        self.get_typed(&format!("/v1/intents/{intent_id}/capabilities"))
+    /// Thread 的能力注册表。
+    pub fn capabilities(&self, thread_id: &ThreadId) -> Result<Vec<CapabilityRegistration>> {
+        self.get_typed(&format!("/v1/threads/{thread_id}/capabilities"))
     }
 
-    /// Intent 的 Agent 绑定。
-    pub fn agent_bindings(&self, intent_id: &IntentId) -> Result<Vec<AgentBinding>> {
-        self.get_typed(&format!("/v1/intents/{intent_id}/bindings"))
+    /// Thread 的 Agent 绑定。
+    pub fn agent_bindings(&self, thread_id: &ThreadId) -> Result<Vec<AgentBinding>> {
+        self.get_typed(&format!("/v1/threads/{thread_id}/bindings"))
     }
 
     // ——————————————————————————— 事件 ———————————————————————————
 
-    /// 一个 Intent 的事件。
-    pub fn events(&self, intent_id: &IntentId) -> Result<Vec<EventResponse>> {
-        self.get_typed(&format!("/v1/intents/{intent_id}/events"))
+    /// 一个 Thread 的事件。
+    pub fn events(&self, thread_id: &ThreadId) -> Result<Vec<EventResponse>> {
+        self.get_typed(&format!("/v1/threads/{thread_id}/events"))
     }
 
     /// 全局事件增量。
@@ -1226,11 +1226,11 @@ impl RuntimeClient {
     }
 
     /// 重试失败的 Scope。
-    pub fn retry_failed_scopes(&self, intent_id: &IntentId) -> Result<Value> {
-        let revision = self.revision_for(intent_id)?;
-        let key = operation_key(&["retry", &intent_id.to_string(), &revision.to_string()]);
+    pub fn retry_failed_scopes(&self, thread_id: &ThreadId) -> Result<Value> {
+        let revision = self.revision_for(thread_id)?;
+        let key = operation_key(&["retry", &thread_id.to_string(), &revision.to_string()]);
         self.post_value(
-            &format!("/v1/intents/{intent_id}/repair/retry"),
+            &format!("/v1/threads/{thread_id}/repair/retry"),
             &json!({}),
             Some(revision),
             &key,
@@ -1272,14 +1272,14 @@ impl RuntimeClient {
         if self.version().is_ok() {
             return Ok(());
         }
-        self.list_intents().map(|_| ())
+        self.list_threads().map(|_| ())
     }
 }
 
 /// 幂等键：同一个逻辑写操作在任何重试里都用同一个键。
 ///
 /// daemon 见到重复的键会返回缓存的响应，不会重复执行副作用。
-/// 把 Intent 的 Revision 放进键里，状态一变键就变 —— 于是「重试」安全，
+/// 把 Thread 的 Revision 放进键里，状态一变键就变 —— 于是「重试」安全，
 /// 而「新的一次操作」不会被旧结果吞掉。
 fn operation_key(parts: &[&str]) -> String {
     parts
@@ -1317,7 +1317,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 
 /// 一次性操作的幂等键。
 ///
-/// 这类操作每次调用都应当真的重做（创建 Intent、改设置、清 Lease），
+/// 这类操作每次调用都应当真的重做（创建 Thread、改设置、清 Lease），
 /// 所以键里带一个随机量，避免被上一次的结果命中。
 fn unique_key(prefix: &str) -> String {
     format!("{prefix}:{}", uuid::Uuid::new_v4())
@@ -1339,6 +1339,6 @@ fn memory_scope_name(scope: &MemoryScope) -> String {
     match scope {
         MemoryScope::Global => "global".to_string(),
         MemoryScope::Project(project) => format!("project:{project}"),
-        MemoryScope::Intent(intent_id) => format!("intent:{intent_id}"),
+        MemoryScope::Thread(thread_id) => format!("thread:{thread_id}"),
     }
 }

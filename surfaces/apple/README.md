@@ -2,17 +2,17 @@
 
 macOS 原生壳，使用 SwiftUI 与 Swift Package Manager。目标不是再做一个聊天窗口，而是把 Runtime 投影收敛成三个主表面与常驻体验：
 
-- 今天：可解释 Priority、来源证据、分组 Personal Brief、外部事项、进行中 Intent 与 Decision 聚合
+- 今天：可解释 Priority、来源证据、分组 Personal Brief、外部事项、进行中 Thread 与 Decision 聚合
 - 世界：Project / Contact / Customer / Thread / Milestone 管理，支持 Rename / Merge / Split
 - 连接：Adapter 发现、连接器注册、凭据安全录入、Health 与手动同步
-- 待决策：只有真正需要本人的 Decision，按 Batch/Defer Window 聚合，可直接完成常用选项或进入完整 Intent
+- 待决策：只有真正需要本人的 Decision，按 Batch/Defer Window 聚合，可直接完成常用选项或进入完整 Thread
 - 结果：已收敛的 Outcome、证据与资源账；详情含 ConnectorAction 执行、核验、补偿与最终副作用结论
-- 动作创建：Intent 详情可选 Connector / 写 Capability 和目标；Capability Manifest 声明字段 Schema，新 Provider 可自动使用通用表单，Calendar、Linear、Notion 使用专用结构化表单；执行前可读取 Provider 当前值并查看字段级 Diff，高级 JSON 保留为 Escape Hatch
+- 动作创建：Thread 详情可选 Connector / 写 Capability 和目标；Capability Manifest 声明字段 Schema，新 Provider 可自动使用通用表单，Calendar、Linear、Notion 使用专用结构化表单；执行前可读取 Provider 当前值并查看字段级 Diff，高级 JSON 保留为 Escape Hatch
 - 常驻体验：内嵌 Runtime daemon、独立通知 Helper、SMAppService LaunchAgent、15/30/60 秒后台刷新、去重系统通知、Dock Badge、菜单栏 Quick Access 与设置页
-- macOS 原生入口：`else://` Deep Link、Services“用 else 处理”与 App Intents/Shortcuts
-- 数据导出：Settings 可导出 Intent、Event Ledger、工件内容与血缘；凭据本体和私有 Harness 状态不会进入导出
-- 数据删除：Intent 详情支持二次确认后的永久删除，会删除事件、关联凭据和 Scope Workspace
-- 数据 Retention：Settings 可选择 7 / 30 / 90 天后自动清理终态 Intent；默认关闭且开启需二次确认
+- macOS 原生入口：`else://` Deep Link、Services“用 else 处理”与 App Threads/Shortcuts
+- 数据导出：Settings 可导出 Thread、Event Ledger、工件内容与血缘；凭据本体和私有 Harness 状态不会进入导出
+- 数据删除：Thread 详情支持二次确认后的永久删除，会删除事件、关联凭据和 Scope Workspace
+- 数据 Retention：Settings 可选择 7 / 30 / 90 天后自动清理终态 Thread；默认关闭且开启需二次确认
 - 诊断报告：Settings 可导出数据库完整性、Connector Health、Storage、Retention 与运行版本的脱敏 JSON
 - Connector 修复：不健康连接可重建 Cursor 并重新同步，退避状态会先清零
 - Connector 认证：支持重新录入凭据、替换 Secret 引用与二次确认撤销
@@ -32,7 +32,7 @@ surfaces/apple/
 └── scripts/build-app.sh
 ```
 
-`ElseClientCore` 不依赖 SwiftUI，后续 iOS、菜单栏、Widget 与 App Intents 可复用。客户端不直接链接 Rust `Runtime`，只通过版本化 Runtime API 工作。
+`ElseClientCore` 不依赖 SwiftUI，后续 iOS、菜单栏、Widget 与 App Threads 可复用。客户端不直接链接 Rust `Runtime`，只通过版本化 Runtime API 工作。
 
 Deep Link 支持：
 
@@ -42,11 +42,11 @@ else://world
 else://connectors
 else://decisions
 else://results
-else://new-intent
-else://intent/{intent_id}
+else://new-thread
+else://thread/{thread_id}
 ```
 
-在支持 Services 的 App 中选中文本后，可从“服务”菜单选择“用 else 处理”提交 Intent。App Intents 提供“提交 else Intent”和“查看 else 今天”；Shortcuts 自动发现需要完整 Xcode 构建生成 App Intents Metadata，Command Line Tools 构建只验证代码编译。
+在支持 Services 的 App 中选中文本后，可从“服务”菜单选择“用 else 处理”提交 Thread。App Threads 提供“提交 else Thread”和“查看 else 今天”；Shortcuts 自动发现需要完整 Xcode 构建生成 App Threads Metadata，Command Line Tools 构建只验证代码编译。
 
 ## 本地运行
 
@@ -104,7 +104,7 @@ Else.app/Contents/
 
 正式签名构建会先签嵌套 daemon 与通知 Helper，再签整 App。Settings 可查看 Runtime / 通知 Helper 与 Token 状态，执行启动、停止、重启、重连和打开数据目录。ad-hoc 构建可以运行 App、内嵌 daemon 与通知 Helper，但 macOS 可能让 `SMAppService` 返回 `notFound`；完整的后台服务注册需要使用 Developer ID 构建和执行。
 
-`ElseNotifier` 位于主 App bundle 内，因此复用 `com.else.desktop` 的通知授权。它只在主 App 未运行时投递新 Decision，状态写入 Runtime 数据目录下的 0600 `notifier-state.json`。点击通知会以 `--open-intent <id>` 拉起主 App。
+`ElseNotifier` 位于主 App bundle 内，因此复用 `com.else.desktop` 的通知授权。它只在主 App 未运行时投递新 Decision，状态写入 Runtime 数据目录下的 0600 `notifier-state.json`。点击通知会以 `--open-thread <id>` 拉起主 App。
 
 开发时可单独检查通知 Helper：
 
@@ -115,33 +115,33 @@ Else.app/Contents/
 
 ## Runtime API v1
 
-以下 HTTP 契约由 `else serve` / `else-daemon` 实现。除健康检查外均要求 `Authorization: Bearer <token>`；POST 要求 `Idempotency-Key`，run/Decision/Abort 还要求 `If-Match: <intent_revision>`：
+以下 HTTP 契约由 `else serve` / `else-daemon` 实现。除健康检查外均要求 `Authorization: Bearer <token>`；POST 要求 `Idempotency-Key`，run/Decision/Abort 还要求 `If-Match: <thread_revision>`：
 
 | Method | Path | Response |
 | --- | --- | --- |
-| `GET` | `/v1/intents` | `[IntentSnapshot]` |
-| `GET` | `/v1/intents/{intent_id}` | `IntentSnapshot` |
-| `POST` | `/v1/intents` | `IntentSnapshot` |
-| `POST` | `/v1/intents/{intent_id}/run` | `IntentSnapshot` |
-| `POST` | `/v1/intents/{intent_id}/decisions/{decision_id}/resolve` | `IntentSnapshot` |
-| `POST` | `/v1/intents/{intent_id}/abort` | `IntentSnapshot` |
+| `GET` | `/v1/threads` | `[ThreadSnapshot]` |
+| `GET` | `/v1/threads/{thread_id}` | `ThreadSnapshot` |
+| `POST` | `/v1/threads` | `ThreadSnapshot` |
+| `POST` | `/v1/threads/{thread_id}/run` | `ThreadSnapshot` |
+| `POST` | `/v1/threads/{thread_id}/decisions/{decision_id}/resolve` | `ThreadSnapshot` |
+| `POST` | `/v1/threads/{thread_id}/abort` | `ThreadSnapshot` |
 | `GET` | `/v1/world/brief` | `PersonalBrief` |
-| `POST` | `/v1/intents/{intent_id}/world/resolve` | `WorldItem` |
+| `POST` | `/v1/threads/{thread_id}/world/resolve` | `WorldItem` |
 | `GET` | `/v1/operations/{operation_id}` | `Operation` |
 | `GET` | `/v1/events?cursor=42` | `[Event]` |
-| `GET/POST` | `/v1/intents/{intent_id}/capabilities` | `[Capability]` / `Capability` |
-| `GET/POST` | `/v1/intents/{intent_id}/bindings` | `[AgentBinding]` / `AgentBinding` |
-| `POST` | `/v1/intents/{intent_id}/bindings/{binding_id}/revoke` | `{"ok": true}` |
-| `POST` | `/v1/intents/{intent_id}/bindings/{binding_id}/dispatch` | `IntentSnapshot` |
-| `POST` | `/v1/intents/{intent_id}/bindings/{binding_id}/state` | `{"ok": true}` |
-| `GET` | `/v1/intents/{intent_id}/bindings/{binding_id}/events?cursor=42` | `[BindingEvent]` |
-| `GET` | `/v1/intents/{intent_id}/bindings/{binding_id}/events/stream` | SSE `text/event-stream` |
+| `GET/POST` | `/v1/threads/{thread_id}/capabilities` | `[Capability]` / `Capability` |
+| `GET/POST` | `/v1/threads/{thread_id}/bindings` | `[AgentBinding]` / `AgentBinding` |
+| `POST` | `/v1/threads/{thread_id}/bindings/{binding_id}/revoke` | `{"ok": true}` |
+| `POST` | `/v1/threads/{thread_id}/bindings/{binding_id}/dispatch` | `ThreadSnapshot` |
+| `POST` | `/v1/threads/{thread_id}/bindings/{binding_id}/state` | `{"ok": true}` |
+| `GET` | `/v1/threads/{thread_id}/bindings/{binding_id}/events?cursor=42` | `[BindingEvent]` |
+| `GET` | `/v1/threads/{thread_id}/bindings/{binding_id}/events/stream` | SSE `text/event-stream` |
 | `POST` | `/v1/binding-events` | Agent callback using binding session Bearer |
 
 Connector Action 的当前值 Preview 使用：
 
 ```text
-POST /v1/intents/{intent_id}/connectors/{connector_id}/actions/preview
+POST /v1/threads/{thread_id}/connectors/{connector_id}/actions/preview
 ```
 
 请求体包含 `capability`、`target` 与 `input`；响应返回 Provider 当前可写字段和拟提交字段，不创建 Action，也不产生外部写副作用。
@@ -152,15 +152,15 @@ Runtime 数据导出使用：
 GET /v1/export
 ```
 
-响应为版本化 JSON，包含 Intent、完整事件流、工件内容与 Credential 元数据引用。daemon Token、凭据本体、私有 Harness 目录和越界工件路径不会写入导出。
+响应为版本化 JSON，包含 Thread、完整事件流、工件内容与 Credential 元数据引用。daemon Token、凭据本体、私有 Harness 目录和越界工件路径不会写入导出。
 
-Intent 永久删除使用：
+Thread 永久删除使用：
 
 ```text
-DELETE /v1/intents/{intent_id}
+DELETE /v1/threads/{thread_id}
 ```
 
-请求必须携带 `Idempotency-Key` 和 `If-Match`。非终态 Intent 会先安全 Abort；删除范围包含事件、关联凭据与 Scope Workspace。共享 CAS Blob 不会盲目删除，响应会明确报告保留状态与清理错误。
+请求必须携带 `Idempotency-Key` 和 `If-Match`。非终态 Thread 会先安全 Abort；删除范围包含事件、关联凭据与 Scope Workspace。共享 CAS Blob 不会盲目删除，响应会明确报告保留状态与清理错误。
 
 Runtime 设置使用：
 
@@ -169,7 +169,7 @@ GET  /v1/settings
 POST /v1/settings
 ```
 
-当前设置项为 `retention_days`。`null` 表示永不自动删除；有效范围为 1–3650。自动 Retention 只删除超过期限的 Completed / Failed / Cancelled Intent。
+当前设置项为 `retention_days`。`null` 表示永不自动删除；有效范围为 1–3650。自动 Retention 只删除超过期限的 Completed / Failed / Cancelled Thread。
 
 Runtime 诊断使用：
 
@@ -177,12 +177,12 @@ Runtime 诊断使用：
 GET /v1/diagnostics
 ```
 
-报告包含数据库 `PRAGMA integrity_check`、事件量、Intent 状态分布、Connector Health、Storage 占用、Credential Backend 与 Retention。不会包含 Token、凭据本体、私有 Harness 文件或绝对用户路径。
+报告包含数据库 `PRAGMA integrity_check`、事件量、Thread 状态分布、Connector Health、Storage 占用、Credential Backend 与 Retention。不会包含 Token、凭据本体、私有 Harness 文件或绝对用户路径。
 
 Connector 修复使用：
 
 ```text
-POST /v1/intents/{intent_id}/connectors/{connector_id}/repair
+POST /v1/threads/{thread_id}/connectors/{connector_id}/repair
 ```
 
 修复会追加 `ConnectorCursorReset` 事件、清零失败退避并重新执行同步。返回同步继续失败时仍会明确报告错误，不会伪造成功。
@@ -190,8 +190,8 @@ POST /v1/intents/{intent_id}/connectors/{connector_id}/repair
 Connector 凭据维护使用：
 
 ```text
-POST   /v1/intents/{intent_id}/connectors/{connector_id}/credential
-DELETE /v1/intents/{intent_id}/connectors/{connector_id}/credential
+POST   /v1/threads/{thread_id}/connectors/{connector_id}/credential
+DELETE /v1/threads/{thread_id}/connectors/{connector_id}/credential
 ```
 
 新凭据会替换现有引用并立即刷新 Health。撤销后 Connector 同步失败关闭，直到重新认证。
@@ -207,12 +207,12 @@ POST /v1/diagnostics/leases/cleanup
 异常 Run / Scope 安全重试使用：
 
 ```text
-POST /v1/intents/{intent_id}/repair/retry
+POST /v1/threads/{thread_id}/repair/retry
 ```
 
 请求会追加 `ScopeRetryApproved`，清零失败 Scope 的失败计数，恢复 Running / Active，并以新 Generation 交回 Kernel。该操作不会直接标记完成；重试后的执行仍可能失败并进入正常收敛。
 
-`IntentSnapshot` 是 UI 投影，不是 Runtime 权威状态：
+`ThreadSnapshot` 是 UI 投影，不是 Runtime 权威状态：
 
 ```json
 {

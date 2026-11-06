@@ -56,24 +56,24 @@ public struct AttentionWindow: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct AttentionWindowRecord: Codable, Equatable, Identifiable, Sendable {
-    public let intentID: IntentID
+    public let threadID: ThreadID
     public let window: AttentionWindow
     public let requests: [AttentionRequest]
 
     public var id: AttentionWindowID { window.id }
 
     public init(
-        intentID: IntentID,
+        threadID: ThreadID,
         window: AttentionWindow,
         requests: [AttentionRequest]
     ) {
-        self.intentID = intentID
+        self.threadID = threadID
         self.window = window
         self.requests = requests
     }
 
     private enum CodingKeys: String, CodingKey {
-        case intentID = "intent_id"
+        case threadID = "thread_id"
         case window
         case requests
     }

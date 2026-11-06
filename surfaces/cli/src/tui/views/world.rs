@@ -1,13 +1,13 @@
 //! World：承诺、等待、行动与风险。
 
-use else_protocol::ids::IntentId;
+use else_protocol::ids::ThreadId;
 use else_protocol::world::{WorldItem, WorldItemResolutionKind};
 
 use super::super::row::{Pane, Row, RowAction};
 use super::super::theme;
 
 /// World 条目列表。
-pub fn pane(items: &[WorldItem], intent_id: Option<&IntentId>) -> Pane {
+pub fn pane(items: &[WorldItem], thread_id: Option<&ThreadId>) -> Pane {
     let mut rows = Vec::new();
     if items.is_empty() {
         rows.push(Row::muted("nothing open in this world"));
@@ -17,7 +17,7 @@ pub fn pane(items: &[WorldItem], intent_id: Option<&IntentId>) -> Pane {
         };
     }
     for item in items {
-        rows.push(item_row(intent_id, item));
+        rows.push(item_row(thread_id, item));
     }
     Pane {
         title: "World".into(),
@@ -27,8 +27,8 @@ pub fn pane(items: &[WorldItem], intent_id: Option<&IntentId>) -> Pane {
 
 /// 一个 World 条目。
 ///
-/// `intent_id` 缺省时取条目自己的归属 —— World 条目总是属于某个 Intent。
-pub fn item_row(intent_id: Option<&IntentId>, item: &WorldItem) -> Row {
+/// `thread_id` 缺省时取条目自己的归属 —— World 条目总是属于某个 Thread。
+pub fn item_row(thread_id: Option<&ThreadId>, item: &WorldItem) -> Row {
     let style = match item.state {
         else_protocol::world::WorldItemState::Overdue => theme::critical(),
         else_protocol::world::WorldItemState::AtRisk => theme::warning(),
@@ -45,14 +45,14 @@ pub fn item_row(intent_id: Option<&IntentId>, item: &WorldItem) -> Row {
         "  {:?}  {:?}  due={due}  {}",
         item.kind, item.state, item.title
     );
-    let intent_id = intent_id
+    let thread_id = thread_id
         .cloned()
-        .unwrap_or_else(|| IntentId::from("unknown"));
+        .unwrap_or_else(|| ThreadId::from("unknown"));
     Row::action(
         text,
         style,
         RowAction::ResolveWorld {
-            intent_id,
+            thread_id,
             item_id: item.id.clone(),
             kind: WorldItemResolutionKind::Completed,
         },

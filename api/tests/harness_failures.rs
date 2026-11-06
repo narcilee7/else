@@ -7,9 +7,9 @@ use else_protocol::event::EventPayload;
 use else_protocol::harness::{
     CancelSupport, HarnessCapabilities, ToolEffectVisibility, UsageSupport,
 };
-use else_protocol::ids::IntentId;
-use else_protocol::intent::IntentState;
+use else_protocol::ids::ThreadId;
 use else_protocol::resource::{ModelUsage, UsageBasis};
+use else_protocol::thread::ThreadState;
 
 struct JsonParser;
 
@@ -60,9 +60,9 @@ fn fake_harness(
     }
 }
 
-fn payloads(runtime: &Runtime, intent_id: &IntentId) -> Vec<String> {
+fn payloads(runtime: &Runtime, thread_id: &ThreadId) -> Vec<String> {
     runtime
-        .events(intent_id)
+        .events(thread_id)
         .unwrap()
         .iter()
         .map(|e| serde_json::to_string(&e.envelope.payload).unwrap())
@@ -74,7 +74,7 @@ fn payloads(runtime: &Runtime, intent_id: &IntentId) -> Vec<String> {
 fn prepare_failure_is_startup_failure() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("启动失败", None).unwrap();
+    let spec = runtime.create_thread("启动失败", None).unwrap();
     let mut harness = fake_harness("true", None);
     harness.prepare = Box::new(|_, _, _| {
         Err(std::io::Error::new(
@@ -97,7 +97,7 @@ fn prepare_failure_is_startup_failure() {
 fn crash_exit_carries_stderr_evidence() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("崩溃证据", None).unwrap();
+    let spec = runtime.create_thread("崩溃证据", None).unwrap();
     let error = runtime
         .run_adapter(
             &spec.id,
@@ -113,7 +113,7 @@ fn crash_exit_carries_stderr_evidence() {
 fn timeout_kills_process_and_fails() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("超时收敛", None).unwrap();
+    let spec = runtime.create_thread("超时收敛", None).unwrap();
     let started = std::time::Instant::now();
     let error = runtime
         .run_adapter(
@@ -151,19 +151,19 @@ fn timeout_kills_process_and_fails() {
 fn abort_mid_run_fences_late_output() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("运行中取消", None).unwrap();
-    let intent_id = spec.id.clone();
+    let spec = runtime.create_thread("运行中取消", None).unwrap();
+    let thread_id = spec.id.clone();
 
     // 慢速 Harness：先发一行输出，睡 3 秒后才报告完成
     let script = "printf '%s\n' '{\"type\":\"output\",\"text\":\"第一步\"}'; sleep 3; \
                   printf '%s\n' '{\"type\":\"completed\",\"summary\":\"完成\"}'";
     let abort_dir = dir.path().to_path_buf();
-    let abort_intent = intent_id.clone();
+    let abort_thread = thread_id.clone();
     let aborter = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(800));
         let runtime = Runtime::open(&abort_dir).unwrap();
         for _ in 0..20 {
-            if runtime.abort(&abort_intent, "测试中途取消").is_ok() {
+            if runtime.abort(&abort_thread, "测试中途取消").is_ok() {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
@@ -171,7 +171,7 @@ fn abort_mid_run_fences_late_output() {
         panic!("abort 未成功");
     });
 
-    let result = runtime.run_adapter(&intent_id, &fake_harness(script, None));
+    let result = runtime.run_adapter(&thread_id, &fake_harness(script, None));
     aborter.join().unwrap();
 
     // 执行被围栏：返回错误，绝不容忍晚到的 Completed 验收
@@ -180,7 +180,7 @@ fn abort_mid_run_fences_late_output() {
         error.to_string().contains("generation fenced"),
         "实际错误：{error}"
     );
-    let events = runtime.events(&intent_id).unwrap();
+    let events = runtime.events(&thread_id).unwrap();
     let outputs = events
         .iter()
         .filter(|e| matches!(e.envelope.payload, EventPayload::HarnessOutput { .. }))
@@ -190,8 +190,8 @@ fn abort_mid_run_fences_late_output() {
         .iter()
         .any(|e| matches!(e.envelope.payload, EventPayload::OutcomeVerified { .. })));
     assert_eq!(
-        runtime.projection(&intent_id).unwrap().state,
-        Some(IntentState::Cancelled)
+        runtime.projection(&thread_id).unwrap().state,
+        Some(ThreadState::Cancelled)
     );
 }
 
@@ -218,7 +218,7 @@ fn missing_usage_is_unknown_not_zero() {
 fn completion_without_done_when_evidence_is_not_verified() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("必须真实产出文件", None).unwrap();
+    let spec = runtime.create_thread("必须真实产出文件", None).unwrap();
     let script = r#"printf '%s\n' '{"type":"completed","summary":"我完成了"}'"#;
     let error = runtime
         .run_adapter(&spec.id, &fake_harness(script, None))
@@ -233,6 +233,6 @@ fn completion_without_done_when_evidence_is_not_verified() {
         .any(|event| matches!(event.envelope.payload, EventPayload::OutcomeVerified { .. })));
     assert_ne!(
         runtime.projection(&spec.id).unwrap().state,
-        Some(IntentState::Completed)
+        Some(ThreadState::Completed)
     );
 }

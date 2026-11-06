@@ -4,13 +4,13 @@ use else_api::Runtime;
 use else_protocol::capability::{AgentTransport, CapabilityKind};
 use else_protocol::ids::AgentId;
 #[cfg(target_os = "macos")]
-use else_protocol::intent::OpaqueHarnessPolicy;
+use else_protocol::thread::OpaqueHarnessPolicy;
 
 #[test]
 fn skill_registration_and_agent_binding_are_replayable() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("Capability registry", None).unwrap();
+    let spec = runtime.create_thread("Capability registry", None).unwrap();
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let skill = runtime
         .register_skill(
@@ -70,7 +70,7 @@ fn skill_registration_and_agent_binding_are_replayable() {
 fn local_process_binding_dispatches_outbound_agent_and_verifies_result() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("Bound agent outcome", None).unwrap();
+    let spec = runtime.create_thread("Bound agent outcome", None).unwrap();
     runtime
         .configure_opaque_harness(
             &spec.id,
@@ -108,7 +108,7 @@ fn local_process_binding_dispatches_outbound_agent_and_verifies_result() {
         .unwrap();
     assert_eq!(
         projection.state,
-        Some(else_protocol::intent::IntentState::Completed)
+        Some(else_protocol::thread::ThreadState::Completed)
     );
     assert!(runtime
         .events(&spec.id)
@@ -125,7 +125,7 @@ fn local_process_binding_dispatches_outbound_agent_and_verifies_result() {
 fn mcp_discovery_registers_tools_with_manifest_effects() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("MCP discovery", None).unwrap();
+    let spec = runtime.create_thread("MCP discovery", None).unwrap();
     std::fs::write(
         dir.path().join("workspace/mcp.sh"),
         r#"while IFS= read -r line; do
@@ -161,7 +161,7 @@ done
 fn mcp_stdio_binding_dispatches_task_through_selected_tool() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("MCP binding outcome", None).unwrap();
+    let spec = runtime.create_thread("MCP binding outcome", None).unwrap();
     runtime
         .configure_opaque_harness(
             &spec.id,
@@ -206,6 +206,6 @@ done
         .unwrap();
     assert_eq!(
         projection.state,
-        Some(else_protocol::intent::IntentState::Completed)
+        Some(else_protocol::thread::ThreadState::Completed)
     );
 }

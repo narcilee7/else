@@ -5,7 +5,7 @@ fn diagnostics_report_contains_health_and_storage_without_secrets() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_intent("诊断测试", Some("else".into()))
+        .create_thread("诊断测试", Some("else".into()))
         .unwrap();
     runtime.drive(&spec.id, None, 16).unwrap();
     runtime
@@ -18,8 +18,8 @@ fn diagnostics_report_contains_health_and_storage_without_secrets() {
     assert!(report.healthy);
     assert_eq!(report.database_integrity, "ok");
     assert!(report.event_count > 0);
-    assert_eq!(report.intent_count, 1);
-    assert_eq!(report.intent_states.get("needs_decision"), Some(&1));
+    assert_eq!(report.thread_count, 1);
+    assert_eq!(report.thread_states.get("needs_decision"), Some(&1));
     assert!(!report.scopes.is_empty());
     assert!(report.scopes[0].generation >= 1);
     assert!(report.storage.database_bytes > 0);

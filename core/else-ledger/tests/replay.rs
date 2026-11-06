@@ -1,23 +1,23 @@
 //! 重放一致性是 M0 的永久回归测试：
 //! 事件写入 → 模拟进程崩溃（关闭连接）→ 重开 → 重放，投影必须一致。
 
-use else_ledger::{IntentProjection, Ledger};
+use else_ledger::{Ledger, ThreadProjection};
 use else_protocol::attention::{
     AttentionKind, AttentionRequest, Decision, DecisionChoice, DecisionOption, ExpectedLoss,
 };
 use else_protocol::effect::{SideEffectKind, ToolCall};
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::ids::*;
-use else_protocol::intent::{AttentionPolicy, Authority, Criterion, IntentSpec, IntentState};
+use else_protocol::thread::{AttentionPolicy, Authority, Criterion, ThreadSpec, ThreadState};
 
-fn spec(intent_id: &IntentId) -> IntentSpec {
-    IntentSpec {
-        id: intent_id.clone(),
+fn spec(thread_id: &ThreadId) -> ThreadSpec {
+    ThreadSpec {
+        id: thread_id.clone(),
         revision: 1,
         outcome: "今天达到可对外发布".into(),
         done_when: vec![Criterion {
             description: "构建通过且产物可运行".into(),
-            verification: else_protocol::intent::CriterionVerification::FileExists {
+            verification: else_protocol::thread::CriterionVerification::FileExists {
                 path: "plan.md".into(),
             },
         }],
@@ -30,7 +30,7 @@ fn spec(intent_id: &IntentId) -> IntentSpec {
             allow_interrupt: true,
             batch_interval_minutes: 30,
         },
-        opaque_harness_policy: else_protocol::intent::OpaqueHarnessPolicy::default(),
+        opaque_harness_policy: else_protocol::thread::OpaqueHarnessPolicy::default(),
         deadline: None,
         assumptions: vec![],
         project: None,
@@ -60,7 +60,7 @@ fn request() -> AttentionRequest {
 }
 
 /// 一条最小闭环：创建 → 执行 → 工具调用 → 本人决策 → 完成。
-fn closed_loop_events(intent_id: &IntentId, scope_id: &ScopeId) -> Vec<EventEnvelope> {
+fn closed_loop_events(thread_id: &ThreadId, scope_id: &ScopeId) -> Vec<EventEnvelope> {
     let run_id = RunId::new();
     let req = request();
     let decision = Decision {
@@ -71,17 +71,17 @@ fn closed_loop_events(intent_id: &IntentId, scope_id: &ScopeId) -> Vec<EventEnve
     };
     vec![
         EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             1,
             1,
             Actor::User,
-            EventPayload::IntentCreated {
-                spec: spec(intent_id),
+            EventPayload::ThreadCreated {
+                spec: spec(thread_id),
             },
         ),
         EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             1,
             1,
@@ -93,7 +93,7 @@ fn closed_loop_events(intent_id: &IntentId, scope_id: &ScopeId) -> Vec<EventEnve
             },
         ),
         EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             1,
             1,
@@ -109,7 +109,7 @@ fn closed_loop_events(intent_id: &IntentId, scope_id: &ScopeId) -> Vec<EventEnve
             },
         ),
         EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             1,
             1,
@@ -117,7 +117,7 @@ fn closed_loop_events(intent_id: &IntentId, scope_id: &ScopeId) -> Vec<EventEnve
             EventPayload::AttentionRequested { request: req },
         ),
         EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             1,
             1,
@@ -125,20 +125,20 @@ fn closed_loop_events(intent_id: &IntentId, scope_id: &ScopeId) -> Vec<EventEnve
             EventPayload::DecisionResolved { decision },
         ),
         EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             1,
             1,
             Actor::System,
-            EventPayload::IntentStateChanged {
-                state: IntentState::Completed,
+            EventPayload::ThreadStateChanged {
+                state: ThreadState::Completed,
             },
         ),
     ]
 }
 
-fn replay_projection(ledger: &Ledger) -> IntentProjection {
-    let mut projection = IntentProjection::default();
+fn replay_projection(ledger: &Ledger) -> ThreadProjection {
+    let mut projection = ThreadProjection::default();
     ledger.replay(&mut projection).unwrap();
     projection
 }
@@ -150,9 +150,9 @@ fn replay_after_crash_is_consistent() {
 
     let before = {
         let ledger = Ledger::open(&db_path).unwrap();
-        let intent_id = IntentId::new();
+        let thread_id = ThreadId::new();
         let scope_id = ScopeId::new();
-        for event in closed_loop_events(&intent_id, &scope_id) {
+        for event in closed_loop_events(&thread_id, &scope_id) {
             ledger.append(&event).unwrap();
         }
         replay_projection(&ledger)
@@ -164,7 +164,7 @@ fn replay_after_crash_is_consistent() {
     let after = replay_projection(&ledger);
     assert_eq!(before, after);
 
-    assert_eq!(after.state, Some(IntentState::Completed));
+    assert_eq!(after.state, Some(ThreadState::Completed));
     assert!(after.open_requests.is_empty(), "决策后队列必须清空");
     assert_eq!(after.cursor, 6);
     assert_eq!(after.spec.unwrap().revision, 1);
@@ -173,9 +173,9 @@ fn replay_after_crash_is_consistent() {
 #[test]
 fn seq_is_monotonic_and_cursor_tracks_watermark() {
     let ledger = Ledger::open_in_memory().unwrap();
-    let intent_id = IntentId::new();
+    let thread_id = ThreadId::new();
     let scope_id = ScopeId::new();
-    let events = closed_loop_events(&intent_id, &scope_id);
+    let events = closed_loop_events(&thread_id, &scope_id);
 
     for (i, event) in events.iter().enumerate() {
         let stored = ledger.append(event).unwrap();
@@ -185,15 +185,15 @@ fn seq_is_monotonic_and_cursor_tracks_watermark() {
 
     // 增量重放：检查点水位之后的事件
     assert_eq!(ledger.read_after(3).unwrap().len(), 3);
-    assert_eq!(ledger.read_intent(&intent_id).unwrap().len(), 6);
+    assert_eq!(ledger.read_thread(&thread_id).unwrap().len(), 6);
 }
 
 #[test]
 fn decision_queue_tracks_open_requests() {
     let ledger = Ledger::open_in_memory().unwrap();
-    let intent_id = IntentId::new();
+    let thread_id = ThreadId::new();
     let scope_id = ScopeId::new();
-    let events = closed_loop_events(&intent_id, &scope_id);
+    let events = closed_loop_events(&thread_id, &scope_id);
 
     // 只重放到决策之前：队列里应有一条待本人决策
     for event in &events[..4] {
@@ -206,12 +206,12 @@ fn decision_queue_tracks_open_requests() {
 #[test]
 fn silent_requests_never_enter_the_actionable_decision_queue() {
     let ledger = Ledger::open_in_memory().unwrap();
-    let intent_id = IntentId::new();
+    let thread_id = ThreadId::new();
     let scope_id = ScopeId::new();
     let request = request();
     let envelope = |payload| {
         EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             1,
             1,
@@ -249,22 +249,22 @@ fn silent_requests_never_enter_the_actionable_decision_queue() {
 #[test]
 fn incompatible_protocol_version_is_rejected() {
     let ledger = Ledger::open_in_memory().unwrap();
-    let intent_id = IntentId::new();
+    let thread_id = ThreadId::new();
     let scope_id = ScopeId::new();
     let mut event = EventEnvelope::new(
-        intent_id,
+        thread_id,
         scope_id,
         1,
         1,
         Actor::System,
-        EventPayload::IntentStateChanged {
-            state: IntentState::Active,
+        EventPayload::ThreadStateChanged {
+            state: ThreadState::Active,
         },
     );
     event.protocol_version = "0.0.0".into();
     ledger.append(&event).unwrap();
 
-    let mut projection = IntentProjection::default();
+    let mut projection = ThreadProjection::default();
     let err = ledger.replay(&mut projection).unwrap_err();
     assert!(matches!(
         err,

@@ -1,13 +1,13 @@
 import ElseClientCore
 import SwiftUI
 
-struct IntentDetailView: View {
+struct ThreadDetailView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isProposingAction = false
     @State private var isConfirmingDelete = false
     @State private var isConfirmingRetry = false
-    let snapshot: IntentSnapshot?
+    let snapshot: ThreadSnapshot?
 
     var body: some View {
         Group {
@@ -20,8 +20,8 @@ struct IntentDetailView: View {
                             decisions(snapshot)
                         }
 
-                        if !store.actionsByIntent[snapshot.id, default: []].isEmpty
-                            || !store.connectorsByIntent[snapshot.id, default: []].isEmpty
+                        if !store.actionsByThread[snapshot.id, default: []].isEmpty
+                            || !store.connectorsByThread[snapshot.id, default: []].isEmpty
                         {
                             connectorActions(snapshot)
                         }
@@ -37,12 +37,12 @@ struct IntentDetailView: View {
                 .background(ElseColor.canvas)
             } else {
                 QuietEmptyState(
-                    title: "选择一个 Intent",
+                    title: "选择一个 Thread",
                     description: "目标、决策、证据与资源账会显示在这里。"
                 )
             }
         }
-        .navigationTitle(snapshot?.spec.outcome ?? "Intent")
+        .navigationTitle(snapshot?.spec.outcome ?? "Thread")
         .toolbar {
             if let snapshot {
                 ToolbarItemGroup {
@@ -52,14 +52,14 @@ struct IntentDetailView: View {
                         } label: {
                             Label("继续执行", systemImage: "play")
                         }
-                        .disabled(store.mutatingIntentIDs.contains(snapshot.id))
+                        .disabled(store.mutatingThreadIDs.contains(snapshot.id))
 
                         Button(role: .destructive) {
                             Task { await store.abort(snapshot) }
                         } label: {
                             Label("取消", systemImage: "stop")
                         }
-                        .disabled(store.mutatingIntentIDs.contains(snapshot.id))
+                        .disabled(store.mutatingThreadIDs.contains(snapshot.id))
                     }
 
                     if snapshot.state == .failed {
@@ -68,7 +68,7 @@ struct IntentDetailView: View {
                         } label: {
                             Label("修复并重试", systemImage: "arrow.clockwise.circle")
                         }
-                        .disabled(store.mutatingIntentIDs.contains(snapshot.id))
+                        .disabled(store.mutatingThreadIDs.contains(snapshot.id))
                         .confirmationDialog(
                             "重试失败的 Scope？",
                             isPresented: $isConfirmingRetry,
@@ -88,26 +88,26 @@ struct IntentDetailView: View {
                     } label: {
                         Label("永久删除", systemImage: "trash")
                     }
-                    .disabled(store.mutatingIntentIDs.contains(snapshot.id))
-                    .help("永久删除 Intent、事件、关联凭据与 Scope Workspace")
+                    .disabled(store.mutatingThreadIDs.contains(snapshot.id))
+                    .help("永久删除 Thread、事件、关联凭据与 Scope Workspace")
                 }
             }
         }
         .animation(reduceMotion ? nil : ElseMotion.emphasis, value: snapshot?.state)
         .sheet(isPresented: $isProposingAction) {
             if let snapshot {
-                ActionProposalSheet(intentID: snapshot.id)
+                ActionProposalSheet(threadID: snapshot.id)
                     .environmentObject(store)
             }
         }
         .confirmationDialog(
-            "永久删除这个 Intent？",
+            "永久删除这个 Thread？",
             isPresented: $isConfirmingDelete,
             titleVisibility: .visible
         ) {
             if let snapshot {
                 Button("永久删除", role: .destructive) {
-                    Task { await store.deleteIntent(snapshot) }
+                    Task { await store.deleteThread(snapshot) }
                 }
             }
             Button("取消", role: .cancel) {}
@@ -116,7 +116,7 @@ struct IntentDetailView: View {
         }
     }
 
-    private func detailHeader(_ snapshot: IntentSnapshot) -> some View {
+    private func detailHeader(_ snapshot: ThreadSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 9) {
                 StateBadge(state: snapshot.state)
@@ -149,7 +149,7 @@ struct IntentDetailView: View {
         }
     }
 
-    private func decisions(_ snapshot: IntentSnapshot) -> some View {
+    private func decisions(_ snapshot: ThreadSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             SectionLabel(title: "需要你")
             ForEach(snapshot.decisions) { request in
@@ -164,7 +164,7 @@ struct IntentDetailView: View {
         .animation(reduceMotion ? nil : ElseMotion.emphasis, value: snapshot.decisions.map(\.id))
     }
 
-    private func acceptance(_ snapshot: IntentSnapshot) -> some View {
+    private func acceptance(_ snapshot: ThreadSnapshot) -> some View {
         DetailSection(title: "验收", systemImage: "checkmark.seal") {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(snapshot.spec.doneWhen.enumerated()), id: \.offset) { index, item in
@@ -183,7 +183,7 @@ struct IntentDetailView: View {
         }
     }
 
-    private func connectorActions(_ snapshot: IntentSnapshot) -> some View {
+    private func connectorActions(_ snapshot: ThreadSnapshot) -> some View {
         DetailSection(title: "外部动作", systemImage: "arrow.up.right.square") {
             VStack(spacing: 0) {
                 HStack {
@@ -195,19 +195,19 @@ struct IntentDetailView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(store.connectorsByIntent[snapshot.id, default: []].isEmpty)
+                    .disabled(store.connectorsByThread[snapshot.id, default: []].isEmpty)
                 }
                 .padding(.bottom, ElseSpacing.x2)
 
-                if store.actionsByIntent[snapshot.id, default: []].isEmpty {
+                if store.actionsByThread[snapshot.id, default: []].isEmpty {
                     QuietEmptyState(
                         title: "还没有外部动作",
                         description: "为连接器创建一个受控写入提案。"
                     )
                 }
-                ForEach(store.actionsByIntent[snapshot.id, default: []]) { action in
-                    ConnectorActionRow(intentID: snapshot.id, action: action)
-                    if action.id != store.actionsByIntent[snapshot.id]?.last?.id {
+                ForEach(store.actionsByThread[snapshot.id, default: []]) { action in
+                    ConnectorActionRow(threadID: snapshot.id, action: action)
+                    if action.id != store.actionsByThread[snapshot.id]?.last?.id {
                         Divider()
                     }
                 }
@@ -215,7 +215,7 @@ struct IntentDetailView: View {
         }
     }
 
-    private func boundaries(_ snapshot: IntentSnapshot) -> some View {
+    private func boundaries(_ snapshot: ThreadSnapshot) -> some View {
         DetailSection(title: "边界", systemImage: "lock.shield") {
             VStack(alignment: .leading, spacing: 10) {
                 if snapshot.spec.constraints.isEmpty && snapshot.spec.authority.forbidden.isEmpty {
@@ -252,7 +252,7 @@ struct IntentDetailView: View {
     }
 
     @ViewBuilder
-    private func artifacts(_ snapshot: IntentSnapshot) -> some View {
+    private func artifacts(_ snapshot: ThreadSnapshot) -> some View {
         if !snapshot.artifacts.isEmpty {
             DetailSection(title: "产物", systemImage: "shippingbox") {
                 VStack(spacing: 0) {
@@ -286,7 +286,7 @@ struct IntentDetailView: View {
         }
     }
 
-    private func resources(_ snapshot: IntentSnapshot) -> some View {
+    private func resources(_ snapshot: ThreadSnapshot) -> some View {
         DetailSection(title: "资源账", systemImage: "gauge.with.dots.needle.33percent") {
             VStack(spacing: 10) {
                 MetricRow(
@@ -365,7 +365,7 @@ private struct DetailSection<Content: View>: View {
 
 private struct ConnectorActionRow: View {
     @EnvironmentObject private var store: AppStore
-    let intentID: IntentID
+    let threadID: ThreadID
     let action: ConnectorAction
 
     private var isMutating: Bool {
@@ -431,7 +431,7 @@ private struct ConnectorActionRow: View {
                 Button {
                     Task {
                         await store.executeConnectorAction(
-                            intentID: intentID,
+                            threadID: threadID,
                             action: action
                         )
                     }
@@ -445,7 +445,7 @@ private struct ConnectorActionRow: View {
                 Button {
                     Task {
                         await store.verifyConnectorAction(
-                            intentID: intentID,
+                            threadID: threadID,
                             action: action
                         )
                     }
@@ -459,7 +459,7 @@ private struct ConnectorActionRow: View {
                 Button {
                     Task {
                         await store.compensateConnectorAction(
-                            intentID: intentID,
+                            threadID: threadID,
                             action: action
                         )
                     }
@@ -476,7 +476,7 @@ private struct ConnectorActionRow: View {
 
 private struct DecisionBand: View {
     @EnvironmentObject private var store: AppStore
-    let snapshot: IntentSnapshot
+    let snapshot: ThreadSnapshot
     let request: AttentionRequest
 
     var body: some View {
@@ -537,7 +537,7 @@ private struct DecisionBand: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(ElseColor.textSecondary)
-            .disabled(store.mutatingIntentIDs.contains(snapshot.id))
+            .disabled(store.mutatingThreadIDs.contains(snapshot.id))
         }
     }
 
@@ -546,7 +546,7 @@ private struct DecisionBand: View {
         let button = Button(option.label) {
             choose(option)
         }
-        .disabled(store.mutatingIntentIDs.contains(snapshot.id))
+        .disabled(store.mutatingThreadIDs.contains(snapshot.id))
 
         if option.recommended {
             button

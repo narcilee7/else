@@ -6,9 +6,9 @@
 
 use else_gateway::{ExecContext, GatewayError};
 use else_harness::adapter::{HarnessAdapter, HarnessRequest};
-use else_ledger::IntentProjection;
+use else_ledger::ThreadProjection;
 use else_protocol::event::{Actor, EventPayload, ScopeState};
-use else_protocol::ids::{CapabilityId, IntentId, RunId, ScopeId};
+use else_protocol::ids::{CapabilityId, RunId, ScopeId, ThreadId};
 use else_protocol::memory::SnapshotAudience;
 
 use crate::scope::scope_spec;
@@ -22,45 +22,45 @@ impl Runtime {
     /// 按任务类型与可用性规则选择；显式指定优先。scripted 走内置执行路径。
     pub fn dispatch_scope(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
         harness_hint: Option<&str>,
-    ) -> Result<IntentProjection> {
-        let projection = self.projection(intent_id)?;
+    ) -> Result<ThreadProjection> {
+        let projection = self.projection(thread_id)?;
         let spec = scope_spec(&projection, scope_id)
             .ok_or_else(|| ApiError::NotFound(format!("scope {scope_id}")))?;
         let name = else_harness::select_harness(&spec.outcome, harness_hint);
         if name == else_harness::SCRIPTED {
-            return self.run_scope(intent_id, scope_id);
+            return self.run_scope(thread_id, scope_id);
         }
         let adapter = else_harness::find_adapter(name)
             .ok_or_else(|| ApiError::NotFound(format!("harness {name}")))?;
         let automatic = harness_hint.is_none_or(|hint| hint == "auto");
         if automatic && !self.harness_allowed(&spec, adapter.as_ref()) {
-            return self.run_scope(intent_id, scope_id);
+            return self.run_scope(thread_id, scope_id);
         }
-        self.dispatch_scope_adapter(intent_id, scope_id, adapter.as_ref())
+        self.dispatch_scope_adapter(thread_id, scope_id, adapter.as_ref())
     }
 
     /// 用指定适配器执行一个 Scope：隔离 Workspace、Executor 快照、
-    /// 槽位准入、Lease、能力落账；子 Scope 验收不误结束根 Intent。
+    /// 槽位准入、Lease、能力落账；子 Scope 验收不误结束根 Thread。
     pub fn dispatch_scope_adapter(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
         adapter: &dyn HarnessAdapter,
-    ) -> Result<IntentProjection> {
-        self.dispatch_scope_adapter_with_capabilities(intent_id, scope_id, adapter, None)
+    ) -> Result<ThreadProjection> {
+        self.dispatch_scope_adapter_with_capabilities(thread_id, scope_id, adapter, None)
     }
 
     pub(crate) fn dispatch_scope_adapter_with_capabilities(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
         adapter: &dyn HarnessAdapter,
         allowed_capabilities: Option<Vec<CapabilityId>>,
-    ) -> Result<IntentProjection> {
-        let projection = self.projection(intent_id)?;
+    ) -> Result<ThreadProjection> {
+        let projection = self.projection(thread_id)?;
         let scope = projection
             .scopes
             .get(scope_id)
@@ -79,11 +79,11 @@ impl Runtime {
             .ok_or_else(|| ApiError::NotFound(format!("scope {scope_id}")))?;
         self.ensure_harness_allowed(&spec, adapter)?;
         let egress_proxy = self.start_egress_proxy(adapter)?;
-        let generation = self.next_scope_generation(intent_id, scope_id)?;
+        let generation = self.next_scope_generation(thread_id, scope_id)?;
 
         // 准入先于一切事件：槽位或预算不足时不产生任何新事件。
         self.ensure_slot_available()?;
-        self.ensure_scope_not_active(intent_id, scope_id)?;
+        self.ensure_scope_not_active(thread_id, scope_id)?;
 
         // 根 Scope 使用持久 Workspace；子 Scope 使用隔离 Workspace + 工件物化。
         let subagent = scope.spec.is_some();
@@ -97,9 +97,9 @@ impl Runtime {
             self.materialize_artifacts(&projection, &scope_workspace)?;
         }
 
-        self.ensure_plan_for_scope(intent_id, &spec, scope_id)?;
+        self.ensure_plan_for_scope(thread_id, &spec, scope_id)?;
         let snapshot = self.compile_snapshot_for(
-            intent_id,
+            thread_id,
             &spec,
             scope_id,
             generation,
@@ -145,14 +145,14 @@ impl Runtime {
         };
         let result = adapter.execute(&request);
         self.record_egress_decisions(&ctx, egress_proxy.as_ref())?;
-        self.finish_run(intent_id, &ctx, &lease, sandbox_started, result)
+        self.finish_run(thread_id, &ctx, &lease, sandbox_started, result)
     }
 
-    /// 把当前 Intent 的工件物化到隔离 Scope。CAS manifest 直接恢复；
+    /// 把当前 Thread 的工件物化到隔离 Scope。CAS manifest 直接恢复；
     /// 旧式 locator 从根 Workspace 安全复制。子 Scope 因此能真正读取父级产物。
     fn materialize_artifacts(
         &self,
-        projection: &IntentProjection,
+        projection: &ThreadProjection,
         target: &std::path::Path,
     ) -> Result<()> {
         for artifact in &projection.artifacts {

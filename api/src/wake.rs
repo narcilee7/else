@@ -1,23 +1,23 @@
 //! 外部事件与持久化 Timer：所有唤醒条件先成为事件，再参与 Kernel 裁决。
 
 use chrono::{DateTime, Utc};
-use else_ledger::IntentProjection;
+use else_ledger::ThreadProjection;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
-use else_protocol::ids::{IntentId, ScopeId, TimerId};
-use else_protocol::intent::IntentState;
+use else_protocol::ids::{ScopeId, ThreadId, TimerId};
+use else_protocol::thread::ThreadState;
 
 use crate::{ApiError, Result, Runtime};
 
 impl Runtime {
     pub fn wait_for_external(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         reason: &str,
-    ) -> Result<IntentProjection> {
-        let (scope_id, generation, revision) = self.kernel_context(intent_id)?;
+    ) -> Result<ThreadProjection> {
+        let (scope_id, generation, revision) = self.kernel_context(thread_id)?;
         let envelope = |payload| {
             EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 scope_id.clone(),
                 generation,
                 revision,
@@ -30,21 +30,21 @@ impl Runtime {
                 reason: reason.to_string(),
             }))?;
         self.ledger
-            .append(&envelope(EventPayload::IntentStateChanged {
-                state: IntentState::WaitingExternal,
+            .append(&envelope(EventPayload::ThreadStateChanged {
+                state: ThreadState::WaitingExternal,
             }))?;
-        self.projection(intent_id)
+        self.projection(thread_id)
     }
 
     pub fn record_external_event(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         source: &str,
         summary: &str,
-    ) -> Result<IntentProjection> {
-        let (scope_id, generation, revision) = self.kernel_context(intent_id)?;
+    ) -> Result<ThreadProjection> {
+        let (scope_id, generation, revision) = self.kernel_context(thread_id)?;
         let received = self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             generation,
             revision,
@@ -54,36 +54,36 @@ impl Runtime {
                 summary: summary.to_string(),
             },
         ))?;
-        self.analyze_plan_impact(intent_id, &received.envelope.event_id, source, summary)?;
-        let projection = self.projection(intent_id)?;
+        self.analyze_plan_impact(thread_id, &received.envelope.event_id, source, summary)?;
+        let projection = self.projection(thread_id)?;
         if matches!(
             projection.state,
-            Some(IntentState::WaitingExternal | IntentState::Paused)
+            Some(ThreadState::WaitingExternal | ThreadState::Paused)
         ) {
             self.ledger.append(&EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 scope_id,
                 generation,
                 revision,
                 Actor::System,
-                EventPayload::IntentStateChanged {
-                    state: IntentState::Active,
+                EventPayload::ThreadStateChanged {
+                    state: ThreadState::Active,
                 },
             ))?;
         }
-        self.projection(intent_id)
+        self.projection(thread_id)
     }
 
     pub fn schedule_timer(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         fire_at: DateTime<Utc>,
         reason: &str,
     ) -> Result<TimerId> {
-        let (scope_id, generation, revision) = self.kernel_context(intent_id)?;
+        let (scope_id, generation, revision) = self.kernel_context(thread_id)?;
         let timer_id = TimerId::new();
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id,
             generation,
             revision,
@@ -99,13 +99,13 @@ impl Runtime {
 
     pub fn cancel_timer(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         timer_id: &TimerId,
         reason: &str,
     ) -> Result<()> {
-        let (scope_id, generation, revision) = self.kernel_context(intent_id)?;
+        let (scope_id, generation, revision) = self.kernel_context(thread_id)?;
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id,
             generation,
             revision,
@@ -118,8 +118,8 @@ impl Runtime {
         Ok(())
     }
 
-    pub(crate) fn fire_timer(&self, intent_id: &IntentId, timer_id: &TimerId) -> Result<()> {
-        let projection = self.projection(intent_id)?;
+    pub(crate) fn fire_timer(&self, thread_id: &ThreadId, timer_id: &TimerId) -> Result<()> {
+        let projection = self.projection(thread_id)?;
         let timer = projection
             .timers
             .get(timer_id)
@@ -130,10 +130,10 @@ impl Runtime {
                 timer.fire_at
             )));
         }
-        let (scope_id, generation, revision) = self.kernel_context(intent_id)?;
+        let (scope_id, generation, revision) = self.kernel_context(thread_id)?;
         let envelope = |payload| {
             EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 scope_id.clone(),
                 generation,
                 revision,
@@ -144,27 +144,27 @@ impl Runtime {
         self.ledger.append(&envelope(EventPayload::TimerFired {
             timer_id: timer_id.clone(),
         }))?;
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         if matches!(
             projection.state,
-            Some(IntentState::WaitingExternal | IntentState::Paused)
+            Some(ThreadState::WaitingExternal | ThreadState::Paused)
         ) {
             self.ledger
-                .append(&envelope(EventPayload::IntentStateChanged {
-                    state: IntentState::Active,
+                .append(&envelope(EventPayload::ThreadStateChanged {
+                    state: ThreadState::Active,
                 }))?;
         }
         Ok(())
     }
 
-    pub(crate) fn kernel_context(&self, intent_id: &IntentId) -> Result<(ScopeId, u64, u64)> {
-        let projection = self.projection(intent_id)?;
+    pub(crate) fn kernel_context(&self, thread_id: &ThreadId) -> Result<(ScopeId, u64, u64)> {
+        let projection = self.projection(thread_id)?;
         let spec = projection
             .spec
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let scope_id = projection
             .root_scope_id
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let generation = projection
             .scopes
             .get(&scope_id)

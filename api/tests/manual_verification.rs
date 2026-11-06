@@ -7,7 +7,7 @@ use else_protocol::event::{EventPayload, ScopeState};
 use else_protocol::harness::{
     CancelSupport, HarnessCapabilities, ToolEffectVisibility, UsageSupport,
 };
-use else_protocol::intent::{Criterion, IntentState};
+use else_protocol::thread::{Criterion, ThreadState};
 
 struct CompletedParser;
 
@@ -50,14 +50,14 @@ fn approving_manual_verification_completes_without_rerunning_harness() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_intent_with_done_when(
+        .create_thread_with_done_when(
             "人工验收",
             None,
             vec![Criterion::manual("业务结论符合预期")],
         )
         .unwrap();
     let waiting = runtime.run_adapter(&spec.id, &completed_harness()).unwrap();
-    assert_eq!(waiting.state, Some(IntentState::NeedsDecision));
+    assert_eq!(waiting.state, Some(ThreadState::NeedsDecision));
     let actionable = waiting.actionable_requests(chrono::Utc::now());
     let request = actionable.first().unwrap();
     assert_eq!(request.kind, AttentionKind::Verification);
@@ -75,7 +75,7 @@ fn approving_manual_verification_completes_without_rerunning_harness() {
             DecisionChoice::Option("approve".into()),
         )
         .unwrap();
-    assert_eq!(completed.state, Some(IntentState::Completed));
+    assert_eq!(completed.state, Some(ThreadState::Completed));
     let root = completed.root_scope_id.as_ref().unwrap();
     assert_eq!(completed.scopes[root].state, ScopeState::Completed);
     let events = runtime.events(&spec.id).unwrap();
@@ -97,7 +97,7 @@ fn rejecting_manual_verification_leaves_kernel_retryable() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_intent_with_done_when(
+        .create_thread_with_done_when(
             "人工验收",
             None,
             vec![Criterion::manual("业务结论符合预期")],
@@ -114,7 +114,7 @@ fn rejecting_manual_verification_leaves_kernel_retryable() {
     let rejected = runtime
         .decide(&spec.id, &request, DecisionChoice::Option("reject".into()))
         .unwrap();
-    assert_eq!(rejected.state, Some(IntentState::Active));
+    assert_eq!(rejected.state, Some(ThreadState::Active));
     assert!(!runtime
         .events(&spec.id)
         .unwrap()

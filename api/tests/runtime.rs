@@ -4,12 +4,12 @@
 
 use else_api::Runtime;
 use else_protocol::attention::DecisionChoice;
-use else_protocol::ids::IntentId;
-use else_protocol::intent::IntentState;
+use else_protocol::ids::ThreadId;
+use else_protocol::thread::ThreadState;
 
-fn payloads(runtime: &Runtime, intent_id: &IntentId) -> Vec<String> {
+fn payloads(runtime: &Runtime, thread_id: &ThreadId) -> Vec<String> {
     runtime
-        .events(intent_id)
+        .events(thread_id)
         .unwrap()
         .iter()
         .map(|e| serde_json::to_string(&e.envelope.payload).unwrap())
@@ -20,15 +20,15 @@ fn payloads(runtime: &Runtime, intent_id: &IntentId) -> Vec<String> {
 fn approve_path_resumes_and_completes() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("今天达到可对外发布", None).unwrap();
+    let spec = runtime.create_thread("今天达到可对外发布", None).unwrap();
 
-    // 默认验收标准与显式假设由系统补全（Intent Resolution 最小实现）
+    // 默认验收标准与显式假设由系统补全（Thread Resolution 最小实现）
     assert!(!spec.done_when.is_empty());
     assert!(!spec.assumptions.is_empty());
     assert!(!spec.assumptions[0].confirmed);
 
     let projection = runtime.run(&spec.id).unwrap();
-    assert_eq!(projection.state, Some(IntentState::NeedsDecision));
+    assert_eq!(projection.state, Some(ThreadState::NeedsDecision));
     assert_eq!(projection.open_requests.len(), 1);
     assert!(dir.path().join("workspace/plan.md").exists());
 
@@ -41,7 +41,7 @@ fn approve_path_resumes_and_completes() {
             DecisionChoice::Option("approve".into()),
         )
         .unwrap();
-    assert_eq!(after.state, Some(IntentState::Completed));
+    assert_eq!(after.state, Some(ThreadState::Completed));
     assert!(after.open_requests.is_empty());
 
     let events = payloads(&runtime, &spec.id);
@@ -53,7 +53,7 @@ fn approve_path_resumes_and_completes() {
 fn reject_path_replans_and_completes_without_asking_again() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("验证自动重规划", None).unwrap();
+    let spec = runtime.create_thread("验证自动重规划", None).unwrap();
     let projection = runtime.run(&spec.id).unwrap();
     let request_id = projection.open_requests.keys().next().unwrap().clone();
 
@@ -65,7 +65,7 @@ fn reject_path_replans_and_completes_without_asking_again() {
             DecisionChoice::Option("reject".into()),
         )
         .unwrap();
-    assert_eq!(after.state, Some(IntentState::Completed));
+    assert_eq!(after.state, Some(ThreadState::Completed));
     assert!(after.open_requests.is_empty());
 
     let events = payloads(&runtime, &spec.id);
@@ -85,7 +85,7 @@ fn reject_path_replans_and_completes_without_asking_again() {
 fn terminal_state_run_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("终态幂等", None).unwrap();
+    let spec = runtime.create_thread("终态幂等", None).unwrap();
     let projection = runtime.run(&spec.id).unwrap();
     let request_id = projection.open_requests.keys().next().unwrap().clone();
     runtime
@@ -98,7 +98,7 @@ fn terminal_state_run_is_idempotent() {
 
     let before = runtime.events(&spec.id).unwrap().len();
     let again = runtime.run(&spec.id).unwrap();
-    assert_eq!(again.state, Some(IntentState::Completed));
+    assert_eq!(again.state, Some(ThreadState::Completed));
     assert_eq!(runtime.events(&spec.id).unwrap().len(), before);
 }
 
@@ -107,13 +107,13 @@ fn reopening_runtime_replays_same_state() {
     let dir = tempfile::tempdir().unwrap();
     let spec_id = {
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_intent("验证恢复", None).unwrap();
+        let spec = runtime.create_thread("验证恢复", None).unwrap();
         runtime.run(&spec.id).unwrap();
         spec.id
     };
     // 模拟重启：重开后投影一致
     let runtime = Runtime::open(dir.path()).unwrap();
     let projection = runtime.projection(&spec_id).unwrap();
-    assert_eq!(projection.state, Some(IntentState::NeedsDecision));
+    assert_eq!(projection.state, Some(ThreadState::NeedsDecision));
     assert_eq!(projection.open_requests.len(), 1);
 }

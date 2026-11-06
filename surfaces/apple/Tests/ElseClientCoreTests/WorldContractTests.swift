@@ -18,7 +18,7 @@ struct WorldContractTests {
         #expect(brief.outstandingCount == 2)
 
         let overdue = try #require(brief.overdue.first)
-        #expect(overdue.intentID.rawValue == "intent-1")
+        #expect(overdue.threadID.rawValue == "thread-1")
         #expect(overdue.item.kind == .actionItem)
         #expect(overdue.item.state == .overdue)
         #expect(overdue.item.objectKind == .workItem)
@@ -39,7 +39,7 @@ struct WorldContractTests {
       "generated_at": "2026-10-31T06:00:00Z",
       "open_commitments": [],
       "waiting_external": [{
-        "intent_id": "intent-1",
+        "thread_id": "thread-1",
         "item": {
           "id": "world-waiting",
           "entity_ref": {
@@ -69,7 +69,7 @@ struct WorldContractTests {
         }
       }],
       "overdue": [{
-        "intent_id": "intent-1",
+        "thread_id": "thread-1",
         "item": {
           "id": "world-overdue",
           "entity_ref": {
@@ -99,7 +99,7 @@ struct WorldContractTests {
       "action_items_due_soon": [],
       "risks": [],
       "upcoming_calendar": [{
-        "intent_id": "intent-2",
+        "thread_id": "thread-2",
         "item": {
           "id": "world-calendar",
           "entity_ref": {

@@ -5,10 +5,10 @@ use super::super::row::{Pane, Row, RowAction};
 use super::super::theme;
 use super::short_id;
 
-pub fn pane(rows: &[ConnectorRow], intent_id: Option<&else_protocol::ids::IntentId>) -> Pane {
+pub fn pane(rows: &[ConnectorRow], thread_id: Option<&else_protocol::ids::ThreadId>) -> Pane {
     let mut lines = Vec::new();
     if rows.is_empty() {
-        lines.push(Row::muted("No connectors registered for this intent."));
+        lines.push(Row::muted("No connectors registered for this thread."));
         lines.push(Row::muted(
             "Use the CLI connector commands to connect Calendar, Linear or Notion.",
         ));
@@ -37,9 +37,9 @@ pub fn pane(rows: &[ConnectorRow], intent_id: Option<&else_protocol::ids::Intent
             ),
             style,
             RowAction::SyncConnector {
-                intent_id: intent_id
+                thread_id: thread_id
                     .cloned()
-                    .unwrap_or_else(|| else_protocol::ids::IntentId::from("unknown")),
+                    .unwrap_or_else(|| else_protocol::ids::ThreadId::from("unknown")),
                 connector_id: row.connector.id.clone(),
             },
         ));
@@ -65,7 +65,7 @@ pub fn pane(rows: &[ConnectorRow], intent_id: Option<&else_protocol::ids::Intent
         }
     }
     Pane {
-        title: intent_id
+        title: thread_id
             .map(|id| format!("Connectors · {}", short_id(id)))
             .unwrap_or_else(|| "Connectors".into()),
         rows: lines,

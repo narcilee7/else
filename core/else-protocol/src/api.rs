@@ -1,7 +1,7 @@
 //! Runtime HTTP 契约：所有 surface 共用的请求与响应形状。
 //!
 //! 这里只定义**跨进程传输**的形状，不含领域语义。领域语义在
-//! [`crate::intent`] / [`crate::attention`] / [`crate::world`] 等模块。
+//! [`crate::thread`] / [`crate::attention`] / [`crate::world`] 等模块。
 //!
 //! 设计约束：
 //!
@@ -21,22 +21,22 @@ use crate::attention::{AttentionMetrics, AttentionRequest, AttentionWindow};
 use crate::event::ScopeState;
 use crate::failure::ScopeFailure;
 use crate::harness::{HarnessCapabilities, HarnessNetworkAccess};
-use crate::ids::{IntentId, MemoryId, ScopeId, SnapshotId};
-use crate::intent::{IntentSpec, IntentState};
+use crate::ids::{MemoryId, ScopeId, SnapshotId, ThreadId};
 use crate::memory::{ContextSnapshot, MemoryRecord};
 use crate::plan::{Plan, PlanImpact};
 use crate::resource::{ResourceBudget, ResourceUsage, SandboxUsage};
+use crate::thread::{ThreadSpec, ThreadState};
 
 /// Runtime HTTP 契约版本。surface 之间据此判断是否可以对话。
 pub const CONTRACT_VERSION: &str = "1";
 
-/// 一个 Intent 的完整可读快照。
+/// 一个 Thread 的完整可读快照。
 ///
 /// surface 用它渲染列表与详情：状态、待决策请求、产物、资源消耗与事件水位。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IntentSnapshot {
-    pub spec: IntentSpec,
-    pub state: IntentState,
+pub struct ThreadSnapshot {
+    pub spec: ThreadSpec,
+    pub state: ThreadState,
     /// 当前需要用户裁决的注意力请求；不含被 Batch / Defer 窗口折叠的部分。
     pub decisions: Vec<AttentionRequest>,
     pub artifacts: Vec<Artifact>,
@@ -55,15 +55,16 @@ pub struct IntentSnapshot {
 /// 而不是逐条打扰用户。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttentionWindowSnapshot {
-    pub intent_id: IntentId,
+    #[serde(alias = "intent_id")]
+    pub thread_id: ThreadId,
     pub window: AttentionWindow,
     pub requests: Vec<AttentionRequest>,
 }
 
-/// 一个 Intent 的注意力视图：打断成本、全部窗口与待决请求。
+/// 一个 Thread 的注意力视图：打断成本、全部窗口与待决请求。
 ///
 /// 指标是**成本账**：用户花掉的注意力是产品要优化的唯一稀缺资源，
-/// 所以每个 surface 都用同一份数字解释「这个 Intent 打扰了我几次」。
+/// 所以每个 surface 都用同一份数字解释「这个 Thread 打扰了我几次」。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttentionView {
     pub metrics: AttentionMetrics,
@@ -78,11 +79,13 @@ pub struct AttentionView {
 pub struct EventResponse {
     pub seq: u64,
     pub event_id: String,
-    pub intent_id: String,
+    #[serde(alias = "intent_id")]
+    pub thread_id: String,
     pub scope_id: String,
     pub run_id: Option<String>,
     pub generation: u64,
-    pub intent_revision: u64,
+    #[serde(alias = "intent_revision")]
+    pub thread_revision: u64,
     pub occurred_at: String,
     pub payload: Value,
 }
@@ -103,7 +106,7 @@ pub struct ScopeView {
     pub replaces: Option<ScopeId>,
     pub failure_count: u32,
     pub last_failure: Option<ScopeFailure>,
-    /// Scope 的目标；根 Scope 与 Intent 同义。
+    /// Scope 的目标；根 Scope 与 Thread 同义。
     pub outcome: String,
 }
 
@@ -149,7 +152,7 @@ pub struct HarnessView {
 /// 一次连续推进的结果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DriveView {
-    pub snapshot: IntentSnapshot,
+    pub snapshot: ThreadSnapshot,
     /// 推进停止的原因；见各 surface 的呈现约定。
     pub stopped: String,
     /// 实际执行的 Kernel 步数。

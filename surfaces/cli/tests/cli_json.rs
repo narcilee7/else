@@ -30,7 +30,7 @@ fn write_read_and_brief_commands_emit_json() {
     let created = run(
         runtime.path(),
         &[
-            "intent",
+            "thread",
             "Verify JSON automation",
             "--harness",
             "scripted",
@@ -39,9 +39,9 @@ fn write_read_and_brief_commands_emit_json() {
     );
     let snapshot = stdout_json(&created);
     assert_eq!(snapshot["spec"]["outcome"], "Verify JSON automation");
-    let intent_id = snapshot["spec"]["id"].as_str().expect("intent id");
+    let thread_id = snapshot["spec"]["id"].as_str().expect("thread id");
 
-    let decisions = run(runtime.path(), &["decisions", intent_id, "--json"]);
+    let decisions = run(runtime.path(), &["decisions", thread_id, "--json"]);
     let decisions = stdout_json(&decisions);
     assert!(decisions["windows"].is_array());
     assert!(decisions["requests"].is_array());
@@ -53,7 +53,7 @@ fn write_read_and_brief_commands_emit_json() {
 #[test]
 fn runtime_and_argument_errors_are_json_on_stderr() {
     let runtime = tempfile::tempdir().expect("temporary runtime");
-    let failure = run(runtime.path(), &["plan", "missing-intent", "--json"]);
+    let failure = run(runtime.path(), &["plan", "missing-thread", "--json"]);
     assert!(!failure.status.success());
     assert!(failure.stdout.is_empty());
     let error: serde_json::Value =
@@ -61,7 +61,7 @@ fn runtime_and_argument_errors_are_json_on_stderr() {
     assert_eq!(error["error"]["kind"], "client");
     let message = error["error"]["message"].as_str().expect("error message");
     assert!(message.contains("404"), "{message}");
-    assert!(message.contains("missing-intent"), "{message}");
+    assert!(message.contains("missing-thread"), "{message}");
 
     let failure = run(runtime.path(), &["decisions", "--json"]);
     assert_eq!(failure.status.code(), Some(2));

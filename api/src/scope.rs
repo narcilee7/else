@@ -3,11 +3,11 @@
 use std::collections::BTreeSet;
 
 use else_gateway::{ExecContext, ModelGateway, ToolGateway};
-use else_ledger::IntentProjection;
+use else_ledger::ThreadProjection;
 use else_protocol::effect::SideEffectKind;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload, ScopeState};
-use else_protocol::ids::{IntentId, RunId, ScopeId};
-use else_protocol::intent::{IntentSpec, IntentState};
+use else_protocol::ids::{RunId, ScopeId, ThreadId};
+use else_protocol::thread::{ThreadSpec, ThreadState};
 
 use crate::{ApiError, Result, Runtime};
 
@@ -15,13 +15,13 @@ impl Runtime {
     /// 委托一个子 Scope。子级继承目标约束与禁令，自主副作用上限只能降低。
     pub fn spawn_subagent(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         parent_scope: &ScopeId,
         task: &str,
         max_autonomous_effect: SideEffectKind,
     ) -> Result<ScopeId> {
         self.spawn_subagent_with_dependencies(
-            intent_id,
+            thread_id,
             parent_scope,
             task,
             max_autonomous_effect,
@@ -31,13 +31,13 @@ impl Runtime {
 
     pub fn spawn_subagent_with_dependencies(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         parent_scope: &ScopeId,
         task: &str,
         max_autonomous_effect: SideEffectKind,
         depends_on: Vec<ScopeId>,
     ) -> Result<ScopeId> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let parent = projection
             .scopes
             .get(parent_scope)
@@ -46,7 +46,7 @@ impl Runtime {
             return Err(ApiError::NotFound(format!("running scope {parent_scope}")));
         }
         let parent_spec = scope_spec(&projection, parent_scope)
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let mut child_spec = parent_spec.clone();
         child_spec.outcome = task.to_string();
         child_spec.authority.max_autonomous_effect = max_autonomous_effect;
@@ -64,7 +64,7 @@ impl Runtime {
 
         let child = ScopeId::new();
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             parent_scope.clone(),
             parent.generation,
             parent_spec.revision,
@@ -78,30 +78,30 @@ impl Runtime {
         Ok(child)
     }
 
-    /// 在指定 Scope 中启动或续跑。子 Scope 的完成不会误结束根 Intent。
-    pub fn run_scope(&self, intent_id: &IntentId, scope_id: &ScopeId) -> Result<IntentProjection> {
-        self.run_scope_inner(intent_id, scope_id, None)
+    /// 在指定 Scope 中启动或续跑。子 Scope 的完成不会误结束根 Thread。
+    pub fn run_scope(&self, thread_id: &ThreadId, scope_id: &ScopeId) -> Result<ThreadProjection> {
+        self.run_scope_inner(thread_id, scope_id, None)
     }
 
     pub(crate) fn run_scope_at_generation(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
         generation: u64,
-    ) -> Result<IntentProjection> {
-        self.run_scope_inner(intent_id, scope_id, Some(generation))
+    ) -> Result<ThreadProjection> {
+        self.run_scope_inner(thread_id, scope_id, Some(generation))
     }
 
     fn run_scope_inner(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
         generation: Option<u64>,
-    ) -> Result<IntentProjection> {
-        let projection = self.projection(intent_id)?;
+    ) -> Result<ThreadProjection> {
+        let projection = self.projection(thread_id)?;
         if matches!(
             projection.state,
-            Some(IntentState::Completed | IntentState::Failed | IntentState::Cancelled)
+            Some(ThreadState::Completed | ThreadState::Failed | ThreadState::Cancelled)
         ) {
             return Ok(projection);
         }
@@ -113,14 +113,14 @@ impl Runtime {
             return Ok(projection);
         }
         self.ensure_slot_available()?;
-        self.ensure_scope_not_active(intent_id, scope_id)?;
+        self.ensure_scope_not_active(thread_id, scope_id)?;
         let spec = scope_spec(&projection, scope_id)
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let subagent = scope.spec.is_some();
         let generation = generation.unwrap_or(scope.generation);
         // 执行前编译 Planner 快照；本 Run 后续事件都标记该上下文版本。
         let snapshot =
-            self.compile_snapshot(intent_id, else_protocol::memory::SnapshotAudience::Planner)?;
+            self.compile_snapshot(thread_id, else_protocol::memory::SnapshotAudience::Planner)?;
         let ctx = ExecContext {
             spec,
             scope_id: scope_id.clone(),
@@ -152,15 +152,15 @@ impl Runtime {
                 ..Default::default()
             },
         );
-        self.finish_run(intent_id, &ctx, &lease, sandbox_started, result)
+        self.finish_run(thread_id, &ctx, &lease, sandbox_started, result)
     }
 
     /// 最近一次根执行使用的 Scope；Decision 续跑不能换 Scope，否则授权会丢失。
-    pub(crate) fn latest_root_scope(&self, intent_id: &IntentId) -> Result<Option<ScopeId>> {
-        if let Some(root) = self.projection(intent_id)?.root_scope_id {
+    pub(crate) fn latest_root_scope(&self, thread_id: &ThreadId) -> Result<Option<ScopeId>> {
+        if let Some(root) = self.projection(thread_id)?.root_scope_id {
             return Ok(Some(root));
         }
-        let events = self.ledger.read_intent(intent_id)?;
+        let events = self.ledger.read_thread(thread_id)?;
         let children: BTreeSet<_> = events
             .iter()
             .filter_map(|event| match &event.envelope.payload {
@@ -183,10 +183,10 @@ impl Runtime {
     /// 新建 Run 的 Generation：同一 Scope 每次完整 Run 结束后递增。
     pub(crate) fn next_scope_generation(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
     ) -> Result<u64> {
-        let events = self.ledger.read_intent(intent_id)?;
+        let events = self.ledger.read_thread(thread_id)?;
         let latest_generation = events
             .iter()
             .filter(|event| {
@@ -202,7 +202,7 @@ impl Runtime {
             return Ok(generation.saturating_add(1));
         }
         Ok(self
-            .projection(intent_id)?
+            .projection(thread_id)?
             .scopes
             .get(scope_id)
             .map(|scope| scope.generation)
@@ -212,10 +212,10 @@ impl Runtime {
     /// 一个 Scope 同时最多有一个在途 Run。
     pub(crate) fn ensure_scope_not_active(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
     ) -> Result<()> {
-        if let Some(run_id) = self.active_run_id(intent_id, scope_id)? {
+        if let Some(run_id) = self.active_run_id(thread_id, scope_id)? {
             Err(ApiError::Conflict(format!(
                 "scope {scope_id} already has an active run {run_id}"
             )))
@@ -226,11 +226,11 @@ impl Runtime {
 
     pub(crate) fn active_run_id(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
     ) -> Result<Option<RunId>> {
         let mut active = BTreeSet::new();
-        for event in self.ledger.read_intent(intent_id)? {
+        for event in self.ledger.read_thread(thread_id)? {
             if event.envelope.scope_id != *scope_id {
                 continue;
             }
@@ -248,7 +248,7 @@ impl Runtime {
     }
 }
 
-pub(crate) fn scope_spec(projection: &IntentProjection, scope_id: &ScopeId) -> Option<IntentSpec> {
+pub(crate) fn scope_spec(projection: &ThreadProjection, scope_id: &ScopeId) -> Option<ThreadSpec> {
     projection
         .scopes
         .get(scope_id)

@@ -49,16 +49,16 @@ enum RuntimeConnection: Equatable {
 
 @MainActor
 final class AppStore: ObservableObject {
-    @Published private(set) var snapshots: [IntentSnapshot] = []
+    @Published private(set) var snapshots: [ThreadSnapshot] = []
     @Published private(set) var brief: PersonalBrief?
-    @Published private(set) var actionsByIntent: [IntentID: [ConnectorAction]] = [:]
+    @Published private(set) var actionsByThread: [ThreadID: [ConnectorAction]] = [:]
     @Published private(set) var attentionWindows: [AttentionWindowRecord] = []
     @Published private(set) var projectWorlds: [ProjectWorld] = []
     @Published private(set) var identityWorlds: [IdentityWorld] = []
     @Published private(set) var connectorManifests: [ConnectorManifest] = []
-    @Published private(set) var connectorsByIntent: [IntentID: [ConnectorRegistration]] = [:]
-    @Published private(set) var capabilitiesByIntent:
-        [IntentID: [RuntimeCapabilityRegistration]] = [:]
+    @Published private(set) var connectorsByThread: [ThreadID: [ConnectorRegistration]] = [:]
+    @Published private(set) var capabilitiesByThread:
+        [ThreadID: [RuntimeCapabilityRegistration]] = [:]
     @Published private(set) var connectorHealth: [ConnectorID: ConnectorHealthReport] = [:]
     @Published private(set) var resolvingWorldItemIDs: Set<WorldItemID> = []
     @Published private(set) var mutatingActionIDs: Set<ConnectorActionID> = []
@@ -69,11 +69,11 @@ final class AppStore: ObservableObject {
     @Published private(set) var retentionDays: UInt64?
     @Published private(set) var connection: RuntimeConnection = .idle
     @Published var section: AppSection = .today
-    @Published var selectedIntentID: IntentID?
-    @Published var isCreatingIntent = false
+    @Published var selectedThreadID: ThreadID?
+    @Published var isCreatingThread = false
     @Published private(set) var isRefreshing = false
     @Published private(set) var lastRefreshedAt: Date?
-    @Published private(set) var mutatingIntentIDs: Set<IntentID> = []
+    @Published private(set) var mutatingThreadIDs: Set<ThreadID> = []
     @Published var operationError: String?
 
     private let client: any RuntimeClient
@@ -102,8 +102,8 @@ final class AppStore: ObservableObject {
             forKey: PreferenceKey.refreshInterval
         ) as? TimeInterval ?? 30
         retentionDays = nil
-        if let intentID = Self.launchIntentID {
-            selectedIntentID = IntentID(intentID)
+        if let threadID = Self.launchThreadID {
+            selectedThreadID = ThreadID(threadID)
             section = .decisions
         }
     }
@@ -111,15 +111,15 @@ final class AppStore: ObservableObject {
     var runtimeURL: URL { configuration.runtimeURL }
     var isDemo: Bool { configuration.usesDemoRuntime }
 
-    var today: [IntentSnapshot] {
+    var today: [ThreadSnapshot] {
         snapshots.filter { !$0.isTerminal }
     }
 
-    var results: [IntentSnapshot] {
+    var results: [ThreadSnapshot] {
         snapshots.filter(\.isTerminal)
     }
 
-    var decisions: [(snapshot: IntentSnapshot, request: AttentionRequest)] {
+    var decisions: [(snapshot: ThreadSnapshot, request: AttentionRequest)] {
         snapshots.flatMap { snapshot in
             snapshot.decisions.map { (snapshot, $0) }
         }
@@ -133,11 +133,11 @@ final class AppStore: ObservableObject {
         brief?.outstandingCount ?? 0
     }
 
-    var selectedSnapshot: IntentSnapshot? {
-        guard let selectedIntentID else {
+    var selectedSnapshot: ThreadSnapshot? {
+        guard let selectedThreadID else {
             return snapshots.first ?? nil
         }
-        return snapshots.first { $0.id == selectedIntentID }
+        return snapshots.first { $0.id == selectedThreadID }
     }
 
     func load() async {
@@ -163,28 +163,28 @@ final class AppStore: ObservableObject {
         defer { isRefreshing = false }
 
         do {
-            snapshots = try await client.listIntents()
+            snapshots = try await client.listThreads()
             connection = .connected
             lastRefreshedAt = Date()
-            if selectedIntentID == nil {
-                selectedIntentID = snapshots.first?.id
+            if selectedThreadID == nil {
+                selectedThreadID = snapshots.first?.id
             }
-            var actions: [IntentID: [ConnectorAction]] = [:]
-            var capabilities: [IntentID: [RuntimeCapabilityRegistration]] = [:]
+            var actions: [ThreadID: [ConnectorAction]] = [:]
+            var capabilities: [ThreadID: [RuntimeCapabilityRegistration]] = [:]
             for snapshot in snapshots {
-                if let intentActions = try? await client.connectorActions(
-                    intentID: snapshot.id
-                ), !intentActions.isEmpty {
-                    actions[snapshot.id] = intentActions
+                if let threadActions = try? await client.connectorActions(
+                    threadID: snapshot.id
+                ), !threadActions.isEmpty {
+                    actions[snapshot.id] = threadActions
                 }
-                if let intentCapabilities = try? await client.capabilities(
-                    intentID: snapshot.id
-                ), !intentCapabilities.isEmpty {
-                    capabilities[snapshot.id] = intentCapabilities
+                if let threadCapabilities = try? await client.capabilities(
+                    threadID: snapshot.id
+                ), !threadCapabilities.isEmpty {
+                    capabilities[snapshot.id] = threadCapabilities
                 }
             }
-            actionsByIntent = actions
-            capabilitiesByIntent = capabilities
+            actionsByThread = actions
+            capabilitiesByThread = capabilities
             if let settings = try? await client.runtimeSettings() {
                 retentionDays = settings.retentionDays
             }
@@ -209,68 +209,68 @@ final class AppStore: ObservableObject {
         NotificationCoordinator.shared.updateBadge(decisionCount: decisionCount)
     }
 
-    func createIntent(outcome: String, project: String?) async {
+    func createThread(outcome: String, project: String?) async {
         do {
-            let snapshot = try await client.createIntent(outcome: outcome, project: project)
+            let snapshot = try await client.createThread(outcome: outcome, project: project)
             upsert(snapshot)
-            isCreatingIntent = false
+            isCreatingThread = false
             section = .today
-            selectedIntentID = snapshot.id
+            selectedThreadID = snapshot.id
             await run(snapshot)
         } catch {
             operationError = error.localizedDescription
         }
     }
 
-    func run(_ snapshot: IntentSnapshot) async {
+    func run(_ snapshot: ThreadSnapshot) async {
         await mutate(snapshot.id) {
-            try await self.client.runIntent(id: snapshot.id)
+            try await self.client.runThread(id: snapshot.id)
         }
     }
 
-    func retryFailed(_ snapshot: IntentSnapshot) async {
+    func retryFailed(_ snapshot: ThreadSnapshot) async {
         await mutate(snapshot.id) {
-            try await self.client.retryFailedIntent(id: snapshot.id)
+            try await self.client.retryFailedThread(id: snapshot.id)
         }
     }
 
     func resolve(
-        snapshot: IntentSnapshot,
+        snapshot: ThreadSnapshot,
         request: AttentionRequest,
         choice: DecisionChoice
     ) async {
         await mutate(snapshot.id) {
             try await self.client.resolveDecision(
-                intentID: snapshot.id,
+                threadID: snapshot.id,
                 decisionID: request.id,
                 choice: choice
             )
         }
     }
 
-    func abort(_ snapshot: IntentSnapshot) async {
+    func abort(_ snapshot: ThreadSnapshot) async {
         await mutate(snapshot.id) {
-            try await self.client.abortIntent(
+            try await self.client.abortThread(
                 id: snapshot.id,
                 reason: "用户从 macOS 客户端取消"
             )
         }
     }
 
-    func deleteIntent(_ snapshot: IntentSnapshot) async {
-        guard !mutatingIntentIDs.contains(snapshot.id) else {
+    func deleteThread(_ snapshot: ThreadSnapshot) async {
+        guard !mutatingThreadIDs.contains(snapshot.id) else {
             return
         }
-        mutatingIntentIDs.insert(snapshot.id)
-        defer { mutatingIntentIDs.remove(snapshot.id) }
+        mutatingThreadIDs.insert(snapshot.id)
+        defer { mutatingThreadIDs.remove(snapshot.id) }
         do {
-            let report = try await client.deleteIntent(id: snapshot.id)
+            let report = try await client.deleteThread(id: snapshot.id)
             snapshots.removeAll { $0.id == snapshot.id }
-            actionsByIntent[snapshot.id] = nil
-            connectorsByIntent[snapshot.id] = nil
-            capabilitiesByIntent[snapshot.id] = nil
-            if selectedIntentID == snapshot.id {
-                selectedIntentID = snapshots.first?.id
+            actionsByThread[snapshot.id] = nil
+            connectorsByThread[snapshot.id] = nil
+            capabilitiesByThread[snapshot.id] = nil
+            if selectedThreadID == snapshot.id {
+                selectedThreadID = snapshots.first?.id
             }
             if !report.cleanupErrors.isEmpty {
                 operationError = report.cleanupErrors.joined(separator: "\n")
@@ -289,7 +289,7 @@ final class AppStore: ObservableObject {
         defer { resolvingWorldItemIDs.remove(record.item.id) }
         do {
             _ = try await client.resolveWorldItem(
-                intentID: record.intentID,
+                threadID: record.threadID,
                 itemID: record.item.id,
                 kind: kind
             )
@@ -300,51 +300,51 @@ final class AppStore: ObservableObject {
     }
 
     func executeConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         action: ConnectorAction
     ) async {
-        await mutateAction(intentID: intentID, actionID: action.id) {
+        await mutateAction(threadID: threadID, actionID: action.id) {
             try await self.client.executeConnectorAction(
-                intentID: intentID,
+                threadID: threadID,
                 actionID: action.id
             )
         }
     }
 
     func verifyConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         action: ConnectorAction
     ) async {
-        await mutateAction(intentID: intentID, actionID: action.id) {
+        await mutateAction(threadID: threadID, actionID: action.id) {
             try await self.client.verifyConnectorAction(
-                intentID: intentID,
+                threadID: threadID,
                 actionID: action.id
             )
         }
     }
 
     func compensateConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         action: ConnectorAction
     ) async {
-        await mutateAction(intentID: intentID, actionID: action.id) {
+        await mutateAction(threadID: threadID, actionID: action.id) {
             try await self.client.compensateConnectorAction(
-                intentID: intentID,
+                threadID: threadID,
                 actionID: action.id
             )
         }
     }
 
     func proposeConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         request: ProposeConnectorActionRequest
     ) async -> ConnectorAction? {
         do {
             let action = try await client.proposeConnectorAction(
-                intentID: intentID,
+                threadID: threadID,
                 request: request
             )
-            upsertAction(action, intentID: intentID)
+            upsertAction(action, threadID: threadID)
             return action
         } catch {
             operationError = error.localizedDescription
@@ -353,13 +353,13 @@ final class AppStore: ObservableObject {
     }
 
     func previewConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID,
         request: PreviewConnectorActionRequest
     ) async -> ConnectorActionPreview? {
         do {
             return try await client.previewConnectorAction(
-                intentID: intentID,
+                threadID: threadID,
                 connectorID: connectorID,
                 request: request
             )
@@ -418,11 +418,11 @@ final class AppStore: ObservableObject {
             section = .decisions
         case .results:
             section = .results
-        case .newIntent:
+        case .newThread:
             section = .today
-            isCreatingIntent = true
-        case let .intent(intentID):
-            selectedIntentID = intentID
+            isCreatingThread = true
+        case let .thread(threadID):
+            selectedThreadID = threadID
             section = .decisions
         }
     }
@@ -468,12 +468,12 @@ final class AppStore: ObservableObject {
     }
 
     func correctWorldCorrelation(
-        intentID: IntentID,
+        threadID: ThreadID,
         correction: WorldCorrelationCorrection
     ) async {
         do {
             _ = try await client.correctWorldCorrelation(
-                intentID: intentID,
+                threadID: threadID,
                 correction: correction
             )
             projectWorlds = try await client.projectWorlds(includeResolved: false)
@@ -485,23 +485,23 @@ final class AppStore: ObservableObject {
     }
 
     func registerConnector(
-        intentID: IntentID,
+        threadID: ThreadID,
         request: RegisterConnectorRequest
     ) async -> ConnectorRegistration? {
         do {
             let connector = try await client.registerConnector(
-                intentID: intentID,
+                threadID: threadID,
                 request: request
             )
-            connectorsByIntent[intentID, default: []].append(connector)
+            connectorsByThread[threadID, default: []].append(connector)
             if let health = try? await client.connectorHealth(
-                intentID: intentID,
+                threadID: threadID,
                 connectorID: connector.id
             ) {
                 connectorHealth[connector.id] = health
             }
             _ = try? await client.syncConnector(
-                intentID: intentID,
+                threadID: threadID,
                 connectorID: connector.id
             )
             await refresh()
@@ -512,14 +512,14 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func syncConnector(intentID: IntentID, connectorID: ConnectorID) async {
+    func syncConnector(threadID: ThreadID, connectorID: ConnectorID) async {
         do {
             _ = try await client.syncConnector(
-                intentID: intentID,
+                threadID: threadID,
                 connectorID: connectorID
             )
             if let health = try? await client.connectorHealth(
-                intentID: intentID,
+                threadID: threadID,
                 connectorID: connectorID
             ) {
                 connectorHealth[connectorID] = health
@@ -529,17 +529,17 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func repairConnector(intentID: IntentID, connectorID: ConnectorID) async {
+    func repairConnector(threadID: ThreadID, connectorID: ConnectorID) async {
         do {
             let report = try await client.repairConnector(
-                intentID: intentID,
+                threadID: threadID,
                 connectorID: connectorID
             )
             if let error = report.error {
                 operationError = "Cursor 已重建，但重新同步失败：\(error)"
             }
             if let health = try? await client.connectorHealth(
-                intentID: intentID,
+                threadID: threadID,
                 connectorID: connectorID
             ) {
                 connectorHealth[connectorID] = health
@@ -550,7 +550,7 @@ final class AppStore: ObservableObject {
     }
 
     func attachConnectorCredential(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID,
         credential: ConnectorCredentialInput
     ) async -> Bool {
@@ -558,17 +558,17 @@ final class AppStore: ObservableObject {
         defer { authenticatingConnectorIDs.remove(connectorID) }
         do {
             let metadata = try await client.attachConnectorCredential(
-                intentID: intentID,
+                threadID: threadID,
                 connectorID: connectorID,
                 credential: credential
             )
             replaceConnectorCredential(
-                intentID: intentID,
+                threadID: threadID,
                 connectorID: connectorID,
                 credential: metadata
             )
             await refreshConnectorHealth(
-                intentID: intentID,
+                threadID: threadID,
                 connectorID: connectorID
             )
             return true
@@ -579,23 +579,23 @@ final class AppStore: ObservableObject {
     }
 
     func revokeConnectorCredential(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async {
         authenticatingConnectorIDs.insert(connectorID)
         defer { authenticatingConnectorIDs.remove(connectorID) }
         do {
             let metadata = try await client.revokeConnectorCredential(
-                intentID: intentID,
+                threadID: threadID,
                 connectorID: connectorID
             )
             replaceConnectorCredential(
-                intentID: intentID,
+                threadID: threadID,
                 connectorID: connectorID,
                 credential: metadata
             )
             await refreshConnectorHealth(
-                intentID: intentID,
+                threadID: threadID,
                 connectorID: connectorID
             )
         } catch {
@@ -604,17 +604,17 @@ final class AppStore: ObservableObject {
     }
 
     private func replaceConnectorCredential(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID,
         credential: ConnectorCredentialMetadata
     ) {
-        guard let index = connectorsByIntent[intentID]?.firstIndex(where: {
+        guard let index = connectorsByThread[threadID]?.firstIndex(where: {
             $0.id == connectorID
         }) else {
             return
         }
-        let old = connectorsByIntent[intentID]![index]
-        connectorsByIntent[intentID]![index] = ConnectorRegistration(
+        let old = connectorsByThread[threadID]![index]
+        connectorsByThread[threadID]![index] = ConnectorRegistration(
             id: old.id,
             name: old.name,
             adapter: old.adapter,
@@ -628,11 +628,11 @@ final class AppStore: ObservableObject {
     }
 
     private func refreshConnectorHealth(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async {
         if let health = try? await client.connectorHealth(
-            intentID: intentID,
+            threadID: threadID,
             connectorID: connectorID
         ) {
             connectorHealth[connectorID] = health
@@ -640,11 +640,11 @@ final class AppStore: ObservableObject {
     }
 
     private func mutate(
-        _ intentID: IntentID,
-        operation: @escaping () async throws -> IntentSnapshot
+        _ threadID: ThreadID,
+        operation: @escaping () async throws -> ThreadSnapshot
     ) async {
-        mutatingIntentIDs.insert(intentID)
-        defer { mutatingIntentIDs.remove(intentID) }
+        mutatingThreadIDs.insert(threadID)
+        defer { mutatingThreadIDs.remove(threadID) }
 
         do {
             upsert(try await operation())
@@ -654,7 +654,7 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func upsert(_ snapshot: IntentSnapshot) {
+    private func upsert(_ snapshot: ThreadSnapshot) {
         if let index = snapshots.firstIndex(where: { $0.id == snapshot.id }) {
             snapshots[index] = snapshot
         } else {
@@ -688,23 +688,23 @@ final class AppStore: ObservableObject {
         if let adapters = try? await client.connectorAdapters() {
             connectorManifests = adapters
         }
-        var connectors: [IntentID: [ConnectorRegistration]] = [:]
+        var connectors: [ThreadID: [ConnectorRegistration]] = [:]
         var health: [ConnectorID: ConnectorHealthReport] = [:]
         for snapshot in snapshots {
-            guard let items = try? await client.connectors(intentID: snapshot.id) else {
+            guard let items = try? await client.connectors(threadID: snapshot.id) else {
                 continue
             }
             connectors[snapshot.id] = items
             for item in items {
                 if let report = try? await client.connectorHealth(
-                    intentID: snapshot.id,
+                    threadID: snapshot.id,
                     connectorID: item.id
                 ) {
                     health[item.id] = report
                 }
             }
         }
-        connectorsByIntent = connectors
+        connectorsByThread = connectors
         connectorHealth = health
     }
 
@@ -717,7 +717,7 @@ final class AppStore: ObservableObject {
         for item in decisions where !previousIDs.contains(item.request.id) {
             Task {
                 await NotificationCoordinator.shared.postDecisionNotification(
-                    intentID: item.snapshot.id,
+                    threadID: item.snapshot.id,
                     request: item.request
                 )
             }
@@ -725,7 +725,7 @@ final class AppStore: ObservableObject {
     }
 
     private func mutateAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         actionID: ConnectorActionID,
         operation: @escaping () async throws -> ConnectorAction
     ) async {
@@ -734,7 +734,7 @@ final class AppStore: ObservableObject {
 
         do {
             let action = try await operation()
-            upsertAction(action, intentID: intentID)
+            upsertAction(action, threadID: threadID)
             connection = .connected
         } catch {
             operationError = error.localizedDescription
@@ -743,21 +743,21 @@ final class AppStore: ObservableObject {
             {
                 await refresh()
             } else {
-                if let actions = try? await client.connectorActions(intentID: intentID) {
-                    actionsByIntent[intentID] = actions
+                if let actions = try? await client.connectorActions(threadID: threadID) {
+                    actionsByThread[threadID] = actions
                 }
             }
         }
     }
 
-    private func upsertAction(_ action: ConnectorAction, intentID: IntentID) {
-        var actions = actionsByIntent[intentID] ?? []
+    private func upsertAction(_ action: ConnectorAction, threadID: ThreadID) {
+        var actions = actionsByThread[threadID] ?? []
         if let index = actions.firstIndex(where: { $0.id == action.id }) {
             actions[index] = action
         } else {
             actions.insert(action, at: 0)
         }
-        actionsByIntent[intentID] = actions
+        actionsByThread[threadID] = actions
     }
 }
 
@@ -768,9 +768,9 @@ private enum PreferenceKey {
 }
 
 private extension AppStore {
-    static var launchIntentID: String? {
+    static var launchThreadID: String? {
         let arguments = CommandLine.arguments
-        guard let index = arguments.firstIndex(of: "--open-intent"),
+        guard let index = arguments.firstIndex(of: "--open-thread"),
               arguments.indices.contains(index + 1)
         else {
             return nil

@@ -4,14 +4,14 @@ use else_gateway::{ExecContext, GatewayError, ToolGateway};
 use else_ledger::Ledger;
 use else_protocol::effect::{SideEffectKind, ToolCall, ToolStatus};
 use else_protocol::event::{Actor, EventPayload};
-use else_protocol::ids::{IntentId, RunId, ScopeId, ToolCallId};
-use else_protocol::intent::{AttentionPolicy, Authority, IntentSpec};
+use else_protocol::ids::{RunId, ScopeId, ThreadId, ToolCallId};
 use else_protocol::resource::{ResourceClass, ResourceLease};
+use else_protocol::thread::{AttentionPolicy, Authority, ThreadSpec};
 use serde_json::json;
 
-fn ctx(spec_id: &IntentId) -> ExecContext {
+fn ctx(spec_id: &ThreadId) -> ExecContext {
     ExecContext {
-        spec: IntentSpec {
+        spec: ThreadSpec {
             id: spec_id.clone(),
             revision: 1,
             outcome: "测试".into(),
@@ -25,7 +25,7 @@ fn ctx(spec_id: &IntentId) -> ExecContext {
                 allow_interrupt: true,
                 batch_interval_minutes: 30,
             },
-            opaque_harness_policy: else_protocol::intent::OpaqueHarnessPolicy::default(),
+            opaque_harness_policy: else_protocol::thread::OpaqueHarnessPolicy::default(),
             deadline: None,
             assumptions: vec![],
             project: None,
@@ -77,7 +77,7 @@ fn idempotent_call_is_not_executed_twice() {
     std::fs::create_dir_all(&workspace).unwrap();
     let ledger = Ledger::open_in_memory().unwrap();
     let gateway = ToolGateway::new(&ledger, workspace.clone());
-    let ctx = ctx(&IntentId::new());
+    let ctx = ctx(&ThreadId::new());
     grant_lease(&ledger, &ctx);
 
     let first = gateway
@@ -116,7 +116,7 @@ fn excessive_side_effect_requires_human_approval() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::open_in_memory().unwrap();
     let gateway = ToolGateway::new(&ledger, dir.path().to_path_buf());
-    let ctx = ctx(&IntentId::new());
+    let ctx = ctx(&ThreadId::new());
     grant_lease(&ledger, &ctx);
 
     let err = gateway
@@ -133,7 +133,7 @@ fn excessive_side_effect_requires_human_approval() {
     assert!(matches!(err, GatewayError::NeedsApproval(_)));
 
     // 已提交 AttentionRequest，而不是静默拒绝
-    let events = ledger.read_intent(&ctx.spec.id).unwrap();
+    let events = ledger.read_thread(&ctx.spec.id).unwrap();
     assert!(events.iter().any(|event| matches!(
         event.envelope.payload,
         EventPayload::AttentionRequested { .. }
@@ -152,7 +152,7 @@ fn path_escaping_workspace_fails_closed() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::open_in_memory().unwrap();
     let gateway = ToolGateway::new(&ledger, dir.path().to_path_buf());
-    let ctx = ctx(&IntentId::new());
+    let ctx = ctx(&ThreadId::new());
     grant_lease(&ledger, &ctx);
 
     let outcome = gateway
@@ -179,7 +179,7 @@ fn shell_is_executed_by_native_sandbox() {
     }
     let ledger = Ledger::open_in_memory().unwrap();
     let gateway = ToolGateway::new(&ledger, workspace.clone());
-    let mut ctx = ctx(&IntentId::new());
+    let mut ctx = ctx(&ThreadId::new());
     ctx.spec.authority.max_autonomous_effect = SideEffectKind::Unknown;
     grant_lease(&ledger, &ctx);
 
@@ -223,7 +223,7 @@ fn symlink_escaping_workspace_fails_closed() {
     .unwrap();
     let ledger = Ledger::open_in_memory().unwrap();
     let gateway = ToolGateway::new(&ledger, workspace);
-    let ctx = ctx(&IntentId::new());
+    let ctx = ctx(&ThreadId::new());
     grant_lease(&ledger, &ctx);
 
     for (index, (tool, input)) in [

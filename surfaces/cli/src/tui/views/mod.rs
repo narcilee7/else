@@ -3,9 +3,9 @@
 pub mod connectors;
 pub mod decisions;
 pub mod help;
-pub mod intent_detail;
 pub mod overview;
 pub mod results;
+pub mod thread_detail;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -27,14 +27,14 @@ pub fn panes(app: &App) -> Vec<Pane> {
         (Screen::DecisionDetail, Data::Decisions(data)) => {
             vec![decisions::detail_pane(data, app.focused_decision.as_ref())]
         }
-        (Screen::Results, Data::Intents(intents)) => vec![results::pane(intents)],
-        (Screen::IntentDetail, Data::IntentDetail(detail)) => {
-            vec![intent_detail::pane(detail, app.debug_detail)]
+        (Screen::Results, Data::Threads(threads)) => vec![results::pane(threads)],
+        (Screen::ThreadDetail, Data::ThreadDetail(detail)) => {
+            vec![thread_detail::pane(detail, app.debug_detail)]
         }
-        (Screen::IntentDetail, Data::Intents(intents))
-        | (Screen::Connectors, Data::Intents(intents)) => vec![results::intent_picker(intents)],
+        (Screen::ThreadDetail, Data::Threads(threads))
+        | (Screen::Connectors, Data::Threads(threads)) => vec![results::thread_picker(threads)],
         (Screen::Connectors, Data::Connectors(rows)) => {
-            vec![connectors::pane(rows, app.focused_intent.as_ref())]
+            vec![connectors::pane(rows, app.focused_thread.as_ref())]
         }
         _ => vec![Pane {
             title: app.screen.title().to_string(),
@@ -54,31 +54,31 @@ pub fn flat_rows(app: &App) -> Vec<Row> {
     panes(app).into_iter().flat_map(|pane| pane.rows).collect()
 }
 
-pub fn intent_state_label(state: else_protocol::intent::IntentState) -> &'static str {
-    use else_protocol::intent::IntentState;
+pub fn thread_state_label(state: else_protocol::thread::ThreadState) -> &'static str {
+    use else_protocol::thread::ThreadState;
     match state {
-        IntentState::Active => "Active",
-        IntentState::WaitingExternal => "Waiting",
-        IntentState::NeedsDecision => "Needs you",
-        IntentState::Paused => "Paused",
-        IntentState::Completed => "Completed",
-        IntentState::Cancelled => "Cancelled",
-        IntentState::Failed => "Failed",
+        ThreadState::Active => "Active",
+        ThreadState::WaitingExternal => "Waiting",
+        ThreadState::NeedsDecision => "Needs you",
+        ThreadState::Paused => "Paused",
+        ThreadState::Completed => "Completed",
+        ThreadState::Cancelled => "Cancelled",
+        ThreadState::Failed => "Failed",
     }
 }
 
-pub fn intent_style(state: else_protocol::intent::IntentState) -> Style {
-    use else_protocol::intent::IntentState;
+pub fn thread_style(state: else_protocol::thread::ThreadState) -> Style {
+    use else_protocol::thread::ThreadState;
     match state {
-        IntentState::Completed | IntentState::Cancelled => theme::done(),
-        IntentState::NeedsDecision | IntentState::Failed => theme::critical(),
-        IntentState::WaitingExternal => theme::waiting(),
-        IntentState::Paused => theme::muted(),
-        IntentState::Active => theme::text(),
+        ThreadState::Completed | ThreadState::Cancelled => theme::done(),
+        ThreadState::NeedsDecision | ThreadState::Failed => theme::critical(),
+        ThreadState::WaitingExternal => theme::waiting(),
+        ThreadState::Paused => theme::muted(),
+        ThreadState::Active => theme::text(),
     }
 }
 
-pub fn short_id(id: &else_protocol::ids::IntentId) -> String {
+pub fn short_id(id: &else_protocol::ids::ThreadId) -> String {
     id.to_string().chars().take(8).collect()
 }
 
@@ -242,7 +242,7 @@ fn draw_pane(frame: &mut Frame<'_>, area: Rect, pane: &Pane, offset: usize, curs
 
 fn draw_composer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let (title, prompt) = match app.composer_mode {
-        ComposerMode::Intent => ("New intent", "What outcome should Else own?"),
+        ComposerMode::Thread => ("New thread", "What outcome should Else own?"),
         ComposerMode::Decision { .. } => ("Custom response", "How should the runtime proceed?"),
     };
     let outer = Block::default()
@@ -310,7 +310,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
         Screen::Decisions => "Enter review · n new · r refresh · Esc back · ? help · q quit",
         Screen::Results => "Enter inspect outcome · n new · r refresh · ? help · q quit",
-        Screen::IntentDetail => "a advance · d debug · r refresh · Esc back · ? help · q quit",
+        Screen::ThreadDetail => "a advance · d debug · r refresh · Esc back · ? help · q quit",
         Screen::DecisionDetail => "Enter choose · e respond · x dismiss · Esc back · q quit",
         Screen::Connectors => "Enter/s sync · r refresh · Esc back · ? help · q quit",
         Screen::Composer => "Enter submit · Esc cancel · Ctrl-C quit",
@@ -390,7 +390,7 @@ mod tests {
     use super::*;
     use crate::tui::data::DecisionsData;
     use else_protocol::attention::{AttentionKind, AttentionRequest, DecisionOption, ExpectedLoss};
-    use else_protocol::ids::{AttentionId, IntentId};
+    use else_protocol::ids::{AttentionId, ThreadId};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -427,9 +427,9 @@ mod tests {
     fn results_empty_state_explains_what_will_appear() {
         let mut app = app();
         app.screen = Screen::Results;
-        app.data = Data::Intents(Vec::new());
+        app.data = Data::Threads(Vec::new());
         let content = render_text(&app, 100, 24);
-        assert!(content.contains("No finished intents yet."));
+        assert!(content.contains("No finished threads yet."));
         assert!(content.contains("Completed outcomes"));
     }
 
@@ -438,13 +438,13 @@ mod tests {
         let mut app = app();
         app.screen = Screen::DecisionDetail;
         app.focused_decision = Some(crate::tui::app::DecisionFocus {
-            intent_id: IntentId::from("intent-1"),
+            thread_id: ThreadId::from("thread-1"),
             request_id: AttentionId::from("request-1"),
         });
         app.data = Data::Decisions(Box::new(DecisionsData {
             windows: Vec::new(),
             loose: vec![(
-                IntentId::from("intent-1"),
+                ThreadId::from("thread-1"),
                 AttentionRequest {
                     id: AttentionId::from("request-1"),
                     kind: AttentionKind::Authorization,
@@ -480,7 +480,7 @@ mod tests {
         assert!(content.contains("What outcome should Else own?"));
         assert!(content.contains("Ship a reliable terminal"));
 
-        app.confirmation = Some(crate::tui::loader::ActionRequest::CreateIntent {
+        app.confirmation = Some(crate::tui::loader::ActionRequest::CreateThread {
             outcome: "unused".into(),
         });
         let content = render_text(&app, 60, 20);

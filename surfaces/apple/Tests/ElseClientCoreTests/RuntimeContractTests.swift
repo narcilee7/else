@@ -5,9 +5,9 @@ import Testing
 @Suite("Runtime wire contract")
 struct RuntimeContractTests {
     @Test
-    func decodesIntentSnapshotUsingRuntimeWireFormat() throws {
+    func decodesThreadSnapshotUsingRuntimeWireFormat() throws {
         let data = try Self.sharedContractFixture()
-        let snapshot = try RuntimeJSON.decoder().decode(IntentSnapshot.self, from: data)
+        let snapshot = try RuntimeJSON.decoder().decode(ThreadSnapshot.self, from: data)
 
         #expect(snapshot.id.rawValue == "C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
         #expect(snapshot.spec.revision == 2)
@@ -26,14 +26,14 @@ struct RuntimeContractTests {
     func decodesSharedContractFixture() throws {
         let url = try #require(
             Bundle.module.url(
-                forResource: "intent_snapshot",
+                forResource: "thread_snapshot",
                 withExtension: "json",
                 subdirectory: "Fixtures"
             ),
             "共享契约 fixture 缺失"
         )
         let data = try Data(contentsOf: url)
-        let snapshot = try RuntimeJSON.decoder().decode(IntentSnapshot.self, from: data)
+        let snapshot = try RuntimeJSON.decoder().decode(ThreadSnapshot.self, from: data)
 
         #expect(snapshot.spec.outcome == "完成客户端基础设施")
         #expect(snapshot.spec.constraints == ["不绕过 API"])
@@ -95,7 +95,7 @@ struct RuntimeContractTests {
     private static func sharedContractFixture() throws -> Data {
         let url = try #require(
             Bundle.module.url(
-                forResource: "intent_snapshot",
+                forResource: "thread_snapshot",
                 withExtension: "json",
                 subdirectory: "Fixtures"
             ),

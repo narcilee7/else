@@ -32,13 +32,13 @@ struct ElseMacApp: App {
         .defaultSize(width: 1_180, height: 760)
         .commands {
             CommandGroup(after: .newItem) {
-                Button("新建 Intent") {
-                    store.isCreatingIntent = true
+                Button("新建 Thread") {
+                    store.isCreatingThread = true
                 }
                 .keyboardShortcut("n", modifiers: [.command])
 
-                Button("快速新建 Intent") {
-                    store.isCreatingIntent = true
+                Button("快速新建 Thread") {
+                    store.isCreatingThread = true
                 }
                 .keyboardShortcut("k", modifiers: [.command])
             }
@@ -114,7 +114,7 @@ private final class ElseServiceProvider: NSObject {
             return
         }
         Foundation.NotificationCenter.default.post(
-            name: .elseQuickIntent,
+            name: .elseQuickThread,
             object: text
         )
     }

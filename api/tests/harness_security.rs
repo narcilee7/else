@@ -58,7 +58,7 @@ fn host_env_credentials_do_not_leak_into_sandbox() {
     unsafe { std::env::set_var("ELSE_TEST_SECRET_SENTINEL", "super-secret-value") };
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("凭据泄漏探针", None).unwrap();
+    let spec = runtime.create_thread("凭据泄漏探针", None).unwrap();
     // Harness 把环境变量值写进输出；若泄漏，事件流里会出现哨兵值
     runtime
         .run_adapter(
@@ -91,7 +91,7 @@ printf '%s\n' '{"type":"completed","summary":"probe"}'"#,
 fn network_is_denied_by_default_for_harnesses() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("网络拒绝探针", None).unwrap();
+    let spec = runtime.create_thread("网络拒绝探针", None).unwrap();
     let error = runtime
         .run_adapter(
             &spec.id,
@@ -109,7 +109,7 @@ fn network_is_denied_by_default_for_harnesses() {
 fn harness_private_credentials_are_deleted_and_never_enter_workspace() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("私有目录探针", None).unwrap();
+    let spec = runtime.create_thread("私有目录探针", None).unwrap();
     let mut harness = probe_harness(
         r#"touch plan.md
 printf '%s\n' '{"type":"completed","summary":"done"}'"#,

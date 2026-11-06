@@ -30,7 +30,7 @@ public struct ID<Tag: Sendable>: RawRepresentable, Codable, Hashable, Comparable
     public var description: String { rawValue }
 }
 
-public enum IntentTag: Sendable {}
+public enum ThreadTag: Sendable {}
 public enum AttentionTag: Sendable {}
 public enum ArtifactTag: Sendable {}
 public enum RunTag: Sendable {}
@@ -42,7 +42,7 @@ public enum ToolCallTag: Sendable {}
 public enum AttentionWindowTag: Sendable {}
 public enum TimerTag: Sendable {}
 
-public typealias IntentID = ID<IntentTag>
+public typealias ThreadID = ID<ThreadTag>
 public typealias AttentionID = ID<AttentionTag>
 public typealias ArtifactID = ID<ArtifactTag>
 public typealias RunID = ID<RunTag>

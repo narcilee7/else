@@ -1,4 +1,4 @@
-//! 基础投影：从事件重建 Intent 与 Scope 委托树。
+//! 基础投影：从事件重建 Thread 与 Scope 委托树。
 //! 投影可丢弃、可重建；UI 与 Decision Queue 只读投影。
 
 use std::collections::BTreeMap;
@@ -12,15 +12,15 @@ use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, CapabilityRegistration, McpServerRegistration,
 };
 use else_protocol::connector::{
-    ConnectorAction, ConnectorRegistration, ConnectorSyncStatus, IntentCandidate,
-    SignalInterpretation, SignalStatus, SyncCursor, WorldSignal,
+    ConnectorAction, ConnectorRegistration, ConnectorSyncStatus, SignalInterpretation,
+    SignalStatus, SyncCursor, ThreadCandidate, WorldSignal,
 };
 use else_protocol::event::{Actor, EventPayload, ScopeState};
 use else_protocol::failure::ScopeFailure;
 use else_protocol::ids::{ArtifactId, AttentionId, AttentionWindowId, LeaseId, ScopeId, TimerId};
-use else_protocol::intent::{IntentSpec, IntentState};
 use else_protocol::plan::{Plan, PlanImpact, PlanStepStatus};
 use else_protocol::resource::{ResourceBudget, ResourceUsage, SandboxUsage, SandboxUsageBasis};
+use else_protocol::thread::{ThreadSpec, ThreadState};
 use else_protocol::world::{WorldCorrelationCorrection, WorldItemResolution};
 
 use crate::{Projection, StoredEvent};
@@ -38,16 +38,16 @@ pub struct ScopeProjection {
     pub replaces: Option<ScopeId>,
     pub failure_count: u32,
     pub last_failure: Option<ScopeFailure>,
-    /// Subagent 的收窄权限契约；根 Scope 使用 IntentSpec。
-    pub spec: Option<IntentSpec>,
+    /// Subagent 的收窄权限契约；根 Scope 使用 ThreadSpec。
+    pub spec: Option<ThreadSpec>,
 }
 
 impl ScopeProjection {
     /// 契约视图：Scope 的可读快照。
     ///
-    /// 根 Scope 没有自己的 spec，用 Intent 的 spec 兜底 —— 这样 surface
+    /// 根 Scope 没有自己的 spec，用 Thread 的 spec 兜底 —— 这样 surface
     /// 渲染委托树时每一行都有可显示的目标。
-    pub fn view(&self, scope_id: &ScopeId, root: Option<&IntentSpec>) -> ScopeView {
+    pub fn view(&self, scope_id: &ScopeId, root: Option<&ThreadSpec>) -> ScopeView {
         let spec = self.spec.as_ref().or(root);
         ScopeView {
             scope_id: scope_id.clone(),
@@ -87,13 +87,13 @@ pub struct AttentionRecordProjection {
     pub decision: Option<Decision>,
 }
 
-/// Intent 的基础投影：目标契约、状态、待本人决策、产物、检查点与 Scope 树。
+/// Thread 的基础投影：目标契约、状态、待本人决策、产物、检查点与 Scope 树。
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct IntentProjection {
-    pub spec: Option<IntentSpec>,
-    /// Intent 创建时确定的根 Scope。根身份不随 Run、重试或 Revision 改变。
+pub struct ThreadProjection {
+    pub spec: Option<ThreadSpec>,
+    /// Thread 创建时确定的根 Scope。根身份不随 Run、重试或 Revision 改变。
     pub root_scope_id: Option<ScopeId>,
-    pub state: Option<IntentState>,
+    pub state: Option<ThreadState>,
     /// Decision Queue：已请求但未决策的注意力请求。
     pub open_requests: BTreeMap<AttentionId, AttentionRequest>,
     /// Attention Kernel 的持久裁决；没有裁决的请求不能被表面直接打断用户。
@@ -123,9 +123,9 @@ pub struct IntentProjection {
     pub signal_dedupe: BTreeMap<String, else_protocol::ids::WorldSignalId>,
     pub signal_interpretations:
         BTreeMap<else_protocol::ids::WorldSignalId, Vec<SignalInterpretation>>,
-    pub intent_candidates: BTreeMap<else_protocol::ids::IntentCandidateId, IntentCandidate>,
-    pub candidate_seqs: BTreeMap<else_protocol::ids::IntentCandidateId, u64>,
-    pub candidate_dedupe: BTreeMap<String, else_protocol::ids::IntentCandidateId>,
+    pub thread_candidates: BTreeMap<else_protocol::ids::ThreadCandidateId, ThreadCandidate>,
+    pub candidate_seqs: BTreeMap<else_protocol::ids::ThreadCandidateId, u64>,
+    pub candidate_dedupe: BTreeMap<String, else_protocol::ids::ThreadCandidateId>,
     pub world_item_resolutions: BTreeMap<else_protocol::ids::WorldItemId, WorldItemResolution>,
     pub world_correlation_corrections:
         BTreeMap<else_protocol::ids::WorldCorrelationCorrectionId, WorldCorrelationCorrection>,
@@ -149,11 +149,11 @@ pub struct IntentProjection {
     pub cursor: u64,
 }
 
-impl Projection for IntentProjection {
+impl Projection for ThreadProjection {
     fn apply(&mut self, event: &StoredEvent) {
         self.cursor = event.seq;
         match &event.envelope.payload {
-            EventPayload::IntentCreated { spec } => {
+            EventPayload::ThreadCreated { spec } => {
                 self.root_scope_id = Some(event.envelope.scope_id.clone());
                 self.scopes.insert(
                     event.envelope.scope_id.clone(),
@@ -172,10 +172,10 @@ impl Projection for IntentProjection {
                 self.scope_order.push(event.envelope.scope_id.clone());
                 self.spec = Some(spec.clone());
             }
-            EventPayload::IntentRevised { spec, .. } => {
+            EventPayload::ThreadRevised { spec, .. } => {
                 self.spec = Some(spec.clone());
             }
-            EventPayload::IntentStateChanged { state } => {
+            EventPayload::ThreadStateChanged { state } => {
                 self.state = Some(*state);
             }
             EventPayload::StructuredPlanProposed { plan } => {
@@ -364,13 +364,13 @@ impl Projection for IntentProjection {
                         .retain(|event| event.event_id != id.to_string());
                     self.signal_seqs.insert(id.clone(), event.seq);
                     let mut superseded_candidates = Vec::new();
-                    for candidate in self.intent_candidates.values_mut() {
+                    for candidate in self.thread_candidates.values_mut() {
                         if candidate.state
-                            == else_protocol::connector::IntentCandidateState::Proposed
+                            == else_protocol::connector::ThreadCandidateState::Proposed
                             && candidate.related_signal_ids.contains(&id)
                         {
                             candidate.state =
-                                else_protocol::connector::IntentCandidateState::Superseded;
+                                else_protocol::connector::ThreadCandidateState::Superseded;
                             superseded_candidates.push(candidate.id.clone());
                         }
                     }
@@ -401,13 +401,13 @@ impl Projection for IntentProjection {
                         self.external_events
                             .retain(|event| event.event_id != signal_id.to_string());
                         let mut superseded_candidates = Vec::new();
-                        for candidate in self.intent_candidates.values_mut() {
+                        for candidate in self.thread_candidates.values_mut() {
                             if candidate.state
-                                == else_protocol::connector::IntentCandidateState::Proposed
+                                == else_protocol::connector::ThreadCandidateState::Proposed
                                 && candidate.related_signal_ids.contains(signal_id)
                             {
                                 candidate.state =
-                                    else_protocol::connector::IntentCandidateState::Superseded;
+                                    else_protocol::connector::ThreadCandidateState::Superseded;
                                 superseded_candidates.push(candidate.id.clone());
                             }
                         }
@@ -436,27 +436,27 @@ impl Projection for IntentProjection {
                     .or_default()
                     .push(interpretation.clone());
             }
-            EventPayload::IntentCandidateProposed { candidate }
+            EventPayload::ThreadCandidateProposed { candidate }
                 if !self.candidate_dedupe.contains_key(&candidate.dedupe_key) =>
             {
                 self.candidate_dedupe
                     .insert(candidate.dedupe_key.clone(), candidate.id.clone());
                 self.candidate_seqs.insert(candidate.id.clone(), event.seq);
-                self.intent_candidates
+                self.thread_candidates
                     .insert(candidate.id.clone(), candidate.clone());
             }
-            EventPayload::IntentCandidateStateChanged {
+            EventPayload::ThreadCandidateStateChanged {
                 candidate_id,
                 state,
-                intent_id,
+                thread_id,
                 accepted_by,
             } => {
-                if let Some(candidate) = self.intent_candidates.get_mut(candidate_id) {
+                if let Some(candidate) = self.thread_candidates.get_mut(candidate_id) {
                     candidate.state = *state;
                     candidate.accepted_by = *accepted_by;
                     self.candidate_seqs.insert(candidate_id.clone(), event.seq);
-                    if intent_id.is_some() {
-                        candidate.accepted_intent_id = intent_id.clone();
+                    if thread_id.is_some() {
+                        candidate.accepted_thread_id = thread_id.clone();
                     }
                 }
             }
@@ -802,7 +802,7 @@ fn same_external_entity(left: &WorldSignal, right: &WorldSignal) -> bool {
         && left.entity_ref.external_id == right.entity_ref.external_id
 }
 
-impl IntentProjection {
+impl ThreadProjection {
     pub fn current_plan(&self) -> Option<&Plan> {
         self.current_plan_id
             .as_ref()

@@ -5,21 +5,21 @@ use else_ledger::LedgerError;
 use else_protocol::attention::DecisionChoice;
 use else_protocol::effect::EffectConclusion;
 use else_protocol::event::{EventPayload, ScopeState};
-use else_protocol::intent::IntentState;
+use else_protocol::thread::ThreadState;
 
-fn waiting_intent(runtime: &Runtime) -> else_protocol::intent::IntentSpec {
-    let spec = runtime.create_intent("验证取消语义", None).unwrap();
+fn waiting_thread(runtime: &Runtime) -> else_protocol::thread::ThreadSpec {
+    let spec = runtime.create_thread("验证取消语义", None).unwrap();
     let projection = runtime.run(&spec.id).unwrap();
-    assert_eq!(projection.state, Some(IntentState::NeedsDecision));
+    assert_eq!(projection.state, Some(ThreadState::NeedsDecision));
     spec
 }
 
-fn assert_converged(runtime: &Runtime, intent_id: &else_protocol::ids::IntentId) {
-    let projection = runtime.projection(intent_id).unwrap();
-    assert_eq!(projection.state, Some(IntentState::Cancelled));
+fn assert_converged(runtime: &Runtime, thread_id: &else_protocol::ids::ThreadId) {
+    let projection = runtime.projection(thread_id).unwrap();
+    assert_eq!(projection.state, Some(ThreadState::Cancelled));
     assert!(projection.open_requests.is_empty());
 
-    let events = runtime.events(intent_id).unwrap();
+    let events = runtime.events(thread_id).unwrap();
     let states: Vec<_> = events
         .iter()
         .filter_map(|event| match event.envelope.payload {
@@ -50,7 +50,7 @@ fn assert_converged(runtime: &Runtime, intent_id: &else_protocol::ids::IntentId)
 fn abort_converges_inflight_closes_decisions_and_never_resurrects() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = waiting_intent(&runtime);
+    let spec = waiting_thread(&runtime);
     let request_id = runtime
         .projection(&spec.id)
         .unwrap()
@@ -61,7 +61,7 @@ fn abort_converges_inflight_closes_decisions_and_never_resurrects() {
         .clone();
 
     let cancelled = runtime.abort(&spec.id, "测试取消").unwrap();
-    assert_eq!(cancelled.state, Some(IntentState::Cancelled));
+    assert_eq!(cancelled.state, Some(ThreadState::Cancelled));
     assert_converged(&runtime, &spec.id);
 
     // 终态 run/abort 幂等；旧 Decision 不得让执行复活。
@@ -90,7 +90,7 @@ fn kill_at_every_abort_event_boundary_recovers_exactly_once() {
     for cut in 1..=8 {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = waiting_intent(&runtime);
+        let spec = waiting_thread(&runtime);
         runtime.crash_after_appends(cut);
         let error = runtime.abort(&spec.id, "kill 测试").unwrap_err();
         assert!(matches!(
@@ -117,7 +117,7 @@ fn seeded_random_kill_points_always_recover() {
         let cut = seed % 8 + 1;
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = waiting_intent(&runtime);
+        let spec = waiting_thread(&runtime);
         runtime.crash_after_appends(cut);
         assert!(runtime.abort(&spec.id, "随机 kill").is_err());
         drop(runtime);

@@ -1,15 +1,15 @@
 import Foundation
 
-public struct IntentSnapshot: Codable, Equatable, Identifiable, Sendable {
-    public let spec: IntentSpec
-    public let state: IntentState
+public struct ThreadSnapshot: Codable, Equatable, Identifiable, Sendable {
+    public let spec: ThreadSpec
+    public let state: ThreadState
     public let decisions: [AttentionRequest]
     public let artifacts: [Artifact]
     public let resourceBudget: ResourceBudget
     public let resourceUsage: ResourceUsage
     public let cursor: UInt64
 
-    public var id: IntentID { spec.id }
+    public var id: ThreadID { spec.id }
     public var isTerminal: Bool {
         switch state {
         case .completed, .cancelled, .failed: true
@@ -18,8 +18,8 @@ public struct IntentSnapshot: Codable, Equatable, Identifiable, Sendable {
     }
 
     public init(
-        spec: IntentSpec,
-        state: IntentState,
+        spec: ThreadSpec,
+        state: ThreadState,
         decisions: [AttentionRequest],
         artifacts: [Artifact],
         resourceBudget: ResourceBudget,
@@ -37,8 +37,8 @@ public struct IntentSnapshot: Codable, Equatable, Identifiable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        spec = try container.decode(IntentSpec.self, forKey: .spec)
-        state = try container.decodeIfPresent(IntentState.self, forKey: .state) ?? .active
+        spec = try container.decode(ThreadSpec.self, forKey: .spec)
+        state = try container.decodeIfPresent(ThreadState.self, forKey: .state) ?? .active
         decisions = try container.decodeIfPresent(
             [AttentionRequest].self,
             forKey: .decisions
@@ -66,7 +66,7 @@ public struct IntentSnapshot: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-public struct CreateIntentRequest: Codable, Equatable, Sendable {
+public struct CreateThreadRequest: Codable, Equatable, Sendable {
     public let outcome: String
     public let project: String?
 
@@ -84,7 +84,7 @@ public struct ResolveDecisionRequest: Codable, Equatable, Sendable {
     }
 }
 
-public struct AbortIntentRequest: Codable, Equatable, Sendable {
+public struct AbortThreadRequest: Codable, Equatable, Sendable {
     public let reason: String
 
     public init(reason: String) {

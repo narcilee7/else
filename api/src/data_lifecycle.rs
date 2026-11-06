@@ -1,15 +1,15 @@
-//! Explicit user-driven deletion of one Intent.
+//! Explicit user-driven deletion of one Thread.
 
 use serde::Serialize;
 
-use else_protocol::ids::IntentId;
-use else_protocol::intent::IntentState;
+use else_protocol::ids::ThreadId;
+use else_protocol::thread::ThreadState;
 
 use crate::{ApiError, Result, Runtime};
 
 #[derive(Debug, Serialize)]
-pub struct IntentDeletionReport {
-    pub intent_id: IntentId,
+pub struct ThreadDeletionReport {
+    pub thread_id: ThreadId,
     pub deleted_events: usize,
     pub removed_credentials: usize,
     pub removed_workspace_paths: usize,
@@ -19,23 +19,23 @@ pub struct IntentDeletionReport {
 }
 
 impl Runtime {
-    pub fn delete_intent(&self, intent_id: &IntentId) -> Result<IntentDeletionReport> {
-        let mut projection = self.projection(intent_id)?;
+    pub fn delete_thread(&self, thread_id: &ThreadId) -> Result<ThreadDeletionReport> {
+        let mut projection = self.projection(thread_id)?;
         if projection.spec.is_none() {
-            return Err(ApiError::IntentNotFound(intent_id.clone()));
+            return Err(ApiError::ThreadNotFound(thread_id.clone()));
         }
         if !matches!(
             projection.state,
-            Some(IntentState::Completed | IntentState::Failed | IntentState::Cancelled)
+            Some(ThreadState::Completed | ThreadState::Failed | ThreadState::Cancelled)
         ) {
-            projection = self.abort(intent_id, "user requested permanent deletion")?;
+            projection = self.abort(thread_id, "user requested permanent deletion")?;
         }
         if !matches!(
             projection.state,
-            Some(IntentState::Completed | IntentState::Failed | IntentState::Cancelled)
+            Some(ThreadState::Completed | ThreadState::Failed | ThreadState::Cancelled)
         ) {
             return Err(ApiError::Conflict(
-                "intent did not reach a terminal state before deletion".into(),
+                "thread did not reach a terminal state before deletion".into(),
             ));
         }
 
@@ -66,9 +66,9 @@ impl Runtime {
             }
         }
 
-        let deleted_events = self.ledger.delete_intent(intent_id)?;
-        Ok(IntentDeletionReport {
-            intent_id: intent_id.clone(),
+        let deleted_events = self.ledger.delete_thread(thread_id)?;
+        Ok(ThreadDeletionReport {
+            thread_id: thread_id.clone(),
             deleted_events,
             removed_credentials,
             removed_workspace_paths,

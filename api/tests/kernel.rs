@@ -8,7 +8,7 @@ use else_protocol::event::ScopeState;
 use else_protocol::harness::{
     CancelSupport, HarnessCapabilities, ToolEffectVisibility, UsageSupport,
 };
-use else_protocol::intent::IntentState;
+use else_protocol::thread::ThreadState;
 
 struct NullParser;
 
@@ -84,7 +84,7 @@ fn successful_child_harness() -> ProcessHarness<CompletedParser> {
 fn kernel_drives_one_step_and_waits_for_real_decisions() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("整理会议纪要", None).unwrap();
+    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
 
     let initial = runtime.projection(&spec.id).unwrap();
     let root = initial.root_scope_id.expect("root scope");
@@ -99,7 +99,7 @@ fn kernel_drives_one_step_and_waits_for_real_decisions() {
     ));
 
     let waiting = runtime.advance(&spec.id, None).unwrap();
-    assert_eq!(waiting.state, Some(IntentState::NeedsDecision));
+    assert_eq!(waiting.state, Some(ThreadState::NeedsDecision));
     let request = waiting
         .actionable_requests(chrono::Utc::now())
         .first()
@@ -114,7 +114,7 @@ fn kernel_drives_one_step_and_waits_for_real_decisions() {
     let completed = runtime
         .decide(&spec.id, &request, DecisionChoice::Option("approve".into()))
         .unwrap();
-    assert_eq!(completed.state, Some(IntentState::Completed));
+    assert_eq!(completed.state, Some(ThreadState::Completed));
     assert_eq!(completed.scopes[&root].state, ScopeState::Completed);
     assert_eq!(
         runtime.kernel_step(&spec.id, None).unwrap(),
@@ -126,7 +126,7 @@ fn kernel_drives_one_step_and_waits_for_real_decisions() {
 fn failed_run_is_retried_with_a_new_generation() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("整理会议纪要", None).unwrap();
+    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
     runtime
         .run_adapter(&spec.id, &failing_harness())
         .unwrap_err();
@@ -154,7 +154,7 @@ fn failed_run_is_retried_with_a_new_generation() {
 fn kernel_respects_scope_dependencies_and_fair_root_order() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("整理会议纪要", None).unwrap();
+    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
     runtime
         .run_adapter(&spec.id, &failing_harness())
         .unwrap_err();
@@ -200,7 +200,7 @@ fn kernel_respects_scope_dependencies_and_fair_root_order() {
 fn due_timer_wakes_drive_until_the_next_wait_state() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("整理会议纪要", None).unwrap();
+    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
     runtime
         .schedule_timer(
             &spec.id,
@@ -213,14 +213,14 @@ fn due_timer_wakes_drive_until_the_next_wait_state() {
     assert_eq!(driven.stopped, KernelDriveStop::WaitForUser);
     assert_eq!(driven.steps, 2, "fire timer then run root");
     assert!(driven.projection.timers.is_empty());
-    assert_eq!(driven.projection.state, Some(IntentState::NeedsDecision));
+    assert_eq!(driven.projection.state, Some(ThreadState::NeedsDecision));
 }
 
 #[test]
 fn future_timer_is_a_durable_wait_condition() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("整理会议纪要", None).unwrap();
+    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
     let fire_at = chrono::Utc::now() + chrono::Duration::hours(1);
     runtime
         .schedule_timer(&spec.id, fire_at, "follow up later")
@@ -240,7 +240,7 @@ fn future_timer_is_a_durable_wait_condition() {
 fn external_event_is_durable_and_can_wake_kernel_progress() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("整理会议纪要", None).unwrap();
+    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
     runtime
         .record_external_event(&spec.id, "mail", "合作方已回复")
         .unwrap();
@@ -257,7 +257,7 @@ fn external_event_is_durable_and_can_wake_kernel_progress() {
 fn waiting_external_blocks_execution_and_feeds_the_next_context() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("整理会议纪要", None).unwrap();
+    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
     runtime
         .wait_for_external(&spec.id, "等待合作方回复")
         .unwrap();
@@ -285,7 +285,7 @@ fn waiting_external_blocks_execution_and_feeds_the_next_context() {
 fn due_timer_resumes_an_external_wait() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("整理会议纪要", None).unwrap();
+    let spec = runtime.create_thread("整理会议纪要", None).unwrap();
     runtime.wait_for_external(&spec.id, "等待异步任务").unwrap();
     runtime
         .schedule_timer(
@@ -298,5 +298,5 @@ fn due_timer_resumes_an_external_wait() {
     let driven = runtime.drive(&spec.id, Some("scripted"), 8).unwrap();
     assert_eq!(driven.stopped, KernelDriveStop::WaitForUser);
     assert_eq!(driven.projection.external_wait_reason, None);
-    assert_ne!(driven.projection.state, Some(IntentState::WaitingExternal));
+    assert_ne!(driven.projection.state, Some(ThreadState::WaitingExternal));
 }

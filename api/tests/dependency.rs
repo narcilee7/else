@@ -1,6 +1,6 @@
 //! 依赖失败：有限重试、单次替换、下游重接线或显式 Superseded。
 
-use else_api::{IntentRevision, KernelAction, Runtime};
+use else_api::{KernelAction, Runtime, ThreadRevision};
 use else_harness::adapter::{BridgeEvent, HarnessPrep, LineParser, ProcessHarness};
 use else_protocol::effect::SideEffectKind;
 use else_protocol::event::ScopeState;
@@ -83,7 +83,7 @@ fn successful_harness() -> ProcessHarness<CompletedParser> {
 fn terminal_dependency_failure_gets_one_replacement_and_rewires_downstream() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("依赖自动收敛", None).unwrap();
+    let spec = runtime.create_thread("依赖自动收敛", None).unwrap();
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let failed = runtime
         .spawn_subagent(&spec.id, &root, "失败上游", SideEffectKind::ReadOnly)
@@ -160,7 +160,7 @@ fn terminal_dependency_failure_gets_one_replacement_and_rewires_downstream() {
 fn user_cancelled_dependency_supersedes_downstream_without_retrying_it() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("用户取消上游", None).unwrap();
+    let spec = runtime.create_thread("用户取消上游", None).unwrap();
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let cancelled = runtime
         .spawn_subagent(&spec.id, &root, "将取消的上游", SideEffectKind::ReadOnly)
@@ -176,11 +176,11 @@ fn user_cancelled_dependency_supersedes_downstream_without_retrying_it() {
         .unwrap();
 
     runtime
-        .revise_intent(
+        .revise_thread(
             &spec.id,
-            IntentRevision {
+            ThreadRevision {
                 reason: "只取消上游".into(),
-                ..IntentRevision::default()
+                ..ThreadRevision::default()
             },
             std::slice::from_ref(&downstream),
         )
@@ -197,7 +197,7 @@ fn user_cancelled_dependency_supersedes_downstream_without_retrying_it() {
 fn failed_replacement_is_not_replaced_again_and_downstream_is_cut() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("替换链只允许一层", None).unwrap();
+    let spec = runtime.create_thread("替换链只允许一层", None).unwrap();
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let failed = runtime
         .spawn_subagent(&spec.id, &root, "原失败节点", SideEffectKind::ReadOnly)

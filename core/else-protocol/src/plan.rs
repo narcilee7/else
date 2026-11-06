@@ -1,6 +1,6 @@
 //! 结构化计划协议。
 //!
-//! Plan 是 Orchestrator 的可检查建议，不是 Intent，也不拥有执行权限。
+//! Plan 是 Orchestrator 的可检查建议，不是 Thread，也不拥有执行权限。
 //! 外部事实只能通过 Plan Impact 标记受影响步骤；是否取消 Scope 仍由
 //! Orchestrator 根据生命周期语义决定。
 
@@ -25,7 +25,8 @@ pub enum PlanStepStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanEvidenceKind {
-    UserIntent,
+    #[serde(alias = "user_intent")]
+    UserThread,
     ExternalFact,
     Memory,
     ExecutionObserved,
@@ -62,7 +63,8 @@ pub struct Plan {
     pub id: PlanId,
     pub revision: u64,
     pub supersedes: Option<PlanId>,
-    pub intent_revision: u64,
+    #[serde(alias = "intent_revision")]
+    pub thread_revision: u64,
     pub summary: String,
     pub steps: Vec<PlanStep>,
     pub evidence: Vec<PlanEvidence>,

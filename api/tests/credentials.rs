@@ -30,7 +30,7 @@ fn notion_credential(secret: &str) -> ConnectorCredential {
 fn connector_credentials_never_enter_the_ledger_and_can_be_revoked() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_with_file_credentials(dir.path());
-    let spec = runtime.create_intent("整理 Notion 项目资料", None).unwrap();
+    let spec = runtime.create_thread("整理 Notion 项目资料", None).unwrap();
     let source = dir.path().join("notion.json");
     std::fs::write(&source, r#"{"results":[]}"#).unwrap();
     let secret = "notion-super-secret-token";
@@ -82,7 +82,7 @@ fn connector_credentials_never_enter_the_ledger_and_can_be_revoked() {
 fn credential_scope_check_happens_before_storage_or_registration() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_with_file_credentials(dir.path());
-    let spec = runtime.create_intent("检查凭据范围", None).unwrap();
+    let spec = runtime.create_thread("检查凭据范围", None).unwrap();
     let source = dir.path().join("notion.json");
     std::fs::write(&source, r#"{"results":[]}"#).unwrap();
     let mut credential = notion_credential("scope-secret");
@@ -109,7 +109,7 @@ fn credential_scope_check_happens_before_storage_or_registration() {
 fn scheduler_syncs_due_connectors_and_degrades_after_repeated_failures() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_with_file_credentials(dir.path());
-    let spec = runtime.create_intent("持续同步日历", None).unwrap();
+    let spec = runtime.create_thread("持续同步日历", None).unwrap();
     let source = dir.path().join("missing.ics");
     std::fs::write(&source, "BEGIN:VCALENDAR\nEND:VCALENDAR\n").unwrap();
     let connector = runtime

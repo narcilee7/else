@@ -1,7 +1,7 @@
 //! 列表行及其可执行动作。
 
 use else_protocol::attention::DecisionChoice;
-use else_protocol::ids::{AttentionId, ConnectorId, IntentId, WorldItemId};
+use else_protocol::ids::{AttentionId, ConnectorId, ThreadId, WorldItemId};
 use else_protocol::world::WorldItemResolutionKind;
 use ratatui::style::Style;
 
@@ -46,25 +46,25 @@ pub struct Pane {
 
 #[derive(Debug, Clone)]
 pub enum RowAction {
-    OpenIntent(IntentId),
+    OpenThread(ThreadId),
     OpenDecision {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         request_id: AttentionId,
     },
-    OpenConnectors(IntentId),
-    AdvanceIntent(IntentId),
+    OpenConnectors(ThreadId),
+    AdvanceThread(ThreadId),
     Decide {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         request_id: AttentionId,
         choice: DecisionChoice,
     },
     ResolveWorld {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         item_id: WorldItemId,
         kind: WorldItemResolutionKind,
     },
     SyncConnector {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         connector_id: ConnectorId,
     },
 }
@@ -73,27 +73,27 @@ impl RowAction {
     /// 刷新后按业务对象恢复选择，而不是按可能已变化的行号恢复。
     pub fn stable_key(&self) -> String {
         match self {
-            Self::OpenIntent(id) => format!("intent:{id}"),
+            Self::OpenThread(id) => format!("thread:{id}"),
             Self::OpenDecision {
-                intent_id,
+                thread_id,
                 request_id,
-            } => format!("decision:{intent_id}:{request_id}"),
+            } => format!("decision:{thread_id}:{request_id}"),
             Self::OpenConnectors(id) => format!("connectors:{id}"),
-            Self::AdvanceIntent(id) => format!("advance:{id}"),
+            Self::AdvanceThread(id) => format!("advance:{id}"),
             Self::Decide {
-                intent_id,
+                thread_id,
                 request_id,
                 choice,
-            } => format!("decide:{intent_id}:{request_id}:{choice:?}"),
+            } => format!("decide:{thread_id}:{request_id}:{choice:?}"),
             Self::ResolveWorld {
-                intent_id,
+                thread_id,
                 item_id,
                 kind,
-            } => format!("world:{intent_id}:{item_id}:{kind:?}"),
+            } => format!("world:{thread_id}:{item_id}:{kind:?}"),
             Self::SyncConnector {
-                intent_id,
+                thread_id,
                 connector_id,
-            } => format!("sync:{intent_id}:{connector_id}"),
+            } => format!("sync:{thread_id}:{connector_id}"),
         }
     }
 }

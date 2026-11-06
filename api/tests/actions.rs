@@ -130,7 +130,7 @@ fn external_action_requires_approval_executes_once_and_preserves_idempotency() {
     let runtime = runtime_with_adapter(dir.path(), calls.clone());
     let source = dir.path().join("write.json");
     std::fs::write(&source, "{}").unwrap();
-    let spec = runtime.create_intent("更新外部事项", None).unwrap();
+    let spec = runtime.create_thread("更新外部事项", None).unwrap();
     let connector = runtime
         .register_connector_adapter(
             &spec.id,
@@ -186,7 +186,7 @@ fn unknown_external_result_is_not_retried_blindly() {
     let runtime = runtime_with_adapter(dir.path(), calls.clone());
     let source = dir.path().join("write.json");
     std::fs::write(&source, "{}").unwrap();
-    let spec = runtime.create_intent("更新外部事项", None).unwrap();
+    let spec = runtime.create_thread("更新外部事项", None).unwrap();
     let connector = runtime
         .register_connector_adapter(
             &spec.id,

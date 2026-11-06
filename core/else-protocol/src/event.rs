@@ -15,16 +15,16 @@ use crate::capability::{
 };
 use crate::connector::{
     ConnectorAction, ConnectorActionStatus, ConnectorCredentialMetadata, ConnectorRegistration,
-    ConnectorSyncStatus, ExternalFact, IntentAcceptedBy, IntentCandidate, IntentCandidateState,
-    SignalInterpretation, SyncCursor, WorldSignal,
+    ConnectorSyncStatus, ExternalFact, SignalInterpretation, SyncCursor, ThreadAcceptedBy,
+    ThreadCandidate, ThreadCandidateState, WorldSignal,
 };
 use crate::effect::{EffectConclusion, ToolCall, ToolOutcome};
 use crate::egress::EgressDecision;
 use crate::failure::ScopeFailure;
 use crate::ids::*;
-use crate::intent::{IntentSpec, IntentState};
 use crate::plan::{Plan, PlanImpact};
 use crate::resource::{ResourceBudget, ResourceLease, SandboxUsage};
+use crate::thread::{ThreadSpec, ThreadState};
 use crate::world::{WorldCorrelationCorrection, WorldItemResolution};
 use crate::PROTOCOL_VERSION;
 
@@ -64,14 +64,16 @@ pub enum ScopeState {
 pub struct EventEnvelope {
     pub event_id: String,
     pub protocol_version: String,
-    pub intent_id: IntentId,
+    #[serde(alias = "intent_id")]
+    pub thread_id: ThreadId,
     pub scope_id: ScopeId,
     pub run_id: Option<RunId>,
     /// Execution Generation：哪些执行与写入仍然有效。
     /// Abort 后递增，旧 Generation 的工具调用一律被 Gateway 拒绝。
     pub generation: u64,
-    /// Intent Revision：目标语义版本。与 Generation 永不混用。
-    pub intent_revision: u64,
+    /// Thread Revision：目标语义版本。与 Generation 永不混用。
+    #[serde(alias = "intent_revision")]
+    pub thread_revision: u64,
     /// 本事件基于哪个 Context Snapshot。
     pub snapshot_id: Option<SnapshotId>,
     pub occurred_at: DateTime<Utc>,
@@ -81,23 +83,23 @@ pub struct EventEnvelope {
 
 impl EventEnvelope {
     /// 构造事件：ID、时间、协议版本自动填充；
-    /// generation 与 intent_revision 必须显式给出。
+    /// generation 与 thread_revision 必须显式给出。
     pub fn new(
-        intent_id: IntentId,
+        thread_id: ThreadId,
         scope_id: ScopeId,
         generation: u64,
-        intent_revision: u64,
+        thread_revision: u64,
         actor: Actor,
         payload: EventPayload,
     ) -> Self {
         Self {
             event_id: Uuid::new_v4().to_string(),
             protocol_version: PROTOCOL_VERSION.to_string(),
-            intent_id,
+            thread_id,
             scope_id,
             run_id: None,
             generation,
-            intent_revision,
+            thread_revision,
             snapshot_id: None,
             occurred_at: Utc::now(),
             actor,
@@ -117,19 +119,22 @@ impl EventEnvelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum EventPayload {
-    IntentCreated {
-        spec: IntentSpec,
+    #[serde(alias = "intent_created")]
+    ThreadCreated {
+        spec: ThreadSpec,
     },
     /// 只有用户或其明确授权的决策能产生此事件。
-    IntentRevised {
-        spec: IntentSpec,
+    #[serde(alias = "intent_revised")]
+    ThreadRevised {
+        spec: ThreadSpec,
         reason: String,
     },
-    IntentStateChanged {
-        state: IntentState,
+    #[serde(alias = "intent_state_changed")]
+    ThreadStateChanged {
+        state: ThreadState,
     },
 
-    /// Plan 是易失的：计划失败不等于 Intent 失败。
+    /// Plan 是易失的：计划失败不等于 Thread 失败。
     PlanProposed {
         plan_id: String,
         summary: String,
@@ -217,15 +222,18 @@ pub enum EventPayload {
     SignalInterpreted {
         interpretation: SignalInterpretation,
     },
-    IntentCandidateProposed {
-        candidate: IntentCandidate,
+    #[serde(alias = "intent_candidate_proposed")]
+    ThreadCandidateProposed {
+        candidate: ThreadCandidate,
     },
-    IntentCandidateStateChanged {
-        candidate_id: IntentCandidateId,
-        state: IntentCandidateState,
-        intent_id: Option<IntentId>,
+    #[serde(alias = "intent_candidate_state_changed")]
+    ThreadCandidateStateChanged {
+        candidate_id: ThreadCandidateId,
+        state: ThreadCandidateState,
+        #[serde(alias = "intent_id")]
+        thread_id: Option<ThreadId>,
         #[serde(default)]
-        accepted_by: Option<IntentAcceptedBy>,
+        accepted_by: Option<ThreadAcceptedBy>,
     },
     ConnectorSyncCheckpointed {
         cursor: SyncCursor,
@@ -354,7 +362,7 @@ pub enum EventPayload {
     /// Subagent 委托：父 Scope 由事件信封标识，子权限契约随事件持久化。
     SubagentSpawned {
         child: ScopeId,
-        spec: IntentSpec,
+        spec: ThreadSpec,
         /// 显式执行依赖；父 Scope 只定义权限与生命周期，不自动等于依赖。
         #[serde(default)]
         depends_on: Vec<ScopeId>,
@@ -363,7 +371,7 @@ pub enum EventPayload {
     ScopeReplacementSpawned {
         child: ScopeId,
         replaces: ScopeId,
-        spec: IntentSpec,
+        spec: ThreadSpec,
         depends_on: Vec<ScopeId>,
     },
     /// 把依赖某个失败 Scope 的下游显式接到替换 Scope。
@@ -374,8 +382,8 @@ pub enum EventPayload {
     },
     ScopeAbortRequested {
         reason: String,
-        /// true = 只取消该 Scope 子树（如 Intent Revision 联动），
-        /// 不关闭整个 Intent；缺省（None）为 Intent 级取消。
+        /// true = 只取消该 Scope 子树（如 Thread Revision 联动），
+        /// 不关闭整个 Thread；缺省（None）为 Thread 级取消。
         scope_only: Option<bool>,
     },
     ScopeStateChanged {
@@ -429,11 +437,11 @@ pub enum EventPayload {
 mod tests {
     use super::*;
     use crate::effect::SideEffectKind;
-    use crate::intent::{AttentionPolicy, Authority};
+    use crate::thread::{AttentionPolicy, Authority};
 
-    fn spec() -> IntentSpec {
-        IntentSpec {
-            id: IntentId::new(),
+    fn spec() -> ThreadSpec {
+        ThreadSpec {
+            id: ThreadId::new(),
             revision: 1,
             outcome: "今天达到可对外发布".into(),
             done_when: vec![],
@@ -446,7 +454,7 @@ mod tests {
                 allow_interrupt: true,
                 batch_interval_minutes: 30,
             },
-            opaque_harness_policy: crate::intent::OpaqueHarnessPolicy::default(),
+            opaque_harness_policy: crate::thread::OpaqueHarnessPolicy::default(),
             deadline: None,
             assumptions: vec![],
             project: None,
@@ -458,12 +466,12 @@ mod tests {
     #[test]
     fn event_json_roundtrip() {
         let event = EventEnvelope::new(
-            IntentId::new(),
+            ThreadId::new(),
             ScopeId::new(),
             1,
             1,
             Actor::User,
-            EventPayload::IntentCreated { spec: spec() },
+            EventPayload::ThreadCreated { spec: spec() },
         );
         let json = serde_json::to_string(&event).unwrap();
         let back: EventEnvelope = serde_json::from_str(&json).unwrap();
@@ -495,27 +503,27 @@ mod tests {
             other => panic!("unexpected payload: {other:?}"),
         }
 
-        let mut legacy_intent = serde_json::to_value(spec()).unwrap();
-        legacy_intent.as_object_mut().unwrap().remove("origin");
-        legacy_intent
+        let mut legacy_thread = serde_json::to_value(spec()).unwrap();
+        legacy_thread.as_object_mut().unwrap().remove("origin");
+        legacy_thread
             .as_object_mut()
             .unwrap()
             .remove("connector_policy");
-        let decoded: IntentSpec = serde_json::from_value(legacy_intent).unwrap();
+        let decoded: ThreadSpec = serde_json::from_value(legacy_thread).unwrap();
         assert!(decoded.origin.is_none());
         assert!(!decoded.connector_policy.auto_accept_low_risk);
 
         let legacy_candidate_state = serde_json::json!({
-            "type": "intent_candidate_state_changed",
+            "type": "thread_candidate_state_changed",
             "data": {
                 "candidate_id": "candidate-legacy",
                 "state": "accepted",
-                "intent_id": null
+                "thread_id": null
             }
         });
         let payload: EventPayload = serde_json::from_value(legacy_candidate_state).unwrap();
         match payload {
-            EventPayload::IntentCandidateStateChanged { accepted_by, .. } => {
+            EventPayload::ThreadCandidateStateChanged { accepted_by, .. } => {
                 assert!(accepted_by.is_none());
             }
             other => panic!("unexpected payload: {other:?}"),
@@ -583,6 +591,39 @@ mod tests {
             }
             other => panic!("unexpected payload: {other:?}"),
         }
+    }
+
+    /// 0.1.x 写进账本的是 `intent_*`：列名与 payload 里的字段都已迁移，
+    /// 但历史事件只能是只读的——重放必须照旧能读懂。
+    #[test]
+    fn legacy_thread_events_still_decode() {
+        let thread_id = ThreadId::new();
+        let scope_id = ScopeId::new();
+        let mut legacy = serde_json::to_value(EventEnvelope::new(
+            thread_id.clone(),
+            scope_id.clone(),
+            1,
+            1,
+            Actor::User,
+            EventPayload::ThreadCreated { spec: spec() },
+        ))
+        .unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        let raw_thread_id = object.remove("thread_id").unwrap();
+        object.insert("intent_id".into(), raw_thread_id);
+        let raw_revision = object.remove("thread_revision").unwrap();
+        object.insert("intent_revision".into(), raw_revision);
+        let payload = object.get_mut("payload").unwrap();
+        payload["type"] = "intent_created".into();
+
+        let decoded: EventEnvelope = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.thread_id, thread_id);
+        assert_eq!(decoded.scope_id, scope_id);
+        assert_eq!(decoded.thread_revision, 1);
+        assert!(matches!(
+            decoded.payload,
+            EventPayload::ThreadCreated { .. }
+        ));
     }
 
     #[test]

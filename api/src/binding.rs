@@ -3,14 +3,14 @@
 use else_harness::adapter::{
     shell_quote, BridgeEvent, HarnessPrep, LineParser, PrepareFn, ProcessHarness,
 };
-use else_ledger::IntentProjection;
+use else_ledger::ThreadProjection;
 use else_protocol::capability::{AgentBindingEvent, AgentBindingState, AgentTransport};
 use else_protocol::effect::SideEffectKind;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::harness::{
     CancelSupport, HarnessCapabilities, ToolEffectVisibility, UsageSupport,
 };
-use else_protocol::ids::{AgentBindingId, IntentId};
+use else_protocol::ids::{AgentBindingId, ThreadId};
 use else_protocol::resource::{ModelUsage, UsageBasis};
 
 use crate::{ApiError, Result, Runtime};
@@ -66,10 +66,10 @@ impl LineParser for BindingParser {
 impl Runtime {
     pub fn dispatch_agent_binding(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         binding_id: &AgentBindingId,
-    ) -> Result<IntentProjection> {
-        let projection = self.projection(intent_id)?;
+    ) -> Result<ThreadProjection> {
+        let projection = self.projection(thread_id)?;
         let binding = projection
             .agent_bindings
             .get(binding_id)
@@ -194,7 +194,7 @@ impl Runtime {
             parser: BindingParser,
         };
         self.dispatch_scope_adapter_with_capabilities(
-            intent_id,
+            thread_id,
             &binding.scope_id,
             &harness,
             Some(capabilities),
@@ -203,12 +203,12 @@ impl Runtime {
 
     pub fn record_agent_binding_event(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         binding_id: &AgentBindingId,
         session: &str,
         event: AgentBindingEvent,
-    ) -> Result<IntentProjection> {
-        let projection = self.projection(intent_id)?;
+    ) -> Result<ThreadProjection> {
+        let projection = self.projection(thread_id)?;
         let binding = projection
             .agent_bindings
             .get(binding_id)
@@ -221,7 +221,7 @@ impl Runtime {
         }
         let revision = projection.spec.as_ref().map_or(1, |spec| spec.revision);
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             binding.scope_id.clone(),
             binding.generation,
             revision,
@@ -231,23 +231,23 @@ impl Runtime {
                 event,
             },
         ))?;
-        self.projection(intent_id)
+        self.projection(thread_id)
     }
 
     pub fn transition_agent_binding(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         binding_id: &AgentBindingId,
         state: AgentBindingState,
     ) -> Result<()> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let binding = projection
             .agent_bindings
             .get(binding_id)
             .ok_or_else(|| ApiError::NotFound(format!("binding {binding_id}")))?;
         let revision = projection.spec.as_ref().map_or(1, |spec| spec.revision);
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             binding.scope_id.clone(),
             binding.generation,
             revision,

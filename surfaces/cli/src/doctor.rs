@@ -194,8 +194,8 @@ fn check_ledger_writable(runtime_dir: &Path) -> Check {
 
 /// Connector 健康检查。
 fn check_connectors(client: &RuntimeClient) -> Check {
-    let intents = match client.list_intents() {
-        Ok(intents) => intents,
+    let threads = match client.list_threads() {
+        Ok(threads) => threads,
         Err(error) => {
             return Check {
                 name: "connectors".into(),
@@ -207,14 +207,14 @@ fn check_connectors(client: &RuntimeClient) -> Check {
     };
     let mut total = 0usize;
     let mut unhealthy = Vec::new();
-    for intent in intents {
-        let connectors = match client.connectors(&intent.spec.id) {
+    for thread in threads {
+        let connectors = match client.connectors(&thread.spec.id) {
             Ok(connectors) => connectors,
             Err(_) => continue,
         };
         for connector in connectors {
             total += 1;
-            if let Ok(health) = client.connector_health(&intent.spec.id, &connector.id) {
+            if let Ok(health) = client.connector_health(&thread.spec.id, &connector.id) {
                 if health.health != else_protocol::connector::ConnectorHealth::Healthy {
                     unhealthy.push(format!("{} ({:?})", connector.adapter, health.health));
                 }

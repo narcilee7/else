@@ -2,8 +2,8 @@ import AppIntents
 import ElseClientCore
 import Foundation
 
-struct SubmitElseIntent: AppIntent {
-    static var title: LocalizedStringResource = "提交 else Intent"
+struct SubmitElseThread: AppIntent {
+    static var title: LocalizedStringResource = "提交 else Thread"
     static var description = IntentDescription(
         "将一个新目标提交到本地 else Runtime。"
     )
@@ -26,13 +26,13 @@ struct SubmitElseIntent: AppIntent {
         guard !outcome.isEmpty else {
             throw ElseAppIntentError.emptyOutcome
         }
-        let snapshot = try await ElseIntentRuntime.shared.createIntent(
+        let snapshot = try await ElseThreadRuntime.shared.createThread(
             outcome: outcome,
             project: project
         )
         return .result(
             dialog:
-                "已提交：\(snapshot.spec.outcome)。Intent ID：\(snapshot.id.rawValue)"
+                "已提交：\(snapshot.spec.outcome)。Thread ID：\(snapshot.id.rawValue)"
         )
     }
 }
@@ -45,7 +45,7 @@ struct CheckElseBrief: AppIntent {
     static var openAppWhenRun = false
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let brief = try await ElseIntentRuntime.shared.personalBrief()
+        let brief = try await ElseThreadRuntime.shared.personalBrief()
         return .result(
             dialog:
                 "\(brief.outstandingCount) 件外部事项待处理。"
@@ -56,12 +56,12 @@ struct CheckElseBrief: AppIntent {
 struct ElseAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
-            intent: SubmitElseIntent(),
+            intent: SubmitElseThread(),
             phrases: [
                 "在 \(.applicationName) 提交目标",
                 "让 \(.applicationName) 处理这个目标",
             ],
-            shortTitle: "提交 Intent",
+            shortTitle: "提交 Thread",
             systemImageName: "plus.circle"
         )
         AppShortcut(
@@ -75,8 +75,8 @@ struct ElseAppShortcuts: AppShortcutsProvider {
     }
 }
 
-private actor ElseIntentRuntime {
-    static let shared = ElseIntentRuntime()
+private actor ElseThreadRuntime {
+    static let shared = ElseThreadRuntime()
 
     private let configuration = ClientConfiguration.fromEnvironment()
     private lazy var client = HTTPRuntimeClient(
@@ -86,12 +86,12 @@ private actor ElseIntentRuntime {
         }
     )
 
-    func createIntent(
+    func createThread(
         outcome: String,
         project: String?
-    ) async throws -> IntentSnapshot {
+    ) async throws -> ThreadSnapshot {
         do {
-            return try await client.createIntent(
+            return try await client.createThread(
                 outcome: outcome,
                 project: project
             )

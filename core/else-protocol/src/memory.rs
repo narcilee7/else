@@ -2,28 +2,28 @@
 //!
 //! 核心边界：Memory 不是权限来源。记忆记录只能出现在快照的 `facts`
 //! 里，永远不能改写 `authority`；Verifier 只按快照 revision 时点的
-//! IntentSpec 验收，不看召回的记忆。
+//! ThreadSpec 验收，不看召回的记忆。
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ArtifactId, IntentId, MemoryId, SnapshotId};
-use crate::intent::{Assumption, Criterion};
+use crate::ids::{ArtifactId, MemoryId, SnapshotId, ThreadId};
 use crate::plan::Plan;
+use crate::thread::{Assumption, Criterion};
 
 /// 记忆分层。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryTier {
-    /// 当前 Run 的临时工作状态，可丢弃；若持久化也只召回给同一 Intent。
+    /// 当前 Run 的临时工作状态，可丢弃；若持久化也只召回给同一 Thread。
     Working,
-    /// 历史 Intent 的结论、产物引用与失败经验。
+    /// 历史 Thread 的结论、产物引用与失败经验。
     Episodic,
     /// 有证据、有作用域、经晋升规则确认的稳定事实与偏好。
     Semantic,
 }
 
-/// 规则式召回：Global + 匹配的 Project / Intent，再按层级与有效期过滤。
+/// 规则式召回：Global + 匹配的 Project / Thread，再按层级与有效期过滤。
 ///
 /// 召回是纯函数：同一批记忆、同一组条件，任何 surface 都得到同一批结果。
 /// 定义放在协议层是为了让 CLI、TUI 与 App 用同一套规则，不各自实现一遍。
@@ -32,7 +32,7 @@ pub enum MemoryTier {
 pub fn recall_memories<'a>(
     promoted: impl Iterator<Item = &'a MemoryRecord>,
     project: Option<&str>,
-    intent_id: Option<&IntentId>,
+    thread_id: Option<&ThreadId>,
     tiers: &[MemoryTier],
     now: DateTime<Utc>,
 ) -> Vec<MemoryRecord> {
@@ -42,7 +42,7 @@ pub fn recall_memories<'a>(
         .filter(|record| match &record.scope {
             MemoryScope::Global => true,
             MemoryScope::Project(name) => Some(name.as_str()) == project,
-            MemoryScope::Intent(id) => Some(id) == intent_id,
+            MemoryScope::Thread(id) => Some(id) == thread_id,
         })
         .cloned()
         .collect()
@@ -54,7 +54,7 @@ pub fn recall_memories<'a>(
 pub enum MemoryScope {
     Global,
     Project(String),
-    Intent(IntentId),
+    Thread(ThreadId),
 }
 
 /// 记忆来源：决定晋升规则。Semantic 层永不由单次观察自动晋升。
@@ -100,9 +100,11 @@ pub enum SnapshotAudience {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextSnapshot {
     pub id: SnapshotId,
-    pub intent_id: IntentId,
-    /// 快照基于的 Intent Revision；Verifier 永远按此 revision 的 spec 验收。
-    pub intent_revision: u64,
+    #[serde(alias = "intent_id")]
+    pub thread_id: ThreadId,
+    /// 快照基于的 Thread Revision；Verifier 永远按此 revision 的 spec 验收。
+    #[serde(alias = "intent_revision")]
+    pub thread_revision: u64,
     /// 快照基于的事件水位。
     pub event_cursor: u64,
     pub audience: SnapshotAudience,

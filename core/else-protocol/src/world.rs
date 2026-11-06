@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::connector::{CorrelationHint, CorrelationKind, ExternalEntityRef, ObjectKind};
-use crate::ids::{ConnectorId, IntentId, WorldCorrelationCorrectionId, WorldItemId, WorldSignalId};
+use crate::ids::{ConnectorId, ThreadId, WorldCorrelationCorrectionId, WorldItemId, WorldSignalId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,7 +62,8 @@ pub struct WorldItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorldItemRecord {
-    pub intent_id: IntentId,
+    #[serde(alias = "intent_id")]
+    pub thread_id: ThreadId,
     pub item: WorldItem,
 }
 
@@ -71,7 +72,8 @@ pub struct ProjectWorld {
     pub key: String,
     pub title: String,
     pub items: Vec<WorldItemRecord>,
-    pub intent_ids: Vec<IntentId>,
+    #[serde(alias = "intent_ids")]
+    pub thread_ids: Vec<ThreadId>,
     pub connector_ids: Vec<ConnectorId>,
     pub open_items: u64,
     pub waiting_external: u64,
@@ -85,7 +87,8 @@ pub struct IdentityWorld {
     pub key: String,
     pub title: String,
     pub items: Vec<WorldItemRecord>,
-    pub intent_ids: Vec<IntentId>,
+    #[serde(alias = "intent_ids")]
+    pub thread_ids: Vec<ThreadId>,
     pub connector_ids: Vec<ConnectorId>,
     pub open_items: u64,
     pub overdue: u64,

@@ -19,36 +19,36 @@ public struct HTTPRuntimeClient: RuntimeClient {
         self.session = session
     }
 
-    public func listIntents() async throws -> [IntentSnapshot] {
-        try await send(method: "GET", path: ["v1", "intents"])
+    public func listThreads() async throws -> [ThreadSnapshot] {
+        try await send(method: "GET", path: ["v1", "threads"])
     }
 
-    public func intent(id: IntentID) async throws -> IntentSnapshot {
-        try await send(method: "GET", path: ["v1", "intents", id.rawValue])
+    public func thread(id: ThreadID) async throws -> ThreadSnapshot {
+        try await send(method: "GET", path: ["v1", "threads", id.rawValue])
     }
 
-    public func deleteIntent(id: IntentID) async throws -> IntentDeletionReport {
+    public func deleteThread(id: ThreadID) async throws -> ThreadDeletionReport {
         try await send(
             method: "DELETE",
-            path: ["v1", "intents", id.rawValue],
-            intentID: id
+            path: ["v1", "threads", id.rawValue],
+            threadID: id
         )
     }
 
-    public func retryFailedIntent(id: IntentID) async throws -> IntentSnapshot {
+    public func retryFailedThread(id: ThreadID) async throws -> ThreadSnapshot {
         let response: ScopeRetryResponse = try await send(
             method: "POST",
-            path: ["v1", "intents", id.rawValue, "repair", "retry"],
-            intentID: id
+            path: ["v1", "threads", id.rawValue, "repair", "retry"],
+            threadID: id
         )
-        return response.intent
+        return response.thread
     }
 
-    public func createIntent(outcome: String, project: String?) async throws -> IntentSnapshot {
+    public func createThread(outcome: String, project: String?) async throws -> ThreadSnapshot {
         try await send(
             method: "POST",
-            path: ["v1", "intents"],
-            body: CreateIntentRequest(
+            path: ["v1", "threads"],
+            body: CreateThreadRequest(
                 outcome: outcome,
                 project: project?.trimmingCharacters(in: .whitespacesAndNewlines)
                     .nilIfEmpty
@@ -56,40 +56,40 @@ public struct HTTPRuntimeClient: RuntimeClient {
         )
     }
 
-    public func runIntent(id: IntentID) async throws -> IntentSnapshot {
+    public func runThread(id: ThreadID) async throws -> ThreadSnapshot {
         try await send(
             method: "POST",
-            path: ["v1", "intents", id.rawValue, "run"],
-            intentID: id
+            path: ["v1", "threads", id.rawValue, "run"],
+            threadID: id
         )
     }
 
     public func resolveDecision(
-        intentID: IntentID,
+        threadID: ThreadID,
         decisionID: AttentionID,
         choice: DecisionChoice
-    ) async throws -> IntentSnapshot {
+    ) async throws -> ThreadSnapshot {
         try await send(
             method: "POST",
             path: [
                 "v1",
-                "intents",
-                intentID.rawValue,
+                "threads",
+                threadID.rawValue,
                 "decisions",
                 decisionID.rawValue,
                 "resolve",
             ],
             body: ResolveDecisionRequest(choice: choice),
-            intentID: intentID
+            threadID: threadID
         )
     }
 
-    public func abortIntent(id: IntentID, reason: String) async throws -> IntentSnapshot {
+    public func abortThread(id: ThreadID, reason: String) async throws -> ThreadSnapshot {
         try await send(
             method: "POST",
-            path: ["v1", "intents", id.rawValue, "abort"],
-            body: AbortIntentRequest(reason: reason),
-            intentID: id
+            path: ["v1", "threads", id.rawValue, "abort"],
+            body: AbortThreadRequest(reason: reason),
+            threadID: id
         )
     }
 
@@ -98,64 +98,64 @@ public struct HTTPRuntimeClient: RuntimeClient {
     }
 
     public func resolveWorldItem(
-        intentID: IntentID,
+        threadID: ThreadID,
         itemID: WorldItemID,
         kind: WorldItemResolutionKind
     ) async throws -> WorldItem {
         try await send(
             method: "POST",
-            path: ["v1", "intents", intentID.rawValue, "world", "resolve"],
+            path: ["v1", "threads", threadID.rawValue, "world", "resolve"],
             body: ResolveWorldItemRequest(itemID: itemID, kind: kind),
-            intentID: intentID
+            threadID: threadID
         )
     }
 
-    public func connectorActions(intentID: IntentID) async throws -> [ConnectorAction] {
+    public func connectorActions(threadID: ThreadID) async throws -> [ConnectorAction] {
         try await send(
             method: "GET",
-            path: ["v1", "intents", intentID.rawValue, "actions"]
+            path: ["v1", "threads", threadID.rawValue, "actions"]
         )
     }
 
     public func executeConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         actionID: ConnectorActionID
     ) async throws -> ConnectorAction {
-        try await actionCommand("execute", intentID: intentID, actionID: actionID)
+        try await actionCommand("execute", threadID: threadID, actionID: actionID)
     }
 
     public func verifyConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         actionID: ConnectorActionID
     ) async throws -> ConnectorAction {
-        try await actionCommand("verify", intentID: intentID, actionID: actionID)
+        try await actionCommand("verify", threadID: threadID, actionID: actionID)
     }
 
     public func compensateConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         actionID: ConnectorActionID
     ) async throws -> ConnectorAction {
-        try await actionCommand("compensate", intentID: intentID, actionID: actionID)
+        try await actionCommand("compensate", threadID: threadID, actionID: actionID)
     }
 
     public func proposeConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         request: ProposeConnectorActionRequest
     ) async throws -> ConnectorAction {
         try await send(
             method: "POST",
-            path: ["v1", "intents", intentID.rawValue, "actions"],
+            path: ["v1", "threads", threadID.rawValue, "actions"],
             body: request,
-            intentID: intentID
+            threadID: threadID
         )
     }
 
     public func capabilities(
-        intentID: IntentID
+        threadID: ThreadID
     ) async throws -> [RuntimeCapabilityRegistration] {
         try await send(
             method: "GET",
-            path: ["v1", "intents", intentID.rawValue, "capabilities"]
+            path: ["v1", "threads", threadID.rawValue, "capabilities"]
         )
     }
 
@@ -189,7 +189,7 @@ public struct HTTPRuntimeClient: RuntimeClient {
     }
 
     public func previewConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID,
         request: PreviewConnectorActionRequest
     ) async throws -> ConnectorActionPreview {
@@ -197,34 +197,34 @@ public struct HTTPRuntimeClient: RuntimeClient {
             method: "POST",
             path: [
                 "v1",
-                "intents",
-                intentID.rawValue,
+                "threads",
+                threadID.rawValue,
                 "connectors",
                 connectorID.rawValue,
                 "actions",
                 "preview",
             ],
             body: request,
-            intentID: intentID
+            threadID: threadID
         )
     }
 
     private func actionCommand(
         _ command: String,
-        intentID: IntentID,
+        threadID: ThreadID,
         actionID: ConnectorActionID
     ) async throws -> ConnectorAction {
         try await send(
             method: "POST",
             path: [
                 "v1",
-                "intents",
-                intentID.rawValue,
+                "threads",
+                threadID.rawValue,
                 "actions",
                 actionID.rawValue,
                 command,
             ],
-            intentID: intentID
+            threadID: threadID
         )
     }
 
@@ -259,14 +259,14 @@ public struct HTTPRuntimeClient: RuntimeClient {
     }
 
     public func correctWorldCorrelation(
-        intentID: IntentID,
+        threadID: ThreadID,
         correction: WorldCorrelationCorrection
     ) async throws -> WorldCorrelationCorrection {
         try await send(
             method: "POST",
-            path: ["v1", "intents", intentID.rawValue, "world", "corrections"],
+            path: ["v1", "threads", threadID.rawValue, "world", "corrections"],
             body: correction,
-            intentID: intentID
+            threadID: threadID
         )
     }
 
@@ -274,23 +274,23 @@ public struct HTTPRuntimeClient: RuntimeClient {
         try await send(method: "GET", path: ["v1", "connector-adapters"])
     }
 
-    public func connectors(intentID: IntentID) async throws -> [ConnectorRegistration] {
+    public func connectors(threadID: ThreadID) async throws -> [ConnectorRegistration] {
         try await send(
             method: "GET",
-            path: ["v1", "intents", intentID.rawValue, "connectors"]
+            path: ["v1", "threads", threadID.rawValue, "connectors"]
         )
     }
 
     public func connectorHealth(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async throws -> ConnectorHealthReport {
         try await send(
             method: "GET",
             path: [
                 "v1",
-                "intents",
-                intentID.rawValue,
+                "threads",
+                threadID.rawValue,
                 "connectors",
                 connectorID.rawValue,
                 "health",
@@ -299,7 +299,7 @@ public struct HTTPRuntimeClient: RuntimeClient {
     }
 
     public func attachConnectorCredential(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID,
         credential: ConnectorCredentialInput
     ) async throws -> ConnectorCredentialMetadata {
@@ -307,94 +307,94 @@ public struct HTTPRuntimeClient: RuntimeClient {
             method: "POST",
             path: [
                 "v1",
-                "intents",
-                intentID.rawValue,
+                "threads",
+                threadID.rawValue,
                 "connectors",
                 connectorID.rawValue,
                 "credential",
             ],
             body: credential,
-            intentID: intentID
+            threadID: threadID
         )
     }
 
     public func revokeConnectorCredential(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async throws -> ConnectorCredentialMetadata {
         try await send(
             method: "DELETE",
             path: [
                 "v1",
-                "intents",
-                intentID.rawValue,
+                "threads",
+                threadID.rawValue,
                 "connectors",
                 connectorID.rawValue,
                 "credential",
             ],
-            intentID: intentID
+            threadID: threadID
         )
     }
 
     public func registerConnector(
-        intentID: IntentID,
+        threadID: ThreadID,
         request: RegisterConnectorRequest
     ) async throws -> ConnectorRegistration {
         try await send(
             method: "POST",
-            path: ["v1", "intents", intentID.rawValue, "connectors"],
+            path: ["v1", "threads", threadID.rawValue, "connectors"],
             body: request,
-            intentID: intentID
+            threadID: threadID
         )
     }
 
     public func syncConnector(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async throws -> ConnectorSyncResult {
         try await send(
             method: "POST",
             path: [
                 "v1",
-                "intents",
-                intentID.rawValue,
+                "threads",
+                threadID.rawValue,
                 "connectors",
                 connectorID.rawValue,
                 "sync",
             ],
-            intentID: intentID
+            threadID: threadID
         )
     }
 
     public func repairConnector(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async throws -> ConnectorRepairReport {
         try await send(
             method: "POST",
             path: [
                 "v1",
-                "intents",
-                intentID.rawValue,
+                "threads",
+                threadID.rawValue,
                 "connectors",
                 connectorID.rawValue,
                 "repair",
             ],
-            intentID: intentID
+            threadID: threadID
         )
     }
 
     private func send<Response: Decodable>(
         method: String,
         path: [String],
-        intentID: IntentID? = nil,
+        threadID: ThreadID? = nil,
         queryItems: [URLQueryItem] = []
     ) async throws -> Response {
         try await send(
             method: method,
             path: path,
             body: Optional<EmptyBody>.none,
-            intentID: intentID,
+            threadID: threadID,
             queryItems: queryItems
         )
     }
@@ -403,7 +403,7 @@ public struct HTTPRuntimeClient: RuntimeClient {
         method: String,
         path: [String],
         body: Body?,
-        intentID: IntentID? = nil,
+        threadID: ThreadID? = nil,
         queryItems: [URLQueryItem] = []
     ) async throws -> Response {
         let base = path.reduce(baseURL) { partial, component in
@@ -428,7 +428,7 @@ public struct HTTPRuntimeClient: RuntimeClient {
         if method == "POST" || method == "DELETE" {
             request.setValue(UUID().uuidString, forHTTPHeaderField: "Idempotency-Key")
         }
-        if let intentID, let revision = await revisions.revision(for: intentID) {
+        if let threadID, let revision = await revisions.revision(for: threadID) {
             request.setValue("\(revision)", forHTTPHeaderField: "If-Match")
         }
 
@@ -461,7 +461,7 @@ public struct HTTPRuntimeClient: RuntimeClient {
 
         do {
             let decoded = try RuntimeJSON.decoder().decode(Response.self, from: data)
-            if let snapshot = decoded as? IntentSnapshot {
+            if let snapshot = decoded as? ThreadSnapshot {
                 await revisions.record(snapshot.spec.revision, for: snapshot.spec.id)
             }
             return decoded
@@ -472,13 +472,13 @@ public struct HTTPRuntimeClient: RuntimeClient {
 }
 
 private actor RevisionStore {
-    private var revisions: [IntentID: UInt64] = [:]
+    private var revisions: [ThreadID: UInt64] = [:]
 
-    func revision(for id: IntentID) -> UInt64? {
+    func revision(for id: ThreadID) -> UInt64? {
         revisions[id]
     }
 
-    func record(_ revision: UInt64, for id: IntentID) {
+    func record(_ revision: UInt64, for id: ThreadID) {
         revisions[id] = revision
     }
 }
@@ -492,11 +492,11 @@ private struct RuntimeErrorEnvelope: Decodable {
 
 private struct ScopeRetryResponse: Decodable {
     let retriedScopes: [String]
-    let intent: IntentSnapshot
+    let thread: ThreadSnapshot
 
     private enum CodingKeys: String, CodingKey {
         case retriedScopes = "retried_scopes"
-        case intent
+        case thread
     }
 }
 

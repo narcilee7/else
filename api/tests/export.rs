@@ -4,7 +4,7 @@ use else_api::Runtime;
 fn data_export_contains_ledger_and_artifacts_without_private_state() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("导出测试", None).unwrap();
+    let spec = runtime.create_thread("导出测试", None).unwrap();
     runtime.drive(&spec.id, None, 16).unwrap();
 
     std::fs::create_dir_all(dir.path().join("workspace/.codex")).unwrap();
@@ -22,10 +22,10 @@ fn data_export_contains_ledger_and_artifacts_without_private_state() {
 
     let export = runtime.export_data().unwrap();
     assert_eq!(export.export_version, 1);
-    assert_eq!(export.intents.len(), 1);
-    assert_eq!(export.intents[0].spec.id, spec.id);
-    assert!(!export.intents[0].events.is_empty());
-    assert!(export.intents[0].artifacts.iter().any(|artifact| artifact
+    assert_eq!(export.threads.len(), 1);
+    assert_eq!(export.threads[0].spec.id, spec.id);
+    assert!(!export.threads[0].events.is_empty());
+    assert!(export.threads[0].artifacts.iter().any(|artifact| artifact
         .files
         .iter()
         .any(|file| file.path.ends_with("plan.md"))));

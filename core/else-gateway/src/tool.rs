@@ -1,7 +1,7 @@
 //! Tool Gateway：所有副作用必须经过这里。
 //!
 //! 职责（W2 薄版）：副作用声明、授权检查、幂等、事件落账。
-//! 授权规则：副作用等级超过 IntentSpec 授予的自主上限时，
+//! 授权规则：副作用等级超过 ThreadSpec 授予的自主上限时，
 //! 不执行，而是提交 AttentionRequest 并返回 NeedsApproval。
 
 use std::path::{Component, Path, PathBuf};
@@ -17,7 +17,7 @@ use else_protocol::effect::{EffectConclusion, SideEffectKind, ToolCall, ToolOutc
 use else_protocol::event::{Actor, EventPayload};
 use else_protocol::ids::AttentionId;
 use else_protocol::ids::CapabilityId;
-use else_protocol::intent::IntentState;
+use else_protocol::thread::ThreadState;
 use serde_json::{json, Value};
 
 use crate::resource::{ensure_active_lease, ensure_tool_capacity};
@@ -244,8 +244,8 @@ impl<'a> ToolGateway<'a> {
         ctx.record(
             self.ledger,
             Actor::System,
-            EventPayload::IntentStateChanged {
-                state: IntentState::NeedsDecision,
+            EventPayload::ThreadStateChanged {
+                state: ThreadState::NeedsDecision,
             },
         )?;
         Err(GatewayError::NeedsApproval(request_id))
@@ -253,7 +253,7 @@ impl<'a> ToolGateway<'a> {
 
     /// 一次性授权查找：同一幂等键的调用是否已被本人批准。
     fn approved(&self, ctx: &ExecContext, key: &str) -> Result<bool> {
-        let events = self.ledger.read_intent(&ctx.spec.id)?;
+        let events = self.ledger.read_thread(&ctx.spec.id)?;
         let mut request_keys = std::collections::HashMap::new();
         for event in events {
             // 授权按 Generation 隔离：旧世代的批准不泄漏到分支
@@ -285,9 +285,9 @@ impl<'a> ToolGateway<'a> {
         Ok(false)
     }
 
-    /// 幂等查找：同一 Intent、同一 Generation 内相同幂等键的已完成调用。
+    /// 幂等查找：同一 Thread、同一 Generation 内相同幂等键的已完成调用。
     fn find_completed(&self, ctx: &ExecContext, key: &str) -> Result<Option<ToolOutcome>> {
-        let events = self.ledger.read_intent(&ctx.spec.id)?;
+        let events = self.ledger.read_thread(&ctx.spec.id)?;
         let mut call_keys = std::collections::HashMap::new();
         let mut completed = std::collections::HashMap::new();
         for event in events {

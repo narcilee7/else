@@ -7,15 +7,15 @@ use else_protocol::capability::{
 use else_protocol::effect::{SideEffectKind, ToolCall};
 use else_protocol::event::{Actor, EventPayload};
 use else_protocol::ids::{
-    CapabilityId, IntentId, LeaseId, McpServerId, RunId, ScopeId, ToolCallId,
+    CapabilityId, LeaseId, McpServerId, RunId, ScopeId, ThreadId, ToolCallId,
 };
-use else_protocol::intent::{AttentionPolicy, Authority, IntentSpec};
 use else_protocol::resource::{ResourceClass, ResourceLease};
+use else_protocol::thread::{AttentionPolicy, Authority, ThreadSpec};
 
-fn context(intent_id: IntentId) -> ExecContext {
+fn context(thread_id: ThreadId) -> ExecContext {
     ExecContext {
-        spec: IntentSpec {
-            id: intent_id,
+        spec: ThreadSpec {
+            id: thread_id,
             revision: 1,
             outcome: "capability test".into(),
             done_when: vec![],
@@ -68,7 +68,7 @@ fn lease(ledger: &Ledger, ctx: &ExecContext) {
 fn skill_and_mcp_tools_share_gateway_execution() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::open_in_memory().unwrap();
-    let ctx = context(IntentId::new());
+    let ctx = context(ThreadId::new());
     lease(&ledger, &ctx);
     std::fs::write(
         dir.path().join("mcp.sh"),
@@ -153,7 +153,7 @@ done
         .unwrap()
         .contains("mcp-ok"));
     assert!(ledger
-        .read_intent(&ctx.spec.id)
+        .read_thread(&ctx.spec.id)
         .unwrap()
         .iter()
         .any(|event| { matches!(event.envelope.payload, EventPayload::McpToolsChanged { .. }) }));

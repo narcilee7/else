@@ -8,7 +8,7 @@ use else_protocol::connector::{
 };
 use else_protocol::effect::{EffectConclusion, ToolCall, ToolOutcome, ToolStatus};
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
-use else_protocol::ids::{ConnectorActionId, ConnectorId, IntentId, RunId, ToolCallId};
+use else_protocol::ids::{ConnectorActionId, ConnectorId, RunId, ThreadId, ToolCallId};
 use serde_json::{json, Value};
 
 use crate::{ApiError, Result, Runtime};
@@ -16,7 +16,7 @@ use crate::{ApiError, Result, Runtime};
 impl Runtime {
     pub fn preview_connector_action(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
         capability: &str,
         target: &str,
@@ -27,7 +27,7 @@ impl Runtime {
                 "connector action capability and target cannot be empty".into(),
             ));
         }
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let connector = projection
             .connectors
             .get(connector_id)
@@ -75,7 +75,7 @@ impl Runtime {
 
     pub fn propose_connector_action(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
         capability: &str,
         target: &str,
@@ -87,7 +87,7 @@ impl Runtime {
                 "connector action capability and target cannot be empty".into(),
             ));
         }
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let connector = projection
             .connectors
             .get(connector_id)
@@ -103,8 +103,8 @@ impl Runtime {
                 "connector {connector_id} does not declare write capability {capability}"
             )));
         }
-        self.register_connector_write_capabilities(intent_id, &connector)?;
-        let projection = self.projection(intent_id)?;
+        self.register_connector_write_capabilities(thread_id, &connector)?;
+        let projection = self.projection(thread_id)?;
         let action_capability = projection
             .capabilities
             .values()
@@ -139,9 +139,9 @@ impl Runtime {
             outcome: None,
             last_error: None,
         };
-        let (root, generation, revision) = self.kernel_context(intent_id)?;
+        let (root, generation, revision) = self.kernel_context(thread_id)?;
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             root,
             generation,
             revision,
@@ -155,10 +155,10 @@ impl Runtime {
 
     pub fn execute_connector_action(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         action_id: &ConnectorActionId,
     ) -> Result<ConnectorAction> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let action = projection
             .connector_actions
             .get(action_id)
@@ -170,7 +170,7 @@ impl Runtime {
                 // 进程可能死在 Provider 已成功、ToolCompleted 尚未落账之间。
                 // 没有 Provider 查询结果前不能再次执行。
                 self.record_action_state(
-                    intent_id,
+                    thread_id,
                     &action,
                     ConnectorActionStatus::Unknown,
                     None,
@@ -178,7 +178,7 @@ impl Runtime {
                     None,
                     Some("execution was interrupted; reconcile with provider first".into()),
                 )?;
-                return self.projected_action(intent_id, action_id);
+                return self.projected_action(thread_id, action_id);
             }
             ConnectorActionStatus::Unknown
             | ConnectorActionStatus::Failed
@@ -209,7 +209,7 @@ impl Runtime {
         let credential = self.connector_credential(&connector)?;
         let root_scope = projection
             .root_scope_id
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let generation = projection
             .scopes
             .get(&root_scope)
@@ -218,7 +218,7 @@ impl Runtime {
         let spec = projection
             .spec
             .clone()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let ctx = ExecContext {
             spec,
             scope_id: root_scope,
@@ -229,7 +229,7 @@ impl Runtime {
         let lease = self.admit_external_action(&ctx)?;
         let tool_call_id = ToolCallId::new();
         self.record_action_state(
-            intent_id,
+            thread_id,
             &action,
             ConnectorActionStatus::Executing,
             action.attention_id.clone(),
@@ -277,7 +277,7 @@ impl Runtime {
                     ToolStatus::Unknown => ConnectorActionStatus::Unknown,
                 };
                 self.record_action_state(
-                    intent_id,
+                    thread_id,
                     &action,
                     status,
                     action.attention_id.clone(),
@@ -285,12 +285,12 @@ impl Runtime {
                     Some(outcome),
                     None,
                 )?;
-                self.projected_action(intent_id, action_id)
+                self.projected_action(thread_id, action_id)
             }
             Err(GatewayError::NeedsApproval(request_id)) => {
                 let pending_request = request_id.clone();
                 self.record_action_state(
-                    intent_id,
+                    thread_id,
                     &action,
                     ConnectorActionStatus::NeedsApproval,
                     Some(request_id),
@@ -302,7 +302,7 @@ impl Runtime {
             }
             Err(error) => {
                 self.record_action_state(
-                    intent_id,
+                    thread_id,
                     &action,
                     ConnectorActionStatus::Failed,
                     action.attention_id.clone(),
@@ -315,9 +315,9 @@ impl Runtime {
         }
     }
 
-    pub fn connector_actions(&self, intent_id: &IntentId) -> Result<Vec<ConnectorAction>> {
+    pub fn connector_actions(&self, thread_id: &ThreadId) -> Result<Vec<ConnectorAction>> {
         Ok(self
-            .projection(intent_id)?
+            .projection(thread_id)?
             .connector_actions
             .into_values()
             .collect())
@@ -326,10 +326,10 @@ impl Runtime {
     /// 对 Executing / Unknown / Applied 动作回源查询 Provider，不产生新的写副作用。
     pub fn verify_connector_action(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         action_id: &ConnectorActionId,
     ) -> Result<ConnectorAction> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let action = projection
             .connector_actions
             .get(action_id)
@@ -375,7 +375,7 @@ impl Runtime {
                     ToolStatus::Unknown => ConnectorActionStatus::Unknown,
                 };
                 self.record_action_state(
-                    intent_id,
+                    thread_id,
                     &action,
                     status,
                     action.attention_id.clone(),
@@ -383,11 +383,11 @@ impl Runtime {
                     Some(outcome),
                     None,
                 )?;
-                self.projected_action(intent_id, action_id)
+                self.projected_action(thread_id, action_id)
             }
             Err(error) => {
                 self.record_action_state(
-                    intent_id,
+                    thread_id,
                     &action,
                     ConnectorActionStatus::Unknown,
                     action.attention_id.clone(),
@@ -403,10 +403,10 @@ impl Runtime {
     /// 补偿本身也是外部写，必须重新通过 Tool Gateway 与 Decision。
     pub fn compensate_connector_action(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         action_id: &ConnectorActionId,
     ) -> Result<ConnectorAction> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let action = projection
             .connector_actions
             .get(action_id)
@@ -417,7 +417,7 @@ impl Runtime {
             ConnectorActionStatus::Applied => {}
             ConnectorActionStatus::CompensationExecuting => {
                 self.record_action_state(
-                    intent_id,
+                    thread_id,
                     &action,
                     ConnectorActionStatus::Unknown,
                     action.attention_id.clone(),
@@ -425,7 +425,7 @@ impl Runtime {
                     action.outcome.clone(),
                     Some("compensation was interrupted; verify with provider first".into()),
                 )?;
-                return self.projected_action(intent_id, action_id);
+                return self.projected_action(thread_id, action_id);
             }
             ConnectorActionStatus::Compensating => {}
             _ => {
@@ -449,7 +449,7 @@ impl Runtime {
         let credential = self.connector_credential(&connector)?;
         let root_scope = projection
             .root_scope_id
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let generation = projection
             .scopes
             .get(&root_scope)
@@ -458,7 +458,7 @@ impl Runtime {
         let spec = projection
             .spec
             .clone()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let ctx = ExecContext {
             spec,
             scope_id: root_scope,
@@ -469,7 +469,7 @@ impl Runtime {
         let lease = self.admit_external_action(&ctx)?;
         let tool_call_id = ToolCallId::new();
         self.record_action_state(
-            intent_id,
+            thread_id,
             &action,
             ConnectorActionStatus::Compensating,
             action.attention_id.clone(),
@@ -488,7 +488,7 @@ impl Runtime {
         let compensation_key = format!("compensate:{}", action.idempotency_key);
         if tools.effect_is_authorized(&ctx, action.effect, &compensation_key)? {
             self.record_action_state(
-                intent_id,
+                thread_id,
                 &action,
                 ConnectorActionStatus::CompensationExecuting,
                 action.attention_id.clone(),
@@ -519,7 +519,7 @@ impl Runtime {
             Ok(outcome) => {
                 let status = status_from_outcome(&outcome, ActionMode::Compensate);
                 self.record_action_state(
-                    intent_id,
+                    thread_id,
                     &action,
                     status,
                     action.attention_id.clone(),
@@ -527,12 +527,12 @@ impl Runtime {
                     Some(outcome),
                     None,
                 )?;
-                self.projected_action(intent_id, action_id)
+                self.projected_action(thread_id, action_id)
             }
             Err(GatewayError::NeedsApproval(request_id)) => {
                 let pending_request = request_id.clone();
                 self.record_action_state(
-                    intent_id,
+                    thread_id,
                     &action,
                     ConnectorActionStatus::Compensating,
                     Some(request_id),
@@ -544,7 +544,7 @@ impl Runtime {
             }
             Err(error) => {
                 self.record_action_state(
-                    intent_id,
+                    thread_id,
                     &action,
                     ConnectorActionStatus::CompensationFailed,
                     action.attention_id.clone(),
@@ -559,10 +559,10 @@ impl Runtime {
 
     fn projected_action(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         action_id: &ConnectorActionId,
     ) -> Result<ConnectorAction> {
-        self.projection(intent_id)?
+        self.projection(thread_id)?
             .connector_actions
             .get(action_id)
             .cloned()
@@ -572,7 +572,7 @@ impl Runtime {
     #[allow(clippy::too_many_arguments)]
     fn record_action_state(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         action: &ConnectorAction,
         status: ConnectorActionStatus,
         attention_id: Option<else_protocol::ids::AttentionId>,
@@ -580,9 +580,9 @@ impl Runtime {
         outcome: Option<ToolOutcome>,
         error: Option<String>,
     ) -> Result<()> {
-        let (root, generation, revision) = self.kernel_context(intent_id)?;
+        let (root, generation, revision) = self.kernel_context(thread_id)?;
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             root,
             generation,
             revision,

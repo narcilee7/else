@@ -212,16 +212,16 @@ public struct WorldItem: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct WorldItemRecord: Codable, Equatable, Sendable {
-    public let intentID: IntentID
+    public let threadID: ThreadID
     public let item: WorldItem
 
-    public init(intentID: IntentID, item: WorldItem) {
-        self.intentID = intentID
+    public init(threadID: ThreadID, item: WorldItem) {
+        self.threadID = threadID
         self.item = item
     }
 
     private enum CodingKeys: String, CodingKey {
-        case intentID = "intent_id"
+        case threadID = "thread_id"
         case item
     }
 }
@@ -294,7 +294,7 @@ public struct ProjectWorld: Codable, Equatable, Identifiable, Sendable {
     public let key: String
     public let title: String
     public let items: [WorldItemRecord]
-    public let intentIDs: [IntentID]
+    public let threadIDs: [ThreadID]
     public let connectorIDs: [ConnectorID]
     public let openItems: Int
     public let waitingExternal: Int
@@ -307,7 +307,7 @@ public struct ProjectWorld: Codable, Equatable, Identifiable, Sendable {
         key: String,
         title: String,
         items: [WorldItemRecord],
-        intentIDs: [IntentID],
+        threadIDs: [ThreadID],
         connectorIDs: [ConnectorID],
         openItems: Int,
         waitingExternal: Int,
@@ -317,7 +317,7 @@ public struct ProjectWorld: Codable, Equatable, Identifiable, Sendable {
         self.key = key
         self.title = title
         self.items = items
-        self.intentIDs = intentIDs
+        self.threadIDs = threadIDs
         self.connectorIDs = connectorIDs
         self.openItems = openItems
         self.waitingExternal = waitingExternal
@@ -329,7 +329,7 @@ public struct ProjectWorld: Codable, Equatable, Identifiable, Sendable {
         case key
         case title
         case items
-        case intentIDs = "intent_ids"
+        case threadIDs = "thread_ids"
         case connectorIDs = "connector_ids"
         case openItems = "open_items"
         case waitingExternal = "waiting_external"
@@ -343,7 +343,7 @@ public struct IdentityWorld: Codable, Equatable, Identifiable, Sendable {
     public let key: String
     public let title: String
     public let items: [WorldItemRecord]
-    public let intentIDs: [IntentID]
+    public let threadIDs: [ThreadID]
     public let connectorIDs: [ConnectorID]
     public let openItems: Int
     public let overdue: Int
@@ -356,7 +356,7 @@ public struct IdentityWorld: Codable, Equatable, Identifiable, Sendable {
         key: String,
         title: String,
         items: [WorldItemRecord],
-        intentIDs: [IntentID],
+        threadIDs: [ThreadID],
         connectorIDs: [ConnectorID],
         openItems: Int,
         overdue: Int,
@@ -366,7 +366,7 @@ public struct IdentityWorld: Codable, Equatable, Identifiable, Sendable {
         self.key = key
         self.title = title
         self.items = items
-        self.intentIDs = intentIDs
+        self.threadIDs = threadIDs
         self.connectorIDs = connectorIDs
         self.openItems = openItems
         self.overdue = overdue
@@ -378,7 +378,7 @@ public struct IdentityWorld: Codable, Equatable, Identifiable, Sendable {
         case key
         case title
         case items
-        case intentIDs = "intent_ids"
+        case threadIDs = "thread_ids"
         case connectorIDs = "connector_ids"
         case openItems = "open_items"
         case overdue

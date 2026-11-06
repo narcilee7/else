@@ -27,7 +27,7 @@ struct MenuBarStatusView: View {
                 ForEach(Array(store.decisions.prefix(4)), id: \.request.id) { item in
                     Button {
                         store.section = .decisions
-                        store.selectedIntentID = item.snapshot.id
+                        store.selectedThreadID = item.snapshot.id
                         openMainWindow()
                     } label: {
                         Label(
@@ -54,10 +54,10 @@ struct MenuBarStatusView: View {
 
             Button {
                 store.section = .today
-                store.isCreatingIntent = true
+                store.isCreatingThread = true
                 openMainWindow()
             } label: {
-                Label("新建 Intent", systemImage: "plus")
+                Label("新建 Thread", systemImage: "plus")
             }
             .keyboardShortcut("n")
         }

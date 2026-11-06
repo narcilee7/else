@@ -4,9 +4,9 @@ import Foundation
 import UserNotifications
 
 extension Notification.Name {
-    static let elseOpenIntent = Notification.Name("else.openIntent")
+    static let elseOpenThread = Notification.Name("else.openThread")
     static let elseOpenRoute = Notification.Name("else.openRoute")
-    static let elseQuickIntent = Notification.Name("else.quickIntent")
+    static let elseQuickThread = Notification.Name("else.quickThread")
 }
 
 @MainActor
@@ -42,7 +42,7 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func postDecisionNotification(
-        intentID: IntentID,
+        threadID: ThreadID,
         request: AttentionRequest
     ) async {
         let content = UNMutableNotificationContent()
@@ -51,7 +51,7 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         content.sound = .default
         content.categoryIdentifier = ElseNotificationContract.decisionCategory
         content.userInfo = [
-            ElseNotificationContract.intentIDKey: intentID.rawValue,
+            ElseNotificationContract.threadIDKey: threadID.rawValue,
         ]
 
         let notification = UNNotificationRequest(
@@ -79,15 +79,15 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         didReceive response: UNNotificationResponse
     ) async {
         let userInfo = response.notification.request.content.userInfo
-        guard let rawIntentID = userInfo[ElseNotificationContract.intentIDKey] as? String
+        guard let rawThreadID = userInfo[ElseNotificationContract.threadIDKey] as? String
         else {
             return
         }
         await MainActor.run {
             NSApplication.shared.activate(ignoringOtherApps: true)
             Foundation.NotificationCenter.default.post(
-                name: .elseOpenIntent,
-                object: IntentID(rawIntentID)
+                name: .elseOpenThread,
+                object: ThreadID(rawThreadID)
             )
         }
     }

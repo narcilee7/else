@@ -1,11 +1,11 @@
-//! Intent Kernel：从持久事件推导下一步，并连续推进到等待态。
+//! Thread Kernel：从持久事件推导下一步，并连续推进到等待态。
 
 use chrono::{DateTime, Utc};
-use else_ledger::IntentProjection;
+use else_ledger::ThreadProjection;
 use else_protocol::attention::AttentionWindowKind;
 use else_protocol::event::ScopeState;
-use else_protocol::ids::{AttentionId, AttentionWindowId, IntentId, RunId, ScopeId, TimerId};
-use else_protocol::intent::IntentState;
+use else_protocol::ids::{AttentionId, AttentionWindowId, RunId, ScopeId, ThreadId, TimerId};
+use else_protocol::thread::ThreadState;
 
 use crate::attention::{next_attention_action, AttentionScheduleAction};
 use crate::scope::scope_spec;
@@ -81,23 +81,23 @@ pub enum KernelDriveStop {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct KernelDrive {
-    pub projection: IntentProjection,
+    pub projection: ThreadProjection,
     pub stopped: KernelDriveStop,
     pub steps: u64,
 }
 
 impl Runtime {
-    /// 从 Event Ledger 推导当前 Intent 的下一步。
+    /// 从 Event Ledger 推导当前 Thread 的下一步。
     /// 该函数不执行副作用，可用于预演、调试与调度循环。
     pub fn kernel_step(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         harness_hint: Option<&str>,
     ) -> Result<KernelAction> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         if matches!(
             projection.state,
-            Some(IntentState::Completed | IntentState::Failed | IntentState::Cancelled)
+            Some(ThreadState::Completed | ThreadState::Failed | ThreadState::Cancelled)
         ) {
             return Ok(KernelAction::Idle);
         }
@@ -153,7 +153,7 @@ impl Runtime {
                 },
             });
         }
-        if projection.state == Some(IntentState::WaitingExternal) {
+        if projection.state == Some(ThreadState::WaitingExternal) {
             return if let Some(due_at) = projection.next_timer_at() {
                 Ok(KernelAction::WaitForTimer { due_at })
             } else {
@@ -213,7 +213,7 @@ impl Runtime {
                 }
                 continue;
             }
-            if let Some(run_id) = self.active_run_id(intent_id, &scope_id)? {
+            if let Some(run_id) = self.active_run_id(thread_id, &scope_id)? {
                 active_run.get_or_insert((scope_id.clone(), run_id));
                 continue;
             }
@@ -242,7 +242,7 @@ impl Runtime {
             };
             return Ok(KernelAction::Run {
                 scope_id: scope_id.clone(),
-                generation: self.next_scope_generation(intent_id, &scope_id)?,
+                generation: self.next_scope_generation(thread_id, &scope_id)?,
                 harness,
             });
         }
@@ -260,65 +260,65 @@ impl Runtime {
     /// 执行一次 Kernel 裁决。Waiting 状态不产生任何事件。
     pub fn advance(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         harness_hint: Option<&str>,
-    ) -> Result<IntentProjection> {
-        match self.kernel_step(intent_id, harness_hint)? {
+    ) -> Result<ThreadProjection> {
+        match self.kernel_step(thread_id, harness_hint)? {
             KernelAction::Idle
             | KernelAction::WaitForUser { .. }
             | KernelAction::WaitForAttentionWindow { .. }
             | KernelAction::WaitForRun { .. }
             | KernelAction::WaitForTimer { .. }
             | KernelAction::WaitForExternal { .. }
-            | KernelAction::BlockedByDependency { .. } => self.projection(intent_id),
+            | KernelAction::BlockedByDependency { .. } => self.projection(thread_id),
             KernelAction::ConvergeDependency {
                 scope_id,
                 dependencies,
-            } => self.converge_dependency_failure(intent_id, &scope_id, &dependencies),
+            } => self.converge_dependency_failure(thread_id, &scope_id, &dependencies),
             KernelAction::FireTimer { timer_id } => {
-                self.fire_timer(intent_id, &timer_id)?;
-                self.projection(intent_id)
+                self.fire_timer(thread_id, &timer_id)?;
+                self.projection(thread_id)
             }
             KernelAction::CloseAttentionWindow { window_id } => {
-                self.close_attention_window(intent_id, &window_id)?;
-                self.projection(intent_id)
+                self.close_attention_window(thread_id, &window_id)?;
+                self.projection(thread_id)
             }
             KernelAction::ScheduleAttentionWindow {
                 window_id,
                 timer_id,
                 due_at,
             } => {
-                self.schedule_attention_window_timer(intent_id, &window_id, &timer_id, due_at)?;
-                self.projection(intent_id)
+                self.schedule_attention_window_timer(thread_id, &window_id, &timer_id, due_at)?;
+                self.projection(thread_id)
             }
             KernelAction::OpenAttentionWindow {
                 kind,
                 request_ids,
                 due_at,
             } => {
-                self.open_attention_window(intent_id, kind, request_ids, due_at)?;
-                self.projection(intent_id)
+                self.open_attention_window(thread_id, kind, request_ids, due_at)?;
+                self.projection(thread_id)
             }
             KernelAction::AddAttentionWindowMembers {
                 window_id,
                 request_ids,
             } => {
-                self.add_attention_window_members(intent_id, &window_id, request_ids)?;
-                self.projection(intent_id)
+                self.add_attention_window_members(thread_id, &window_id, request_ids)?;
+                self.projection(thread_id)
             }
             KernelAction::Run {
                 scope_id,
                 generation,
                 harness,
                 ..
-            } => self.execute_kernel_run(intent_id, &scope_id, generation, harness),
+            } => self.execute_kernel_run(thread_id, &scope_id, generation, harness),
         }
     }
 
     /// 连续推进，直到等待用户、等待 Run/Timer、空闲或达到步数上限。
     pub fn drive(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         harness_hint: Option<&str>,
         max_steps: u64,
     ) -> Result<KernelDrive> {
@@ -326,12 +326,12 @@ impl Runtime {
         loop {
             if steps >= max_steps {
                 return Ok(KernelDrive {
-                    projection: self.projection(intent_id)?,
+                    projection: self.projection(thread_id)?,
                     stopped: KernelDriveStop::StepLimit,
                     steps,
                 });
             }
-            let action = self.kernel_step(intent_id, harness_hint)?;
+            let action = self.kernel_step(thread_id, harness_hint)?;
             let stopped = match &action {
                 KernelAction::Idle => Some(KernelDriveStop::Idle),
                 KernelAction::WaitForUser { .. } => Some(KernelDriveStop::WaitForUser),
@@ -354,43 +354,43 @@ impl Runtime {
             };
             if let Some(stopped) = stopped {
                 return Ok(KernelDrive {
-                    projection: self.projection(intent_id)?,
+                    projection: self.projection(thread_id)?,
                     stopped,
                     steps,
                 });
             }
             match action {
                 KernelAction::FireTimer { timer_id } => {
-                    self.fire_timer(intent_id, &timer_id)?;
+                    self.fire_timer(thread_id, &timer_id)?;
                 }
                 KernelAction::CloseAttentionWindow { window_id } => {
-                    self.close_attention_window(intent_id, &window_id)?;
+                    self.close_attention_window(thread_id, &window_id)?;
                 }
                 KernelAction::ScheduleAttentionWindow {
                     window_id,
                     timer_id,
                     due_at,
                 } => {
-                    self.schedule_attention_window_timer(intent_id, &window_id, &timer_id, due_at)?;
+                    self.schedule_attention_window_timer(thread_id, &window_id, &timer_id, due_at)?;
                 }
                 KernelAction::OpenAttentionWindow {
                     kind,
                     request_ids,
                     due_at,
                 } => {
-                    self.open_attention_window(intent_id, kind, request_ids, due_at)?;
+                    self.open_attention_window(thread_id, kind, request_ids, due_at)?;
                 }
                 KernelAction::AddAttentionWindowMembers {
                     window_id,
                     request_ids,
                 } => {
-                    self.add_attention_window_members(intent_id, &window_id, request_ids)?;
+                    self.add_attention_window_members(thread_id, &window_id, request_ids)?;
                 }
                 KernelAction::ConvergeDependency {
                     scope_id,
                     dependencies,
                 } => {
-                    self.converge_dependency_failure(intent_id, &scope_id, &dependencies)?;
+                    self.converge_dependency_failure(thread_id, &scope_id, &dependencies)?;
                 }
                 KernelAction::Run {
                     scope_id,
@@ -398,7 +398,7 @@ impl Runtime {
                     harness,
                     ..
                 } => {
-                    self.execute_kernel_run(intent_id, &scope_id, generation, harness)?;
+                    self.execute_kernel_run(thread_id, &scope_id, generation, harness)?;
                 }
                 _ => unreachable!("waiting actions returned above"),
             }
@@ -408,24 +408,24 @@ impl Runtime {
 
     fn execute_kernel_run(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
         generation: u64,
         harness: &str,
-    ) -> Result<IntentProjection> {
+    ) -> Result<ThreadProjection> {
         if harness == else_harness::SCRIPTED {
-            return if self.projection(intent_id)?.root_scope_id.as_ref() == Some(scope_id) {
-                self.run(intent_id)
+            return if self.projection(thread_id)?.root_scope_id.as_ref() == Some(scope_id) {
+                self.run(thread_id)
             } else {
-                self.run_scope_at_generation(intent_id, scope_id, generation)
+                self.run_scope_at_generation(thread_id, scope_id, generation)
             };
         }
         let adapter = else_harness::find_adapter(harness)
             .ok_or_else(|| ApiError::NotFound(format!("harness {harness}")))?;
-        self.dispatch_scope_adapter(intent_id, scope_id, adapter.as_ref())
+        self.dispatch_scope_adapter(thread_id, scope_id, adapter.as_ref())
     }
 
-    fn scope_scheduling_order(&self, projection: &IntentProjection) -> Vec<ScopeId> {
+    fn scope_scheduling_order(&self, projection: &ThreadProjection) -> Vec<ScopeId> {
         let mut order = projection.scope_order.clone();
         for scope_id in projection.scopes.keys() {
             if !order.contains(scope_id) {

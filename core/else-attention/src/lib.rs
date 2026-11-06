@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use else_protocol::attention::{AttentionRequest, ExpectedLoss, Ruling};
-use else_protocol::intent::AttentionPolicy;
+use else_protocol::thread::AttentionPolicy;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AttentionKernel;

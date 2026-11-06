@@ -4,7 +4,7 @@ use else_protocol::event::ScopeState;
 use else_protocol::harness::{
     CancelSupport, HarnessCapabilities, ToolEffectVisibility, UsageSupport,
 };
-use else_protocol::intent::IntentState;
+use else_protocol::thread::ThreadState;
 
 struct EmptyParser;
 
@@ -44,7 +44,7 @@ fn failing_harness() -> ProcessHarness<EmptyParser> {
 fn explicit_retry_resets_failed_scope_and_returns_to_kernel() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("retry failed scope", None).unwrap();
+    let spec = runtime.create_thread("retry failed scope", None).unwrap();
     let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
     let harness = failing_harness();
     for _ in 0..3 {
@@ -52,11 +52,11 @@ fn explicit_retry_resets_failed_scope_and_returns_to_kernel() {
     }
     let failed = runtime.projection(&spec.id).unwrap();
     assert_eq!(failed.scopes[&root].state, ScopeState::Failed);
-    assert_eq!(failed.state, Some(IntentState::Failed));
+    assert_eq!(failed.state, Some(ThreadState::Failed));
 
     let (retried, projection) = runtime.retry_failed_scopes(&spec.id).unwrap();
     assert_eq!(retried, vec![root.clone()]);
-    assert_ne!(projection.state, Some(IntentState::Failed));
+    assert_ne!(projection.state, Some(ThreadState::Failed));
     assert_eq!(projection.scopes[&root].failure_count, 0);
     assert!(projection.scopes[&root].generation > failed.scopes[&root].generation);
 }

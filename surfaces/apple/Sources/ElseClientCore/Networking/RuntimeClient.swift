@@ -1,49 +1,49 @@
 import Foundation
 
 public protocol RuntimeClient: Sendable {
-    func listIntents() async throws -> [IntentSnapshot]
-    func intent(id: IntentID) async throws -> IntentSnapshot
-    func deleteIntent(id: IntentID) async throws -> IntentDeletionReport
-    func retryFailedIntent(id: IntentID) async throws -> IntentSnapshot
-    func createIntent(outcome: String, project: String?) async throws -> IntentSnapshot
-    func runIntent(id: IntentID) async throws -> IntentSnapshot
+    func listThreads() async throws -> [ThreadSnapshot]
+    func thread(id: ThreadID) async throws -> ThreadSnapshot
+    func deleteThread(id: ThreadID) async throws -> ThreadDeletionReport
+    func retryFailedThread(id: ThreadID) async throws -> ThreadSnapshot
+    func createThread(outcome: String, project: String?) async throws -> ThreadSnapshot
+    func runThread(id: ThreadID) async throws -> ThreadSnapshot
     func resolveDecision(
-        intentID: IntentID,
+        threadID: ThreadID,
         decisionID: AttentionID,
         choice: DecisionChoice
-    ) async throws -> IntentSnapshot
-    func abortIntent(id: IntentID, reason: String) async throws -> IntentSnapshot
+    ) async throws -> ThreadSnapshot
+    func abortThread(id: ThreadID, reason: String) async throws -> ThreadSnapshot
     func personalBrief() async throws -> PersonalBrief
     func resolveWorldItem(
-        intentID: IntentID,
+        threadID: ThreadID,
         itemID: WorldItemID,
         kind: WorldItemResolutionKind
     ) async throws -> WorldItem
-    func connectorActions(intentID: IntentID) async throws -> [ConnectorAction]
+    func connectorActions(threadID: ThreadID) async throws -> [ConnectorAction]
     func executeConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         actionID: ConnectorActionID
     ) async throws -> ConnectorAction
     func verifyConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         actionID: ConnectorActionID
     ) async throws -> ConnectorAction
     func compensateConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         actionID: ConnectorActionID
     ) async throws -> ConnectorAction
     func proposeConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         request: ProposeConnectorActionRequest
     ) async throws -> ConnectorAction
-    func capabilities(intentID: IntentID) async throws -> [RuntimeCapabilityRegistration]
+    func capabilities(threadID: ThreadID) async throws -> [RuntimeCapabilityRegistration]
     func exportRuntimeData() async throws -> JSONValue
     func diagnostics() async throws -> JSONValue
     func cleanupOrphanLeases() async throws -> LeaseCleanupReport
     func runtimeSettings() async throws -> RuntimeSettings
     func updateRuntimeSettings(_ settings: RuntimeSettings) async throws -> RuntimeSettings
     func previewConnectorAction(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID,
         request: PreviewConnectorActionRequest
     ) async throws -> ConnectorActionPreview
@@ -51,34 +51,34 @@ public protocol RuntimeClient: Sendable {
     func projectWorlds(includeResolved: Bool) async throws -> [ProjectWorld]
     func identityWorlds(includeResolved: Bool) async throws -> [IdentityWorld]
     func correctWorldCorrelation(
-        intentID: IntentID,
+        threadID: ThreadID,
         correction: WorldCorrelationCorrection
     ) async throws -> WorldCorrelationCorrection
     func connectorAdapters() async throws -> [ConnectorManifest]
-    func connectors(intentID: IntentID) async throws -> [ConnectorRegistration]
+    func connectors(threadID: ThreadID) async throws -> [ConnectorRegistration]
     func connectorHealth(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async throws -> ConnectorHealthReport
     func attachConnectorCredential(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID,
         credential: ConnectorCredentialInput
     ) async throws -> ConnectorCredentialMetadata
     func revokeConnectorCredential(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async throws -> ConnectorCredentialMetadata
     func registerConnector(
-        intentID: IntentID,
+        threadID: ThreadID,
         request: RegisterConnectorRequest
     ) async throws -> ConnectorRegistration
     func syncConnector(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async throws -> ConnectorSyncResult
     func repairConnector(
-        intentID: IntentID,
+        threadID: ThreadID,
         connectorID: ConnectorID
     ) async throws -> ConnectorRepairReport
 }

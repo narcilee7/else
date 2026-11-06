@@ -7,8 +7,8 @@ use else_protocol::event::EventPayload;
 use else_protocol::harness::{
     CancelSupport, HarnessCapabilities, ToolEffectVisibility, UsageSupport,
 };
-use else_protocol::intent::IntentState;
 use else_protocol::resource::{ModelUsage, UsageBasis};
+use else_protocol::thread::ThreadState;
 
 /// 测试用 NDJSON 行解析器：真实适配器（claude/codex）的同构缩小版。
 struct JsonParser;
@@ -90,12 +90,12 @@ const SUCCESS_SCRIPT: &str = r#"{"type":"output","text":"开始执行任务"}
 fn process_harness_bridges_events_and_verifies() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("桥接契约验证", None).unwrap();
+    let spec = runtime.create_thread("桥接契约验证", None).unwrap();
 
     let projection = runtime
         .run_adapter(&spec.id, &fake_harness(SUCCESS_SCRIPT))
         .unwrap();
-    assert_eq!(projection.state, Some(IntentState::Completed));
+    assert_eq!(projection.state, Some(ThreadState::Completed));
 
     let events = runtime.events(&spec.id).unwrap();
     // 能力随 RunStarted 落账（Compare 可见能力差异）
@@ -144,7 +144,7 @@ fn process_harness_bridges_events_and_verifies() {
 fn failed_harness_converges_without_completing() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("失败收敛", None).unwrap();
+    let spec = runtime.create_thread("失败收敛", None).unwrap();
     let script = r#"{"type":"output","text":"尝试中"}
 {"type":"failed","reason":"依赖服务不可达"}
 "#;
@@ -154,7 +154,7 @@ fn failed_harness_converges_without_completing() {
     assert!(error.to_string().contains("依赖服务不可达"));
 
     let events = runtime.events(&spec.id).unwrap();
-    // RunFinished{success:false} 落账；没有验收，Intent 不进入 Completed
+    // RunFinished{success:false} 落账；没有验收，Thread 不进入 Completed
     let finished = events.iter().any(|event| {
         matches!(
             &event.envelope.payload,
@@ -165,14 +165,14 @@ fn failed_harness_converges_without_completing() {
     assert!(!events
         .iter()
         .any(|e| matches!(e.envelope.payload, EventPayload::OutcomeVerified { .. })));
-    // Plan/Harness 失败不等于 Intent 失败：状态保持可重跑，不被标记终态
+    // Plan/Harness 失败不等于 Thread 失败：状态保持可重跑，不被标记终态
     let state = runtime.projection(&spec.id).unwrap().state;
     assert!(
         !matches!(
             state,
-            Some(IntentState::Completed | IntentState::Failed | IntentState::Cancelled)
+            Some(ThreadState::Completed | ThreadState::Failed | ThreadState::Cancelled)
         ),
-        "Harness 失败不得把 Intent 标记为终态，实际 {state:?}"
+        "Harness 失败不得把 Thread 标记为终态，实际 {state:?}"
     );
 }
 
@@ -180,7 +180,7 @@ fn failed_harness_converges_without_completing() {
 fn harness_exit_without_completion_is_failure() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("静默退出", None).unwrap();
+    let spec = runtime.create_thread("静默退出", None).unwrap();
     // 进程正常退出但从未报告 Completed：不能当成成功
     let error = runtime
         .run_adapter(
@@ -190,14 +190,14 @@ fn harness_exit_without_completion_is_failure() {
         .unwrap_err();
     assert!(error.to_string().contains("without completion"));
     let state = runtime.projection(&spec.id).unwrap().state;
-    assert!(!matches!(state, Some(IntentState::Completed)));
+    assert!(!matches!(state, Some(ThreadState::Completed)));
 }
 
 #[test]
-fn terminal_intent_rerun_is_idempotent() {
+fn terminal_thread_rerun_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("终态幂等", None).unwrap();
+    let spec = runtime.create_thread("终态幂等", None).unwrap();
     runtime
         .run_adapter(&spec.id, &fake_harness(SUCCESS_SCRIPT))
         .unwrap();
@@ -205,6 +205,6 @@ fn terminal_intent_rerun_is_idempotent() {
     let again = runtime
         .run_adapter(&spec.id, &fake_harness(SUCCESS_SCRIPT))
         .unwrap();
-    assert_eq!(again.state, Some(IntentState::Completed));
+    assert_eq!(again.state, Some(ThreadState::Completed));
     assert_eq!(runtime.events(&spec.id).unwrap().len(), before);
 }

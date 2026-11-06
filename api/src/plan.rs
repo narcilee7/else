@@ -4,27 +4,27 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::Utc;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
-use else_protocol::ids::{IntentId, PlanId, PlanStepId, ScopeId};
-use else_protocol::intent::IntentSpec;
+use else_protocol::ids::{PlanId, PlanStepId, ScopeId, ThreadId};
 use else_protocol::plan::{
     Plan, PlanEvidence, PlanEvidenceKind, PlanImpact, PlanStep, PlanStepStatus,
 };
+use else_protocol::thread::ThreadSpec;
 
 use crate::{ApiError, Result, Runtime};
 
 impl Runtime {
     /// Planner / Harness 提交结构化计划。调用方只能建议计划，不能借此改变
-    /// Intent、Scope 生命周期或权限。
-    pub fn propose_plan(&self, intent_id: &IntentId, plan: Plan) -> Result<Plan> {
-        let projection = self.projection(intent_id)?;
+    /// Thread、Scope 生命周期或权限。
+    pub fn propose_plan(&self, thread_id: &ThreadId, plan: Plan) -> Result<Plan> {
+        let projection = self.projection(thread_id)?;
         let spec = projection
             .spec
             .as_ref()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
-        if plan.intent_revision != spec.revision {
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
+        if plan.thread_revision != spec.revision {
             return Err(ApiError::Conflict(format!(
-                "plan revision {} does not match intent revision {}",
-                plan.intent_revision, spec.revision
+                "plan revision {} does not match thread revision {}",
+                plan.thread_revision, spec.revision
             )));
         }
         if let Some(current) = projection.current_plan() {
@@ -35,7 +35,7 @@ impl Runtime {
                 )));
             }
         }
-        let (scope_id, generation, revision) = self.kernel_context(intent_id)?;
+        let (scope_id, generation, revision) = self.kernel_context(thread_id)?;
         let payload = if projection.current_plan().is_some() {
             EventPayload::StructuredPlanReplaced {
                 reason: format!("Planner 提交计划 revision {}", plan.revision),
@@ -45,7 +45,7 @@ impl Runtime {
             EventPayload::StructuredPlanProposed { plan: plan.clone() }
         };
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id,
             generation,
             revision,
@@ -55,8 +55,8 @@ impl Runtime {
         Ok(plan)
     }
 
-    pub fn plan_history(&self, intent_id: &IntentId) -> Result<Vec<Plan>> {
-        let projection = self.projection(intent_id)?;
+    pub fn plan_history(&self, thread_id: &ThreadId) -> Result<Vec<Plan>> {
+        let projection = self.projection(thread_id)?;
         Ok(projection
             .plan_order
             .iter()
@@ -68,12 +68,12 @@ impl Runtime {
     /// 没有显式监听条件的步骤不会被猜测为受影响。
     pub fn analyze_plan_impact(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         source_event_id: &str,
         source: &str,
         summary: &str,
     ) -> Result<Option<PlanImpact>> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let Some(plan) = projection.current_plan().cloned() else {
             return Ok(None);
         };
@@ -113,9 +113,9 @@ impl Runtime {
             explanation,
             created_at: Utc::now(),
         };
-        let (scope_id, generation, revision) = self.kernel_context(intent_id)?;
+        let (scope_id, generation, revision) = self.kernel_context(thread_id)?;
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id,
             generation,
             revision,
@@ -131,11 +131,11 @@ impl Runtime {
     /// 系统分解，不冒充模型推理；已有 Planner 计划会保留其步骤和证据。
     pub(crate) fn ensure_plan_for_scope(
         &self,
-        intent_id: &IntentId,
-        spec: &IntentSpec,
+        thread_id: &ThreadId,
+        spec: &ThreadSpec,
         scope_id: &ScopeId,
     ) -> Result<()> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let current = projection.current_plan().cloned();
         if current.as_ref().is_some_and(|plan| {
             plan.steps
@@ -192,7 +192,7 @@ impl Runtime {
             id: PlanId::new(),
             revision,
             supersedes: current.as_ref().map(|plan| plan.id.clone()),
-            intent_revision: spec.revision,
+            thread_revision: spec.revision,
             summary: current
                 .as_ref()
                 .map(|plan| plan.summary.clone())
@@ -205,7 +205,7 @@ impl Runtime {
             }],
             created_at: Utc::now(),
         };
-        let (root_scope, generation, intent_revision) = self.kernel_context(intent_id)?;
+        let (root_scope, generation, thread_revision) = self.kernel_context(thread_id)?;
         let payload = if current.is_some() {
             EventPayload::StructuredPlanReplaced {
                 plan,
@@ -215,10 +215,10 @@ impl Runtime {
             EventPayload::StructuredPlanProposed { plan }
         };
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             root_scope,
             generation,
-            intent_revision,
+            thread_revision,
             Actor::System,
             payload,
         ))?;

@@ -2,20 +2,20 @@
 //! 跨 Run 召回、纠正不泛化、Verifier 免疫、重放一致、晋升规则、Revision 联动。
 
 use chrono::Utc;
-use else_api::{IntentRevision, Runtime};
+use else_api::{Runtime, ThreadRevision};
 use else_context::promotion_allowed;
 use else_protocol::attention::DecisionChoice;
 use else_protocol::effect::SideEffectKind;
 use else_protocol::event::ScopeState;
-use else_protocol::ids::{IntentId, MemoryId, ScopeId};
-use else_protocol::intent::{IntentSpec, IntentState};
+use else_protocol::ids::{MemoryId, ScopeId, ThreadId};
 use else_protocol::memory::{
     MemoryRecord, MemoryScope, MemorySource, MemoryTier, SnapshotAudience,
 };
+use else_protocol::thread::{ThreadSpec, ThreadState};
 
-fn complete_via_approve(runtime: &Runtime, spec: &IntentSpec) {
+fn complete_via_approve(runtime: &Runtime, spec: &ThreadSpec) {
     let projection = runtime.run(&spec.id).unwrap();
-    assert_eq!(projection.state, Some(IntentState::NeedsDecision));
+    assert_eq!(projection.state, Some(ThreadState::NeedsDecision));
     let request_id = projection.open_requests.keys().next().unwrap().clone();
     let after = runtime
         .decide(
@@ -24,12 +24,12 @@ fn complete_via_approve(runtime: &Runtime, spec: &IntentSpec) {
             DecisionChoice::Option("approve".into()),
         )
         .unwrap();
-    assert_eq!(after.state, Some(IntentState::Completed));
+    assert_eq!(after.state, Some(ThreadState::Completed));
 }
 
-fn root_scope(runtime: &Runtime, intent_id: &IntentId) -> ScopeId {
+fn root_scope(runtime: &Runtime, thread_id: &ThreadId) -> ScopeId {
     runtime
-        .projection(intent_id)
+        .projection(thread_id)
         .unwrap()
         .scopes
         .iter()
@@ -38,14 +38,14 @@ fn root_scope(runtime: &Runtime, intent_id: &IntentId) -> ScopeId {
         .unwrap()
 }
 
-/// 退出演示 1：完成一个 Intent 后，同项目新 Run 的 Planner 快照能召回其结论，
+/// 退出演示 1：完成一个 Thread 后，同项目新 Run 的 Planner 快照能召回其结论，
 /// 而不是重新解释一遍。
 #[test]
-fn completed_intent_recalls_into_new_planner_snapshot() {
+fn completed_thread_recalls_into_new_planner_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec_a = runtime
-        .create_intent("发布 1.8 版本", Some("console".into()))
+        .create_thread("发布 1.8 版本", Some("console".into()))
         .unwrap();
     complete_via_approve(&runtime, &spec_a);
 
@@ -57,7 +57,7 @@ fn completed_intent_recalls_into_new_planner_snapshot() {
     );
 
     let spec_b = runtime
-        .create_intent("发布 1.9 版本", Some("console".into()))
+        .create_thread("发布 1.9 版本", Some("console".into()))
         .unwrap();
     let snapshot = runtime
         .compile_snapshot(&spec_b.id, SnapshotAudience::Planner)
@@ -65,7 +65,7 @@ fn completed_intent_recalls_into_new_planner_snapshot() {
     let episode = snapshot
         .facts
         .iter()
-        .find(|record| record.predicate == "intent_concluded")
+        .find(|record| record.predicate == "thread_concluded")
         .expect("新 Run 必须召回同项目的历史结论");
     assert_eq!(episode.tier, MemoryTier::Episodic);
     assert_eq!(episode.subject, "发布 1.8 版本");
@@ -90,7 +90,7 @@ fn project_correction_does_not_leak_to_other_scopes() {
 
     let recall_for = |project: Option<&str>| {
         let spec = runtime
-            .create_intent("验证召回", project.map(str::to_string))
+            .create_thread("验证召回", project.map(str::to_string))
             .unwrap();
         runtime
             .compile_snapshot(&spec.id, SnapshotAudience::Planner)
@@ -110,7 +110,7 @@ fn verifier_ignores_memory_and_stays_on_original_done_when() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_intent("达到可发布状态", Some("console".into()))
+        .create_thread("达到可发布状态", Some("console".into()))
         .unwrap();
     // 记忆中塞入一条试图放宽验收标准的“事实”
     runtime
@@ -127,7 +127,7 @@ fn verifier_ignores_memory_and_stays_on_original_done_when() {
         .unwrap();
     assert!(snapshot.facts.is_empty(), "Verifier 不得读取召回记忆");
     assert_eq!(snapshot.done_when, spec.done_when, "验收标准不可被改写");
-    assert_eq!(snapshot.intent_revision, spec.revision);
+    assert_eq!(snapshot.thread_revision, spec.revision);
 
     // 完整跑完：验收证据仍然逐项对应原始 DoneWhen
     complete_via_approve(&runtime, &spec);
@@ -155,7 +155,7 @@ fn memory_and_snapshots_replay_identically_after_reopen() {
     let (spec_id, before) = {
         let runtime = Runtime::open(dir.path()).unwrap();
         let spec = runtime
-            .create_intent("验证记忆重放", Some("console".into()))
+            .create_thread("验证记忆重放", Some("console".into()))
             .unwrap();
         runtime
             .correct_memory(
@@ -211,7 +211,7 @@ fn semantic_promotion_requires_confirmation_or_independent_evidence() {
 fn revision_cancels_only_affected_scopes() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("验证 Revision 联动", None).unwrap();
+    let spec = runtime.create_thread("验证 Revision 联动", None).unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
     let affected = runtime
@@ -224,9 +224,9 @@ fn revision_cancels_only_affected_scopes() {
     assert!(artifacts_before > 0, "修订前已有计划产物");
 
     let new_spec = runtime
-        .revise_intent(
+        .revise_thread(
             &spec.id,
-            IntentRevision {
+            ThreadRevision {
                 outcome: Some("修订后的目标".into()),
                 add_constraints: vec!["新增约束：不得牺牲稳定性".into()],
                 reason: "用户调整目标".into(),
@@ -244,7 +244,7 @@ fn revision_cancels_only_affected_scopes() {
     assert_eq!(projection.scopes[&affected].state, ScopeState::Cancelled);
     assert_eq!(projection.scopes[&unaffected].state, ScopeState::Running);
     assert_eq!(projection.scopes[&root].state, ScopeState::Running);
-    assert_ne!(projection.state, Some(IntentState::Cancelled));
+    assert_ne!(projection.state, Some(ThreadState::Cancelled));
     assert_eq!(
         projection.artifacts.len(),
         artifacts_before,

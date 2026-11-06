@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use else_ledger::{Projection, StoredEvent};
 use else_protocol::api::MemoryView;
 use else_protocol::event::EventPayload;
-use else_protocol::ids::{IntentId, MemoryId, SnapshotId};
+use else_protocol::ids::{MemoryId, SnapshotId, ThreadId};
 use else_protocol::memory::{ContextSnapshot, MemoryRecord, MemoryTier};
 
 /// Memory 投影：已晋升记忆、待确认候选与 Context Snapshot，全部来自事件。
@@ -73,19 +73,19 @@ impl Projection for MemoryProjection {
 }
 
 impl MemoryProjection {
-    /// 规则式召回：Global + 匹配的 Project(+ 当前 Intent) 作用域内、
+    /// 规则式召回：Global + 匹配的 Project(+ 当前 Thread) 作用域内、
     /// 指定分层、有效期内的已晋升记忆。确定性排序（按 ID）。
     pub fn recall(
         &self,
         project: Option<&str>,
-        intent_id: Option<&IntentId>,
+        thread_id: Option<&ThreadId>,
         tiers: &[MemoryTier],
         now: DateTime<Utc>,
     ) -> Vec<MemoryRecord> {
         else_protocol::memory::recall_memories(
             self.promoted.values(),
             project,
-            intent_id,
+            thread_id,
             tiers,
             now,
         )

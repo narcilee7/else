@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
 use else_protocol::attention::{DecisionChoice, ExpectedLoss};
-use else_protocol::ids::{AttentionId, IntentId};
+use else_protocol::ids::{AttentionId, ThreadId};
 
 use super::app_event::AppEvent;
 use super::composer::Composer;
@@ -21,7 +21,7 @@ pub enum Screen {
     Overview,
     Decisions,
     Results,
-    IntentDetail,
+    ThreadDetail,
     DecisionDetail,
     Connectors,
     Composer,
@@ -33,25 +33,25 @@ impl Screen {
             Self::Overview => "Today",
             Self::Decisions => "Decisions",
             Self::Results => "Results",
-            Self::IntentDetail => "Intent",
+            Self::ThreadDetail => "Thread",
             Self::DecisionDetail => "Decision",
             Self::Connectors => "Settings",
-            Self::Composer => "New intent",
+            Self::Composer => "New thread",
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct DecisionFocus {
-    pub intent_id: IntentId,
+    pub thread_id: ThreadId,
     pub request_id: AttentionId,
 }
 
 #[derive(Debug, Clone)]
 pub enum ComposerMode {
-    Intent,
+    Thread,
     Decision {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         request_id: AttentionId,
     },
 }
@@ -77,7 +77,7 @@ pub struct App {
     pub dirty: bool,
     pub should_quit: bool,
     pub show_help: bool,
-    pub focused_intent: Option<IntentId>,
+    pub focused_thread: Option<ThreadId>,
     pub focused_decision: Option<DecisionFocus>,
     pub debug_detail: bool,
     pub action_pending: bool,
@@ -95,7 +95,7 @@ impl App {
             cursor: 0,
             status: None,
             composer: Composer::new(),
-            composer_mode: ComposerMode::Intent,
+            composer_mode: ComposerMode::Thread,
             generation: 0,
             inflight: None,
             refresh_again: false,
@@ -103,7 +103,7 @@ impl App {
             dirty: true,
             should_quit: false,
             show_help: false,
-            focused_intent: None,
+            focused_thread: None,
             focused_decision: None,
             debug_detail: false,
             action_pending: false,
@@ -140,21 +140,21 @@ impl App {
         let generation = self.generation;
         let request = match self.screen {
             Screen::Overview | Screen::Composer => LoadRequest::Overview { generation },
-            Screen::Results => LoadRequest::Intents { generation },
-            Screen::IntentDetail => match self.focused_intent.clone() {
-                Some(intent_id) => LoadRequest::IntentDetail {
+            Screen::Results => LoadRequest::Threads { generation },
+            Screen::ThreadDetail => match self.focused_thread.clone() {
+                Some(thread_id) => LoadRequest::ThreadDetail {
                     generation,
-                    intent_id,
+                    thread_id,
                 },
-                None => LoadRequest::Intents { generation },
+                None => LoadRequest::Threads { generation },
             },
             Screen::Decisions | Screen::DecisionDetail => LoadRequest::Decisions { generation },
-            Screen::Connectors => match self.focused_intent.clone() {
-                Some(intent_id) => LoadRequest::Connectors {
+            Screen::Connectors => match self.focused_thread.clone() {
+                Some(thread_id) => LoadRequest::Connectors {
                     generation,
-                    intent_id,
+                    thread_id,
                 },
-                None => LoadRequest::Intents { generation },
+                None => LoadRequest::Threads { generation },
             },
         };
         self.inflight = Some(generation);
@@ -212,10 +212,10 @@ impl App {
     fn data_fits(screen: Screen, data: &Data) -> bool {
         match screen {
             Screen::Overview => matches!(data, Data::Overview(_)),
-            Screen::Results => matches!(data, Data::Intents(_)),
-            Screen::IntentDetail => matches!(data, Data::IntentDetail(_) | Data::Intents(_)),
+            Screen::Results => matches!(data, Data::Threads(_)),
+            Screen::ThreadDetail => matches!(data, Data::ThreadDetail(_) | Data::Threads(_)),
             Screen::Decisions | Screen::DecisionDetail => matches!(data, Data::Decisions(_)),
-            Screen::Connectors => matches!(data, Data::Connectors(_) | Data::Intents(_)),
+            Screen::Connectors => matches!(data, Data::Connectors(_) | Data::Threads(_)),
             Screen::Composer => true,
         }
     }
@@ -275,15 +275,15 @@ impl App {
             AppEvent::ActionDone {
                 label,
                 detail,
-                intent_id,
+                thread_id,
             } => {
                 self.action_pending = false;
                 self.status = Some(Status {
                     text: format!("{label} · {detail}"),
                     failed: false,
                 });
-                if let Some(intent_id) = intent_id {
-                    self.focused_intent = Some(intent_id);
+                if let Some(thread_id) = thread_id {
+                    self.focused_thread = Some(thread_id);
                 }
                 if self.screen == Screen::DecisionDetail {
                     self.back();
@@ -355,7 +355,7 @@ impl App {
             KeyCode::Char('r') => self.request_load(),
             KeyCode::Char('n') => {
                 self.composer.clear();
-                self.composer_mode = ComposerMode::Intent;
+                self.composer_mode = ComposerMode::Thread;
                 self.goto(Screen::Composer);
                 return;
             }
@@ -379,7 +379,7 @@ impl App {
                     if let Some(focus) = self.focused_decision.clone() {
                         self.composer.clear();
                         self.composer_mode = ComposerMode::Decision {
-                            intent_id: focus.intent_id,
+                            thread_id: focus.thread_id,
                             request_id: focus.request_id,
                         };
                         self.goto(Screen::Composer);
@@ -388,7 +388,7 @@ impl App {
                 KeyCode::Char('x') => {
                     if let Some(focus) = self.focused_decision.clone() {
                         self.dispatch(ActionRequest::Decide {
-                            intent_id: focus.intent_id,
+                            thread_id: focus.thread_id,
                             request_id: focus.request_id,
                             choice: DecisionChoice::Dismissed,
                         });
@@ -396,10 +396,10 @@ impl App {
                 }
                 _ => {}
             },
-            Screen::IntentDetail => match key.code {
+            Screen::ThreadDetail => match key.code {
                 KeyCode::Char('a') => {
-                    if let Some(intent_id) = self.focused_intent.clone() {
-                        self.dispatch(ActionRequest::AdvanceIntent { intent_id });
+                    if let Some(thread_id) = self.focused_thread.clone() {
+                        self.dispatch(ActionRequest::AdvanceThread { thread_id });
                     }
                 }
                 KeyCode::Char('d') => self.debug_detail = !self.debug_detail,
@@ -407,12 +407,12 @@ impl App {
             },
             Screen::Connectors if key.code == KeyCode::Char('s') => {
                 if let Some(RowAction::SyncConnector {
-                    intent_id,
+                    thread_id,
                     connector_id,
                 }) = self.selected_action()
                 {
                     self.dispatch(ActionRequest::SyncConnector {
-                        intent_id,
+                        thread_id,
                         connector_id,
                     });
                 }
@@ -438,12 +438,12 @@ impl App {
                     return;
                 }
                 let action = match &self.composer_mode {
-                    ComposerMode::Intent => ActionRequest::CreateIntent { outcome: text },
+                    ComposerMode::Thread => ActionRequest::CreateThread { outcome: text },
                     ComposerMode::Decision {
-                        intent_id,
+                        thread_id,
                         request_id,
                     } => ActionRequest::Decide {
-                        intent_id: intent_id.clone(),
+                        thread_id: thread_id.clone(),
                         request_id: request_id.clone(),
                         choice: DecisionChoice::FreeText(text),
                     },
@@ -501,35 +501,35 @@ impl App {
             return;
         };
         match action {
-            RowAction::OpenIntent(intent_id) => {
-                self.focused_intent = Some(intent_id);
-                self.goto(Screen::IntentDetail);
+            RowAction::OpenThread(thread_id) => {
+                self.focused_thread = Some(thread_id);
+                self.goto(Screen::ThreadDetail);
             }
             RowAction::OpenDecision {
-                intent_id,
+                thread_id,
                 request_id,
             } => {
                 self.focused_decision = Some(DecisionFocus {
-                    intent_id,
+                    thread_id,
                     request_id,
                 });
                 self.goto(Screen::DecisionDetail);
             }
-            RowAction::OpenConnectors(intent_id) => {
-                self.focused_intent = Some(intent_id);
+            RowAction::OpenConnectors(thread_id) => {
+                self.focused_thread = Some(thread_id);
                 self.data = Data::Empty;
                 self.request_load();
             }
-            RowAction::AdvanceIntent(intent_id) => {
-                self.dispatch(ActionRequest::AdvanceIntent { intent_id });
+            RowAction::AdvanceThread(thread_id) => {
+                self.dispatch(ActionRequest::AdvanceThread { thread_id });
             }
             RowAction::Decide {
-                intent_id,
+                thread_id,
                 request_id,
                 choice,
             } => {
                 let action = ActionRequest::Decide {
-                    intent_id,
+                    thread_id,
                     request_id,
                     choice,
                 };
@@ -540,19 +540,19 @@ impl App {
                 }
             }
             RowAction::ResolveWorld {
-                intent_id,
+                thread_id,
                 item_id,
                 kind,
             } => self.dispatch(ActionRequest::ResolveWorld {
-                intent_id,
+                thread_id,
                 item_id,
                 kind,
             }),
             RowAction::SyncConnector {
-                intent_id,
+                thread_id,
                 connector_id,
             } => self.dispatch(ActionRequest::SyncConnector {
-                intent_id,
+                thread_id,
                 connector_id,
             }),
         }
@@ -639,7 +639,7 @@ mod tests {
     use super::*;
     use crate::tui::data::{Data, DecisionsData};
     use else_protocol::attention::{AttentionKind, AttentionRequest};
-    use else_protocol::ids::{AttentionId, IntentId};
+    use else_protocol::ids::{AttentionId, ThreadId};
 
     fn app() -> (App, Receiver<LoadRequest>, Receiver<ActionRequest>) {
         let (loads, load_rx) = std::sync::mpsc::channel();
@@ -671,11 +671,11 @@ mod tests {
         else_protocol::api::EventResponse {
             seq: 7,
             event_id: "e-7".into(),
-            intent_id: "i-1".into(),
+            thread_id: "i-1".into(),
             scope_id: "s-1".into(),
             run_id: None,
             generation: 1,
-            intent_revision: 1,
+            thread_revision: 1,
             occurred_at: "2026-10-31T00:00:00Z".into(),
             payload: serde_json::Value::Null,
         }
@@ -689,7 +689,7 @@ mod tests {
         app.goto(Screen::Results);
         app.handle(AppEvent::Loaded {
             generation: stale,
-            data: Data::Intents(Vec::new()),
+            data: Data::Threads(Vec::new()),
         });
         assert!(app.inflight.is_none());
         assert!(app.refresh_again);
@@ -704,7 +704,7 @@ mod tests {
         app.handle(AppEvent::RuntimeEvent(runtime_event()));
         app.handle(AppEvent::Loaded {
             generation,
-            data: Data::Intents(Vec::new()),
+            data: Data::Threads(Vec::new()),
         });
         assert!(app.refresh_again);
     }
@@ -715,7 +715,7 @@ mod tests {
         app.screen = Screen::Decisions;
         app.data = Data::Decisions(Box::new(DecisionsData {
             windows: Vec::new(),
-            loose: vec![(IntentId::from("intent-1"), request("request-1"))],
+            loose: vec![(ThreadId::from("thread-1"), request("request-1"))],
         }));
         app.cursor = app
             .rows()
@@ -737,7 +737,7 @@ mod tests {
             generation,
             data: Data::Decisions(Box::new(DecisionsData {
                 windows: Vec::new(),
-                loose: vec![(IntentId::from("intent-1"), request("request-1"))],
+                loose: vec![(ThreadId::from("thread-1"), request("request-1"))],
             })),
         });
         assert!(matches!(
@@ -750,7 +750,7 @@ mod tests {
             generation: app.generation,
             data: Data::Decisions(Box::new(DecisionsData {
                 windows: Vec::new(),
-                loose: vec![(IntentId::from("intent-1"), request("request-1"))],
+                loose: vec![(ThreadId::from("thread-1"), request("request-1"))],
             })),
         });
         assert!(matches!(
@@ -764,7 +764,7 @@ mod tests {
         let (mut app, _loads, actions) = app();
         app.screen = Screen::DecisionDetail;
         app.focused_decision = Some(DecisionFocus {
-            intent_id: IntentId::from("intent-1"),
+            thread_id: ThreadId::from("thread-1"),
             request_id: AttentionId::from("request-1"),
         });
         let mut request = request("request-1");
@@ -775,7 +775,7 @@ mod tests {
         }];
         app.data = Data::Decisions(Box::new(DecisionsData {
             windows: Vec::new(),
-            loose: vec![(IntentId::from("intent-1"), request)],
+            loose: vec![(ThreadId::from("thread-1"), request)],
         }));
         app.cursor = app
             .rows()
@@ -798,7 +798,7 @@ mod tests {
         let (mut app, _loads, actions) = app();
         app.screen = Screen::DecisionDetail;
         app.focused_decision = Some(DecisionFocus {
-            intent_id: IntentId::from("intent-1"),
+            thread_id: ThreadId::from("thread-1"),
             request_id: AttentionId::from("request-1"),
         });
         app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
@@ -821,12 +821,12 @@ mod tests {
         let (mut app, _loads, actions) = app();
         app.screen = Screen::DecisionDetail;
         app.focused_decision = Some(DecisionFocus {
-            intent_id: IntentId::from("intent-1"),
+            thread_id: ThreadId::from("thread-1"),
             request_id: AttentionId::from("request-1"),
         });
         app.data = Data::Decisions(Box::new(DecisionsData {
             windows: Vec::new(),
-            loose: vec![(IntentId::from("intent-1"), request("request-1"))],
+            loose: vec![(ThreadId::from("thread-1"), request("request-1"))],
         }));
         app.cursor = app
             .rows()

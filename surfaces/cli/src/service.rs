@@ -275,7 +275,7 @@ fn linux_status(runtime_dir: &Path) -> ServiceStatus {
 fn linux_unit(program: &Path, runtime_dir: &Path) -> String {
     format!(
         "[Unit]\n\
-         Description=else Intent Runtime\n\
+         Description=else Thread Runtime\n\
          After=default.target\n\
          \n\
          [Service]\n\

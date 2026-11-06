@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct NewIntentView: View {
+struct NewThreadView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
 
@@ -12,7 +12,7 @@ struct NewIntentView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("新建 Intent")
+                    Text("新建 Thread")
                         .font(ElseType.pageTitle)
                         .foregroundStyle(ElseColor.textPrimary)
                     Text("描述希望现实发生的变化。")
@@ -106,7 +106,7 @@ struct NewIntentView: View {
         isSubmitting = true
         let projectValue = project.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
-            await store.createIntent(
+            await store.createThread(
                 outcome: trimmedOutcome,
                 project: projectValue.isEmpty ? nil : projectValue
             )

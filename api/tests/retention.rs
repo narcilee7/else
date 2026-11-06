@@ -34,7 +34,7 @@ fn runtime_settings_persist_and_default_retention_is_disabled() {
 }
 
 #[test]
-fn retention_deletes_only_terminal_intents_past_cutoff() {
+fn retention_deletes_only_terminal_threads_past_cutoff() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     runtime
@@ -42,9 +42,9 @@ fn retention_deletes_only_terminal_intents_past_cutoff() {
             retention_days: Some(7),
         })
         .unwrap();
-    let terminal = runtime.create_intent("终态测试", None).unwrap();
+    let terminal = runtime.create_thread("终态测试", None).unwrap();
     runtime.abort(&terminal.id, "retention test").unwrap();
-    let running = runtime.create_intent("运行中测试", None).unwrap();
+    let running = runtime.create_thread("运行中测试", None).unwrap();
 
     let not_due = runtime.enforce_retention(Utc::now()).unwrap();
     assert!(not_due.is_empty());
@@ -53,7 +53,7 @@ fn retention_deletes_only_terminal_intents_past_cutoff() {
         .enforce_retention(Utc::now() + Duration::days(8))
         .unwrap();
     assert_eq!(due.len(), 1);
-    assert_eq!(due[0].intent_id, terminal.id);
+    assert_eq!(due[0].thread_id, terminal.id);
     assert!(runtime.projection(&terminal.id).unwrap().spec.is_none());
     assert_eq!(
         runtime.projection(&running.id).unwrap().spec.unwrap().id,

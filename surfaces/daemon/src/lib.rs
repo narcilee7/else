@@ -1,4 +1,4 @@
-//! Loopback HTTP surface for the resident Intent Runtime.
+//! Loopback HTTP surface for the resident Thread Runtime.
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -12,10 +12,10 @@ use std::time::Instant;
 
 use chrono::Utc;
 use else_api::{ApiError, RuntimeHandle, RuntimeService};
-use else_ledger::{IntentProjection, StoredEvent};
-use else_protocol::api::{AttentionWindowSnapshot, EventResponse, IntentSnapshot};
+use else_ledger::{StoredEvent, ThreadProjection};
+use else_protocol::api::{AttentionWindowSnapshot, EventResponse, ThreadSnapshot};
 use else_protocol::attention::DecisionChoice;
-use else_protocol::intent::{IntentSpec, IntentState};
+use else_protocol::thread::{ThreadSpec, ThreadState};
 use fs2::FileExt;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -149,7 +149,7 @@ struct CachedResponse {
 #[derive(Clone, Serialize)]
 struct Operation {
     id: String,
-    intent_id: String,
+    thread_id: String,
     kind: String,
     status: String,
     error: Option<String>,
@@ -174,8 +174,8 @@ fn handle_http(mut request: Request, state: &AppState) {
             .and_then(|value| value.strip_prefix("Bearer ").map(str::to_string))
             .unwrap_or_default();
         let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
-        let intent_id =
-            else_protocol::ids::IntentId::from(value["intent_id"].as_str().unwrap_or_default());
+        let thread_id =
+            else_protocol::ids::ThreadId::from(value["thread_id"].as_str().unwrap_or_default());
         let binding_id = else_protocol::ids::AgentBindingId::from(
             value["binding_id"].as_str().unwrap_or_default(),
         );
@@ -189,7 +189,7 @@ fn handle_http(mut request: Request, state: &AppState) {
             };
         match state
             .handle
-            .record_agent_binding_event(&intent_id, &binding_id, &token, event)
+            .record_agent_binding_event(&thread_id, &binding_id, &token, event)
         {
             Ok(projection) => {
                 respond_json(request, 200, &json!({"ok":true,"cursor":projection.cursor}));
@@ -210,13 +210,13 @@ fn handle_http(mut request: Request, state: &AppState) {
             .and_then(|value| value.strip_prefix("Bearer ").map(str::to_string))
             .unwrap_or_default();
         let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
-        let intent_id =
-            else_protocol::ids::IntentId::from(value["intent_id"].as_str().unwrap_or_default());
+        let thread_id =
+            else_protocol::ids::ThreadId::from(value["thread_id"].as_str().unwrap_or_default());
         let connector_id = else_protocol::ids::ConnectorId::from(
             value["connector_id"].as_str().unwrap_or_default(),
         );
         match state.handle.ingest_connector_webhook(
-            &intent_id,
+            &thread_id,
             &connector_id,
             &token,
             value["payload"].clone(),
@@ -242,21 +242,30 @@ fn handle_http(mut request: Request, state: &AppState) {
         respond_json(request, 400, &json!({ "error": "invalid body" }));
         return;
     }
-    let path_segments: Vec<_> = path.trim_matches('/').split('/').collect();
+    let path_segments: Vec<_> = path
+        .trim_matches('/')
+        .split('/')
+        // 0.1.x 的客户端（旧版 CLI、旧版 App）还在打 `/v1/intents`。
+        // 只在段落边界上映射旧名，其余路径与 query 原样透传。
+        .map(|segment| match segment {
+            "intents" => "threads",
+            other => other,
+        })
+        .collect();
     if path_segments.len() == 7
         && path_segments[0] == "v1"
-        && path_segments[1] == "intents"
+        && path_segments[1] == "threads"
         && path_segments[3] == "bindings"
         && path_segments[5] == "events"
         && path_segments[6] == "stream"
         && request.method() == &Method::Get
     {
-        let intent_id = else_protocol::ids::IntentId::from(path_segments[2]);
+        let thread_id = else_protocol::ids::ThreadId::from(path_segments[2]);
         let binding_id = else_protocol::ids::AgentBindingId::from(path_segments[4]);
         let cursor = query_value(request.url(), "cursor")
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(0);
-        let reader = BindingEventStream::new(state.handle.clone(), intent_id, binding_id, cursor);
+        let reader = BindingEventStream::new(state.handle.clone(), thread_id, binding_id, cursor);
         let response = Response::new(
             StatusCode(200),
             vec![
@@ -336,7 +345,7 @@ fn handle_http(mut request: Request, state: &AppState) {
         }
         Err(error) => {
             let status = match error {
-                DaemonError::Api(ApiError::IntentNotFound(_))
+                DaemonError::Api(ApiError::ThreadNotFound(_))
                 | DaemonError::Api(ApiError::NotFound(_)) => 404,
                 DaemonError::Api(ApiError::Conflict(_))
                 | DaemonError::Api(ApiError::Gateway(_)) => 409,
@@ -389,10 +398,10 @@ fn route(
             _ => {}
         }
     }
-    if segments == ["v1", "intents"] {
+    if segments == ["v1", "threads"] {
         return match request.method() {
             Method::Get => {
-                let specs = state.handle.list_intents()?;
+                let specs = state.handle.list_threads()?;
                 let mut snapshots = Vec::new();
                 for spec in specs {
                     snapshots.push(snapshot(&state.handle.projection(&spec.id)?));
@@ -405,7 +414,7 @@ fn route(
                     .as_str()
                     .ok_or_else(|| DaemonError::InvalidRequest("missing outcome".into()))?;
                 let project = value["project"].as_str().map(str::to_string);
-                let spec = state.handle.create_intent(outcome, project)?;
+                let spec = state.handle.create_thread(outcome, project)?;
                 let projection = state.handle.projection(&spec.id)?;
                 Ok((200, json_string(&snapshot(&projection))?))
             }
@@ -429,7 +438,7 @@ fn route(
         let cursor = query_value(request.url(), "cursor")
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(0);
-        let mut candidates = state.handle.intent_candidates(cursor)?;
+        let mut candidates = state.handle.thread_candidates(cursor)?;
         candidates.sort_by_key(|record| record.seq);
         return Ok((200, json_string(&candidates)?));
     }
@@ -455,17 +464,17 @@ fn route(
     if segments == ["v1", "attention"] && request.method() == &Method::Get {
         let now = Utc::now();
         let mut windows = Vec::new();
-        for spec in state.handle.list_intents()? {
+        for spec in state.handle.list_threads()? {
             let projection = state.handle.projection(&spec.id)?;
             for (window, requests) in projection.actionable_attention_windows(now) {
                 windows.push(AttentionWindowSnapshot {
-                    intent_id: spec.id.clone(),
+                    thread_id: spec.id.clone(),
                     window: window.clone(),
                     requests: requests.into_iter().cloned().collect(),
                 });
             }
         }
-        windows.sort_by_key(|window| (window.window.due_at, window.intent_id.clone()));
+        windows.sort_by_key(|window| (window.window.due_at, window.thread_id.clone()));
         return Ok((200, json_string(&windows)?));
     }
     if segments == ["v1", "projects"] && request.method() == &Method::Get {
@@ -477,32 +486,32 @@ fn route(
     if segments == ["v1", "identities"] && request.method() == &Method::Get {
         let include_resolved = query_value(request.url(), "include_resolved")
             .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
-        let intent_id =
-            query_value(request.url(), "intent_id").map(else_protocol::ids::IntentId::from);
+        let thread_id =
+            query_value(request.url(), "thread_id").map(else_protocol::ids::ThreadId::from);
         let identities = state
             .handle
-            .identity_worlds(intent_id.as_ref(), include_resolved)?;
+            .identity_worlds(thread_id.as_ref(), include_resolved)?;
         return Ok((200, json_string(&identities)?));
     }
-    if segments.len() >= 3 && segments[0..2] == ["v1", "intents"] {
-        let intent_id = else_protocol::ids::IntentId::from(segments[2]);
+    if segments.len() >= 3 && segments[0..2] == ["v1", "threads"] {
+        let thread_id = else_protocol::ids::ThreadId::from(segments[2]);
         // 空投影也用于 Runtime 内部的数据保留流程，不能把它当成已存在的
-        // Intent 暴露给 surface。Memory 挂在独立的系统命名空间，不做此检查。
-        if segments.get(3) != Some(&"memory") && state.handle.projection(&intent_id)?.spec.is_none()
+        // Thread 暴露给 surface。Memory 挂在独立的系统命名空间，不做此检查。
+        if segments.get(3) != Some(&"memory") && state.handle.projection(&thread_id)?.spec.is_none()
         {
-            return Err(DaemonError::Api(ApiError::IntentNotFound(intent_id)));
+            return Err(DaemonError::Api(ApiError::ThreadNotFound(thread_id)));
         }
         if segments.len() == 3 {
             match request.method() {
                 Method::Get => {
                     return Ok((
                         200,
-                        json_string(&snapshot(&state.handle.projection(&intent_id)?))?,
+                        json_string(&snapshot(&state.handle.projection(&thread_id)?))?,
                     ))
                 }
                 Method::Delete => {
-                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
-                    let report = state.handle.delete_intent(&intent_id)?;
+                    check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
+                    let report = state.handle.delete_thread(&thread_id)?;
                     return Ok((200, json_string(&report)?));
                 }
                 _ => {}
@@ -513,27 +522,27 @@ fn route(
             && segments[4] == "retry"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
-            let (retried_scopes, projection) = state.handle.retry_failed_scopes(&intent_id)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
+            let (retried_scopes, projection) = state.handle.retry_failed_scopes(&thread_id)?;
             return Ok((
                 200,
                 json_string(&json!({
                     "retried_scopes": retried_scopes,
-                    "intent": snapshot(&projection),
+                    "thread": snapshot(&projection),
                 }))?,
             ));
         }
         if segments.len() == 4 && segments[3] == "run" && request.method() == &Method::Post {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
             let harness = value["harness"].as_str().map(str::to_string);
-            let mut current = snapshot(&state.handle.projection(&intent_id)?);
-            current.operation_id = Some(spawn_operation(state, "run", &intent_id, {
+            let mut current = snapshot(&state.handle.projection(&thread_id)?);
+            current.operation_id = Some(spawn_operation(state, "run", &thread_id, {
                 let handle = state.handle.clone();
-                let intent_id = intent_id.clone();
+                let thread_id = thread_id.clone();
                 move || {
                     handle
-                        .drive(&intent_id, harness.as_deref(), 16)
+                        .drive(&thread_id, harness.as_deref(), 16)
                         .map(|driven| {
                             json!({
                                 "stopped": format!("{:?}", driven.stopped),
@@ -547,14 +556,14 @@ fn route(
         if segments.len() == 4 && segments[3] == "capabilities" {
             match request.method() {
                 Method::Get => {
-                    return Ok((200, json_string(&state.handle.capabilities(&intent_id)?)?));
+                    return Ok((200, json_string(&state.handle.capabilities(&thread_id)?)?));
                 }
                 Method::Post => {
                     let capability: else_protocol::capability::CapabilityRegistration =
                         serde_json::from_str(body).map_err(json_error)?;
                     state
                         .handle
-                        .register_capability(&intent_id, capability.clone())?;
+                        .register_capability(&thread_id, capability.clone())?;
                     return Ok((200, json_string(&capability)?));
                 }
                 _ => {}
@@ -563,10 +572,10 @@ fn route(
         if segments.len() == 4 && segments[3] == "bindings" {
             match request.method() {
                 Method::Get => {
-                    return Ok((200, json_string(&state.handle.agent_bindings(&intent_id)?)?));
+                    return Ok((200, json_string(&state.handle.agent_bindings(&thread_id)?)?));
                 }
                 Method::Post => {
-                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
                     let value: Value = serde_json::from_str(body).map_err(json_error)?;
                     let scope_id = value["scope_id"]
                         .as_str()
@@ -574,13 +583,13 @@ fn route(
                         .or_else(|| {
                             state
                                 .handle
-                                .projection(&intent_id)
+                                .projection(&thread_id)
                                 .ok()
                                 .and_then(|projection| projection.root_scope_id)
                         })
                         .ok_or_else(|| DaemonError::InvalidRequest("missing scope_id".into()))?;
                     let binding = state.handle.bind_agent(
-                        &intent_id,
+                        &thread_id,
                         else_protocol::ids::AgentId::from(value["agent_id"].as_str().ok_or_else(
                             || DaemonError::InvalidRequest("missing agent_id".into()),
                         )?),
@@ -611,14 +620,14 @@ fn route(
                 Method::Get => {
                     let connectors = state
                         .handle
-                        .projection(&intent_id)?
+                        .projection(&thread_id)?
                         .connectors
                         .into_values()
                         .collect::<Vec<_>>();
                     return Ok((200, json_string(&connectors)?));
                 }
                 Method::Post => {
-                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
                     let value: Value = serde_json::from_str(body).map_err(json_error)?;
                     let name = value["name"].as_str().unwrap_or("connector");
                     let source = value["source"]
@@ -638,7 +647,7 @@ fn route(
                     let sync_interval_seconds =
                         value["sync_interval_seconds"].as_u64().unwrap_or(300);
                     let connector = state.handle.register_connector_adapter_with_credential(
-                        &intent_id,
+                        &thread_id,
                         name,
                         source,
                         adapter,
@@ -653,11 +662,11 @@ fn route(
         if segments.len() == 4 && segments[3] == "actions" {
             match request.method() {
                 Method::Get => {
-                    let actions = state.handle.connector_actions(&intent_id)?;
+                    let actions = state.handle.connector_actions(&thread_id)?;
                     return Ok((200, json_string(&actions)?));
                 }
                 Method::Post => {
-                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
                     let value: Value = serde_json::from_str(body).map_err(json_error)?;
                     let connector_id = else_protocol::ids::ConnectorId::from(
                         value["connector_id"].as_str().ok_or_else(|| {
@@ -671,7 +680,7 @@ fn route(
                         .as_str()
                         .ok_or_else(|| DaemonError::InvalidRequest("missing target".into()))?;
                     let action = state.handle.propose_connector_action(
-                        &intent_id,
+                        &thread_id,
                         &connector_id,
                         capability,
                         target,
@@ -698,7 +707,7 @@ fn route(
                 .as_str()
                 .ok_or_else(|| DaemonError::InvalidRequest("missing target".into()))?;
             let preview = state.handle.preview_connector_action(
-                &intent_id,
+                &thread_id,
                 &connector_id,
                 capability,
                 target,
@@ -711,18 +720,18 @@ fn route(
             && matches!(segments[5], "execute" | "verify" | "compensate")
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let action_id = else_protocol::ids::ConnectorActionId::from(segments[4]);
             let action = match segments[5] {
                 "execute" => state
                     .handle
-                    .execute_connector_action(&intent_id, &action_id)?,
+                    .execute_connector_action(&thread_id, &action_id)?,
                 "verify" => state
                     .handle
-                    .verify_connector_action(&intent_id, &action_id)?,
+                    .verify_connector_action(&thread_id, &action_id)?,
                 "compensate" => state
                     .handle
-                    .compensate_connector_action(&intent_id, &action_id)?,
+                    .compensate_connector_action(&thread_id, &action_id)?,
                 _ => unreachable!("route guard"),
             };
             return Ok((200, json_string(&action)?));
@@ -731,18 +740,18 @@ fn route(
             && segments[3] == "connector-policy"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let policy: else_protocol::connector::ConnectorPolicy =
                 serde_json::from_str(body).map_err(json_error)?;
             let spec = state
                 .handle
-                .configure_connector_policy(&intent_id, policy)?;
+                .configure_connector_policy(&thread_id, policy)?;
             return Ok((200, json_string(&spec)?));
         }
         if segments.len() == 4 && segments[3] == "signals" && request.method() == &Method::Get {
             let signals = state
                 .handle
-                .projection(&intent_id)?
+                .projection(&thread_id)?
                 .world_signals
                 .into_values()
                 .collect::<Vec<_>>();
@@ -751,7 +760,7 @@ fn route(
         if segments.len() == 4 && segments[3] == "world" && request.method() == &Method::Get {
             let include_resolved = query_value(request.url(), "include_resolved")
                 .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
-            let items = state.handle.world_items(&intent_id, include_resolved)?;
+            let items = state.handle.world_items(&thread_id, include_resolved)?;
             return Ok((200, json_string(&items)?));
         }
         if segments.len() == 4 && segments[3] == "projects" && request.method() == &Method::Get {
@@ -759,7 +768,7 @@ fn route(
                 .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
             let projects = state
                 .handle
-                .project_worlds(Some(&intent_id), include_resolved)?;
+                .project_worlds(Some(&thread_id), include_resolved)?;
             return Ok((200, json_string(&projects)?));
         }
         if segments.len() == 5
@@ -767,7 +776,7 @@ fn route(
             && segments[4] == "resolve"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).map_err(json_error)?;
             let item_id = else_protocol::ids::WorldItemId::from(
                 value["item_id"]
@@ -779,7 +788,7 @@ fn route(
             let note = value["note"].as_str().map(str::to_string);
             let item = state
                 .handle
-                .resolve_world_item(&intent_id, &item_id, kind, note)?;
+                .resolve_world_item(&thread_id, &item_id, kind, note)?;
             return Ok((200, json_string(&item)?));
         }
         if segments.len() == 5
@@ -787,12 +796,12 @@ fn route(
             && segments[4] == "corrections"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let correction: else_protocol::world::WorldCorrelationCorrection =
                 serde_json::from_str(body).map_err(json_error)?;
             let correction = state
                 .handle
-                .correct_world_correlation(&intent_id, correction)?;
+                .correct_world_correlation(&thread_id, correction)?;
             return Ok((200, json_string(&correction)?));
         }
         if segments.len() == 5
@@ -800,8 +809,8 @@ fn route(
             && segments[4] == "resolve"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
-            let candidates = state.handle.resolve_signals(&intent_id)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
+            let candidates = state.handle.resolve_signals(&thread_id)?;
             return Ok((200, json_string(&candidates)?));
         }
         if segments.len() == 4 && segments[3] == "candidates" {
@@ -809,19 +818,19 @@ fn route(
                 Method::Get => {
                     let candidates = state
                         .handle
-                        .projection(&intent_id)?
-                        .intent_candidates
+                        .projection(&thread_id)?
+                        .thread_candidates
                         .into_values()
                         .collect::<Vec<_>>();
                     return Ok((200, json_string(&candidates)?));
                 }
                 Method::Post => {
-                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
-                    let candidate: else_protocol::connector::IntentCandidate =
+                    check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
+                    let candidate: else_protocol::connector::ThreadCandidate =
                         serde_json::from_str(body).map_err(json_error)?;
                     let candidate = state
                         .handle
-                        .propose_intent_candidate(&intent_id, candidate)?;
+                        .propose_thread_candidate(&thread_id, candidate)?;
                     return Ok((200, json_string(&candidate)?));
                 }
                 _ => {}
@@ -832,23 +841,23 @@ fn route(
             && matches!(segments[5], "accept" | "reject")
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
-            let candidate_id = else_protocol::ids::IntentCandidateId::from(segments[4]);
-            let intent = state.handle.resolve_intent_candidate(
-                &intent_id,
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
+            let candidate_id = else_protocol::ids::ThreadCandidateId::from(segments[4]);
+            let thread = state.handle.resolve_thread_candidate(
+                &thread_id,
                 &candidate_id,
                 segments[5] == "accept",
             )?;
             let candidate = state
                 .handle
-                .projection(&intent_id)?
-                .intent_candidates
+                .projection(&thread_id)?
+                .thread_candidates
                 .get(&candidate_id)
                 .cloned()
                 .ok_or_else(|| DaemonError::InvalidRequest("candidate disappeared".into()))?;
             return Ok((
                 200,
-                json_string(&json!({"candidate":candidate,"intent":intent}))?,
+                json_string(&json!({"candidate":candidate,"thread":thread}))?,
             ));
         }
         if segments.len() == 6
@@ -857,28 +866,28 @@ fn route(
             && request.method() == &Method::Get
         {
             let connector_id = else_protocol::ids::ConnectorId::from(segments[4]);
-            let health = state.handle.connector_health(&intent_id, &connector_id)?;
+            let health = state.handle.connector_health(&thread_id, &connector_id)?;
             return Ok((200, json_string(&health)?));
         }
         if segments.len() == 6 && segments[3] == "connectors" && segments[5] == "credential" {
             let connector_id = else_protocol::ids::ConnectorId::from(segments[4]);
             match request.method() {
                 Method::Post => {
-                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
                     let credential: else_protocol::connector::ConnectorCredential =
                         serde_json::from_str(body).map_err(json_error)?;
                     let metadata = state.handle.attach_connector_credential(
-                        &intent_id,
+                        &thread_id,
                         &connector_id,
                         credential,
                     )?;
                     return Ok((200, json_string(&metadata)?));
                 }
                 Method::Delete => {
-                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
                     let metadata = state
                         .handle
-                        .revoke_connector_credential(&intent_id, &connector_id)?;
+                        .revoke_connector_credential(&thread_id, &connector_id)?;
                     return Ok((200, json_string(&metadata)?));
                 }
                 _ => {}
@@ -892,7 +901,7 @@ fn route(
             let connector_id = else_protocol::ids::ConnectorId::from(segments[4]);
             let cursors = state
                 .handle
-                .projection(&intent_id)?
+                .projection(&thread_id)?
                 .connector_cursors
                 .into_iter()
                 .filter(|((id, _), _)| id == &connector_id)
@@ -905,9 +914,9 @@ fn route(
             && segments[5] == "sync"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let result = state.handle.sync_connector(
-                &intent_id,
+                &thread_id,
                 &else_protocol::ids::ConnectorId::from(segments[4]),
             )?;
             return Ok((200, json_string(&result)?));
@@ -917,9 +926,9 @@ fn route(
             && segments[5] == "repair"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let report = state.handle.repair_connector(
-                &intent_id,
+                &thread_id,
                 &else_protocol::ids::ConnectorId::from(segments[4]),
             )?;
             return Ok((200, json_string(&report)?));
@@ -929,7 +938,7 @@ fn route(
             && segments[4] == "discover"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).map_err(json_error)?;
             let server_name = value["server_name"]
                 .as_str()
@@ -942,7 +951,7 @@ fn route(
                 json_string(
                     &state
                         .handle
-                        .discover_mcp_tools(&intent_id, server_name, command)?,
+                        .discover_mcp_tools(&thread_id, server_name, command)?,
                 )?,
             ));
         }
@@ -951,10 +960,10 @@ fn route(
             && segments[5] == "revoke"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
             state.handle.revoke_binding(
-                &intent_id,
+                &thread_id,
                 &else_protocol::ids::AgentBindingId::from(segments[4]),
                 value["reason"].as_str().unwrap_or("surface revoke"),
             )?;
@@ -965,9 +974,9 @@ fn route(
             && segments[5] == "dispatch"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let projection = state.handle.dispatch_agent_binding(
-                &intent_id,
+                &thread_id,
                 &else_protocol::ids::AgentBindingId::from(segments[4]),
             )?;
             return Ok((200, json_string(&snapshot(&projection))?));
@@ -983,7 +992,7 @@ fn route(
             let binding_id = else_protocol::ids::AgentBindingId::from(segments[4]);
             let events = state
                 .handle
-                .projection(&intent_id)?
+                .projection(&thread_id)?
                 .agent_binding_events
                 .get(&binding_id)
                 .into_iter()
@@ -998,12 +1007,12 @@ fn route(
             && segments[5] == "state"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).map_err(json_error)?;
             let state_value: else_protocol::capability::AgentBindingState =
                 serde_json::from_value(value["state"].clone()).map_err(json_error)?;
             state.handle.transition_agent_binding(
-                &intent_id,
+                &thread_id,
                 &else_protocol::ids::AgentBindingId::from(segments[4]),
                 state_value,
             )?;
@@ -1014,58 +1023,58 @@ fn route(
             && segments[5] == "resolve"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).map_err(json_error)?;
             let choice: DecisionChoice =
                 serde_json::from_value(value["choice"].clone()).map_err(json_error)?;
             let decision_id = else_protocol::ids::AttentionId::from(segments[4]);
-            let mut current = snapshot(&state.handle.projection(&intent_id)?);
-            current.operation_id = Some(spawn_operation(state, "decision", &intent_id, {
+            let mut current = snapshot(&state.handle.projection(&thread_id)?);
+            current.operation_id = Some(spawn_operation(state, "decision", &thread_id, {
                 let handle = state.handle.clone();
-                let intent_id = intent_id.clone();
+                let thread_id = thread_id.clone();
                 move || {
                     handle
-                        .decide(&intent_id, &decision_id, choice)
+                        .decide(&thread_id, &decision_id, choice)
                         .map(|_| json!({}))
                 }
             }));
             return Ok((202, json_string(&current)?));
         }
         if segments.len() == 4 && segments[3] == "abort" && request.method() == &Method::Post {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
             let reason = value["reason"].as_str().unwrap_or("surface abort");
-            let projection = state.handle.abort(&intent_id, reason)?;
+            let projection = state.handle.abort(&thread_id, reason)?;
             return Ok((200, json_string(&snapshot(&projection))?));
         }
         if segments.len() == 4 && segments[3] == "advance" && request.method() == &Method::Post {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
             let harness = value["harness"].as_str().map(str::to_string);
-            let mut current = snapshot(&state.handle.projection(&intent_id)?);
-            current.operation_id = Some(spawn_operation(state, "advance", &intent_id, {
+            let mut current = snapshot(&state.handle.projection(&thread_id)?);
+            current.operation_id = Some(spawn_operation(state, "advance", &thread_id, {
                 let handle = state.handle.clone();
-                let intent_id = intent_id.clone();
+                let thread_id = thread_id.clone();
                 move || {
                     handle
-                        .advance(&intent_id, harness.as_deref())
+                        .advance(&thread_id, harness.as_deref())
                         .map(|_| json!({}))
                 }
             }));
             return Ok((202, json_string(&current)?));
         }
         if segments.len() == 4 && segments[3] == "drive" && request.method() == &Method::Post {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
             let harness = value["harness"].as_str().map(str::to_string);
             let max_steps = value["max_steps"].as_u64().unwrap_or(8);
-            let mut current = snapshot(&state.handle.projection(&intent_id)?);
-            current.operation_id = Some(spawn_operation(state, "drive", &intent_id, {
+            let mut current = snapshot(&state.handle.projection(&thread_id)?);
+            current.operation_id = Some(spawn_operation(state, "drive", &thread_id, {
                 let handle = state.handle.clone();
-                let intent_id = intent_id.clone();
+                let thread_id = thread_id.clone();
                 move || {
                     handle
-                        .drive(&intent_id, harness.as_deref(), max_steps)
+                        .drive(&thread_id, harness.as_deref(), max_steps)
                         .map(|driven| {
                             json!({
                                 "stopped": format!("{:?}", driven.stopped),
@@ -1079,7 +1088,7 @@ fn route(
         if segments.len() == 4 && segments[3] == "scopes" {
             match request.method() {
                 Method::Get => {
-                    let projection = state.handle.projection(&intent_id)?;
+                    let projection = state.handle.projection(&thread_id)?;
                     let root = projection.spec.as_ref();
                     let views: Vec<_> = projection
                         .scopes
@@ -1089,7 +1098,7 @@ fn route(
                     return Ok((200, json_string(&views)?));
                 }
                 Method::Post => {
-                    check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+                    check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
                     let value: Value = serde_json::from_str(body).map_err(json_error)?;
                     let parent_scope = value["parent_scope"]
                         .as_str()
@@ -1097,7 +1106,7 @@ fn route(
                         .or_else(|| {
                             state
                                 .handle
-                                .projection(&intent_id)
+                                .projection(&thread_id)
                                 .ok()
                                 .and_then(|projection| projection.root_scope_id)
                         })
@@ -1118,7 +1127,7 @@ fn route(
                         .unwrap_or_default();
                     let max_effect = parse_side_effect(value["max_effect"].as_str());
                     let scope_id = state.handle.spawn_subagent_with_dependencies(
-                        &intent_id,
+                        &thread_id,
                         &parent_scope,
                         task,
                         max_effect,
@@ -1137,17 +1146,17 @@ fn route(
             && segments[5] == "run"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let scope_id = else_protocol::ids::ScopeId::from(segments[4]);
             let value: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
             let harness = value["harness"].as_str().map(str::to_string);
-            let mut current = snapshot(&state.handle.projection(&intent_id)?);
-            current.operation_id = Some(spawn_operation(state, "run_scope", &intent_id, {
+            let mut current = snapshot(&state.handle.projection(&thread_id)?);
+            current.operation_id = Some(spawn_operation(state, "run_scope", &thread_id, {
                 let handle = state.handle.clone();
-                let intent_id = intent_id.clone();
+                let thread_id = thread_id.clone();
                 move || {
                     handle
-                        .dispatch_scope(&intent_id, &scope_id, harness.as_deref())
+                        .dispatch_scope(&thread_id, &scope_id, harness.as_deref())
                         .map(|_| json!({}))
                 }
             }));
@@ -1157,38 +1166,38 @@ fn route(
             && segments[3] == "wait-external"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
             let reason = value["reason"]
                 .as_str()
                 .unwrap_or("waiting for external event");
-            let projection = state.handle.wait_for_external(&intent_id, reason)?;
+            let projection = state.handle.wait_for_external(&thread_id, reason)?;
             return Ok((200, json_string(&snapshot(&projection))?));
         }
         if segments.len() == 4 && segments[3] == "events" && request.method() == &Method::Post {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).map_err(json_error)?;
             let source = value["source"].as_str().unwrap_or("external");
             let summary = value["summary"].as_str().unwrap_or("");
             let projection = state
                 .handle
-                .record_external_event(&intent_id, source, summary)?;
+                .record_external_event(&thread_id, source, summary)?;
             return Ok((200, json_string(&snapshot(&projection))?));
         }
         if segments.len() == 4 && segments[3] == "timers" && request.method() == &Method::Post {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).map_err(json_error)?;
             let seconds = value["seconds"].as_i64().unwrap_or(3600);
             let reason = value["reason"].as_str().unwrap_or("follow up");
             let fire_at = Utc::now() + chrono::Duration::seconds(seconds);
-            let timer_id = state.handle.schedule_timer(&intent_id, fire_at, reason)?;
+            let timer_id = state.handle.schedule_timer(&thread_id, fire_at, reason)?;
             return Ok((
                 200,
                 json_string(&json!({ "timer_id": timer_id.to_string() }))?,
             ));
         }
         if segments.len() == 4 && segments[3] == "plan" && request.method() == &Method::Get {
-            let projection = state.handle.projection(&intent_id)?;
+            let projection = state.handle.projection(&thread_id)?;
             let current = projection
                 .current_plan_id
                 .as_ref()
@@ -1196,7 +1205,7 @@ fn route(
                 .cloned();
             let view = else_protocol::api::PlanView {
                 current,
-                history: state.handle.plan_history(&intent_id)?,
+                history: state.handle.plan_history(&thread_id)?,
                 impacts: projection.plan_impacts.clone(),
             };
             return Ok((200, json_string(&view)?));
@@ -1206,7 +1215,7 @@ fn route(
             && segments[4] == "impact"
             && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).map_err(json_error)?;
             let source_event_id = value["source_event_id"].as_str().unwrap_or("");
             let source = value["source"].as_str().unwrap_or("");
@@ -1214,11 +1223,11 @@ fn route(
             let impact =
                 state
                     .handle
-                    .analyze_plan_impact(&intent_id, source_event_id, source, summary)?;
+                    .analyze_plan_impact(&thread_id, source_event_id, source, summary)?;
             return Ok((200, json_string(&impact)?));
         }
         if segments.len() == 4 && segments[3] == "attention" && request.method() == &Method::Get {
-            let projection = state.handle.projection(&intent_id)?;
+            let projection = state.handle.projection(&thread_id)?;
             let now = Utc::now();
             let view = else_protocol::api::AttentionView {
                 metrics: projection.attention_metrics(now),
@@ -1251,10 +1260,10 @@ fn route(
                                 raw.trim_start_matches("project:").to_string(),
                             ))
                         }
-                        Some(raw) if raw.starts_with("intent:") => {
-                            Some(else_protocol::memory::MemoryScope::Intent(
-                                else_protocol::ids::IntentId::from(
-                                    raw.trim_start_matches("intent:"),
+                        Some(raw) if raw.starts_with("thread:") => {
+                            Some(else_protocol::memory::MemoryScope::Thread(
+                                else_protocol::ids::ThreadId::from(
+                                    raw.trim_start_matches("thread:"),
                                 ),
                             ))
                         }
@@ -1298,12 +1307,12 @@ fn route(
         }
         if segments.len() == 4 && segments[3] == "checkpoints" && request.method() == &Method::Post
         {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
-            let checkpoint = state.handle.checkpoint(&intent_id)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
+            let checkpoint = state.handle.checkpoint(&thread_id)?;
             return Ok((200, json_string(&checkpoint)?));
         }
         if segments.len() == 4 && segments[3] == "rerun" && request.method() == &Method::Post {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).map_err(json_error)?;
             let checkpoint_id = else_protocol::ids::CheckpointId::from(
                 value["checkpoint_id"]
@@ -1314,7 +1323,7 @@ fn route(
             let (scope_id, generation) =
                 state
                     .handle
-                    .rerun(&intent_id, &checkpoint_id, alternative)?;
+                    .rerun(&thread_id, &checkpoint_id, alternative)?;
             return Ok((
                 200,
                 json_string(&json!({
@@ -1324,13 +1333,13 @@ fn route(
             ));
         }
         if segments.len() == 4 && segments[3] == "compare" && request.method() == &Method::Get {
-            let comparison = state.handle.compare(&intent_id)?;
+            let comparison = state.handle.compare(&thread_id)?;
             return Ok((200, json_string(&json!({ "comparison": comparison }))?));
         }
         if segments.len() == 4 && segments[3] == "opaque" && request.method() == &Method::Post {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).map_err(json_error)?;
-            let policy = else_protocol::intent::OpaqueHarnessPolicy {
+            let policy = else_protocol::thread::OpaqueHarnessPolicy {
                 enabled: value["enabled"].as_bool().unwrap_or(true),
                 allow_native_provider_network: value["allow_native_provider_network"]
                     .as_bool()
@@ -1338,17 +1347,17 @@ fn route(
                 use_tool_gateway: value["use_tool_gateway"].as_bool().unwrap_or(false),
                 max_observed_effect: parse_side_effect(value["max_observed_effect"].as_str()),
             };
-            let spec = state.handle.configure_opaque_harness(&intent_id, policy)?;
+            let spec = state.handle.configure_opaque_harness(&thread_id, policy)?;
             return Ok((200, json_string(&spec)?));
         }
         if segments.len() == 4 && segments[3] == "resources" && request.method() == &Method::Get {
-            let report = state.handle.resources(&intent_id)?;
+            let report = state.handle.resources(&thread_id)?;
             return Ok((200, json_string(&report.view())?));
         }
         if segments.len() == 4 && segments[3] == "revise" && request.method() == &Method::Post {
-            check_expected_revision(request, &state.handle.projection(&intent_id)?)?;
+            check_expected_revision(request, &state.handle.projection(&thread_id)?)?;
             let value: Value = serde_json::from_str(body).map_err(json_error)?;
-            let update = else_api::IntentRevision {
+            let update = else_api::ThreadRevision {
                 outcome: value["outcome"].as_str().map(str::to_string),
                 add_constraints: value["add_constraints"]
                     .as_array()
@@ -1362,7 +1371,7 @@ fn route(
                     .unwrap_or_default(),
                 reason: value["reason"].as_str().unwrap_or("用户修订").to_string(),
             };
-            let spec = state.handle.revise_intent(&intent_id, update, &[])?;
+            let spec = state.handle.revise_thread(&thread_id, update, &[])?;
             return Ok((200, json_string(&spec)?));
         }
         if segments.len() == 3 && segments[2].starts_with("operations") {
@@ -1390,7 +1399,7 @@ fn route(
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(0);
         let mut events = Vec::new();
-        for spec in state.handle.list_intents()? {
+        for spec in state.handle.list_threads()? {
             events.extend(state.handle.events(&spec.id)?);
         }
         events.sort_by_key(|event| event.seq);
@@ -1407,13 +1416,13 @@ fn route(
 fn spawn_operation(
     state: &AppState,
     kind: &str,
-    intent_id: &else_protocol::ids::IntentId,
+    thread_id: &else_protocol::ids::ThreadId,
     operation: impl FnOnce() -> else_api::Result<Value> + Send + 'static,
 ) -> String {
     let id = uuid::Uuid::new_v4().to_string();
     let record = Operation {
         id: id.clone(),
-        intent_id: intent_id.to_string(),
+        thread_id: thread_id.to_string(),
         kind: kind.into(),
         status: "running".into(),
         error: None,
@@ -1448,7 +1457,7 @@ fn spawn_operation(
     id
 }
 
-fn check_expected_revision(request: &Request, projection: &IntentProjection) -> Result<()> {
+fn check_expected_revision(request: &Request, projection: &ThreadProjection) -> Result<()> {
     let Some(expected) = header(request, "If-Match") else {
         return Err(DaemonError::InvalidRequest(
             "If-Match revision is required".into(),
@@ -1468,21 +1477,21 @@ fn check_expected_revision(request: &Request, projection: &IntentProjection) -> 
     Ok(())
 }
 
-fn snapshot(projection: &IntentProjection) -> IntentSnapshot {
-    IntentSnapshot {
+fn snapshot(projection: &ThreadProjection) -> ThreadSnapshot {
+    ThreadSnapshot {
         spec: projection.spec.clone().unwrap_or_else(|| {
-            let id = else_protocol::ids::IntentId::from("unknown");
-            IntentSpec {
+            let id = else_protocol::ids::ThreadId::from("unknown");
+            ThreadSpec {
                 id,
                 revision: 0,
                 outcome: String::new(),
                 done_when: vec![],
                 constraints: vec![],
-                authority: else_protocol::intent::Authority {
+                authority: else_protocol::thread::Authority {
                     max_autonomous_effect: else_protocol::effect::SideEffectKind::ReadOnly,
                     forbidden: vec![],
                 },
-                attention_policy: else_protocol::intent::AttentionPolicy {
+                attention_policy: else_protocol::thread::AttentionPolicy {
                     allow_interrupt: true,
                     batch_interval_minutes: 30,
                 },
@@ -1494,7 +1503,7 @@ fn snapshot(projection: &IntentProjection) -> IntentSnapshot {
                 connector_policy: Default::default(),
             }
         }),
-        state: projection.state.unwrap_or(IntentState::Active),
+        state: projection.state.unwrap_or(ThreadState::Active),
         decisions: projection
             .actionable_requests(Utc::now())
             .into_iter()
@@ -1512,11 +1521,11 @@ fn event_response(event: StoredEvent) -> EventResponse {
     EventResponse {
         seq: event.seq,
         event_id: event.envelope.event_id,
-        intent_id: event.envelope.intent_id.to_string(),
+        thread_id: event.envelope.thread_id.to_string(),
         scope_id: event.envelope.scope_id.to_string(),
         run_id: event.envelope.run_id.map(|id| id.to_string()),
         generation: event.envelope.generation,
-        intent_revision: event.envelope.intent_revision,
+        thread_revision: event.envelope.thread_revision,
         occurred_at: event.envelope.occurred_at.to_rfc3339(),
         payload: serde_json::to_value(event.envelope.payload).unwrap_or(Value::Null),
     }
@@ -1608,7 +1617,7 @@ fn parse_side_effect(raw: Option<&str>) -> else_protocol::effect::SideEffectKind
 
 struct BindingEventStream {
     handle: RuntimeHandle,
-    intent_id: else_protocol::ids::IntentId,
+    thread_id: else_protocol::ids::ThreadId,
     binding_id: else_protocol::ids::AgentBindingId,
     cursor: u64,
     buffer: Vec<u8>,
@@ -1619,13 +1628,13 @@ struct BindingEventStream {
 impl BindingEventStream {
     fn new(
         handle: RuntimeHandle,
-        intent_id: else_protocol::ids::IntentId,
+        thread_id: else_protocol::ids::ThreadId,
         binding_id: else_protocol::ids::AgentBindingId,
         cursor: u64,
     ) -> Self {
         Self {
             handle,
-            intent_id,
+            thread_id,
             binding_id,
             cursor,
             buffer: Vec::new(),
@@ -1650,7 +1659,7 @@ impl Read for BindingEventStream {
             }
             self.buffer.clear();
             self.position = 0;
-            if let Ok(projection) = self.handle.projection(&self.intent_id) {
+            if let Ok(projection) = self.handle.projection(&self.thread_id) {
                 if let Some(events) = projection.agent_binding_events.get(&self.binding_id) {
                     let cursor = self.cursor;
                     for (seq, event) in events.iter().filter(|(seq, _)| *seq > cursor) {
@@ -1674,7 +1683,7 @@ impl Read for BindingEventStream {
     }
 }
 
-/// 全局事件流：把所有 Intent 的新事件按 `seq` 推给客户端。
+/// 全局事件流：把所有 Thread 的新事件按 `seq` 推给客户端。
 ///
 /// surface（TUI、未来的 Web）用它做增量刷新：只重取变化的部分，
 /// 不必轮询整份快照。客户端用 `cursor` 续读；流在 60 秒后关闭，
@@ -1715,10 +1724,10 @@ impl Read for EventStream {
             self.buffer.clear();
             self.position = 0;
             let mut events = Vec::new();
-            if let Ok(specs) = self.handle.list_intents() {
+            if let Ok(specs) = self.handle.list_threads() {
                 for spec in specs {
-                    if let Ok(mut intent_events) = self.handle.events(&spec.id) {
-                        events.append(&mut intent_events);
+                    if let Ok(mut thread_events) = self.handle.events(&spec.id) {
+                        events.append(&mut thread_events);
                     }
                 }
             }
@@ -1882,7 +1891,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_exposes_authenticated_intent_api_and_idempotency() {
+    fn daemon_exposes_authenticated_thread_api_and_idempotency() {
         let dir = tempfile::tempdir().unwrap();
         let daemon = Daemon::start(DaemonConfig {
             dir: dir.path().to_path_buf(),
@@ -1894,19 +1903,19 @@ mod tests {
         let (status, body) = request(
             &daemon,
             "POST",
-            "/v1/intents",
+            "/v1/threads",
             r#"{"outcome":"daemon 测试","project":"test"}"#,
             Some("create-1"),
             None,
         );
         assert_eq!(status, 200, "{body}");
         let snapshot: Value = serde_json::from_str(&body).unwrap();
-        let intent_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
+        let thread_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
         let revision = snapshot["spec"]["revision"].as_u64().unwrap();
         let (status, duplicate) = request(
             &daemon,
             "POST",
-            "/v1/intents",
+            "/v1/threads",
             r#"{"outcome":"daemon 测试","project":"test"}"#,
             Some("create-1"),
             None,
@@ -1914,16 +1923,16 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(duplicate, body);
 
-        let (status, list) = request(&daemon, "GET", "/v1/intents", "", None, None);
+        let (status, list) = request(&daemon, "GET", "/v1/threads", "", None, None);
         assert_eq!(status, 200);
         assert_eq!(serde_json::from_str::<Vec<Value>>(&list).unwrap().len(), 1);
 
-        let capabilities_path = format!("/v1/intents/{intent_id}/capabilities");
+        let capabilities_path = format!("/v1/threads/{thread_id}/capabilities");
         let (status, capabilities) = request(&daemon, "GET", &capabilities_path, "", None, None);
         assert_eq!(status, 200);
         assert!(capabilities.contains("fs.write"));
 
-        let bindings_path = format!("/v1/intents/{intent_id}/bindings");
+        let bindings_path = format!("/v1/threads/{thread_id}/bindings");
         let binding_body = serde_json::json!({
             "agent_id": "agent-1",
             "name": "daemon-agent",
@@ -1949,7 +1958,7 @@ mod tests {
         let binding_id = binding_value["id"].as_str().unwrap();
         let inbound_session = binding_value["inbound_session"].as_str().unwrap();
         let event_body = serde_json::json!({
-            "intent_id": intent_id,
+            "thread_id": thread_id,
             "binding_id": binding_id,
             "event": {"type": "output", "data": {"text": "remote callback"}}
         })
@@ -1957,7 +1966,7 @@ mod tests {
         let (status, callback) =
             request_with_token(&daemon, inbound_session, "/v1/binding-events", &event_body);
         assert_eq!(status, 200, "{callback}");
-        let binding_events_path = format!("/v1/intents/{intent_id}/bindings/{binding_id}/events");
+        let binding_events_path = format!("/v1/threads/{thread_id}/bindings/{binding_id}/events");
         let (status, binding_events) =
             request(&daemon, "GET", &binding_events_path, "", None, None);
         assert_eq!(status, 200);
@@ -1969,7 +1978,7 @@ mod tests {
             1
         );
 
-        let run_path = format!("/v1/intents/{intent_id}/run");
+        let run_path = format!("/v1/threads/{thread_id}/run");
         let (status, run) = request(
             &daemon,
             "POST",
@@ -2016,7 +2025,7 @@ mod tests {
         let mut stream = TcpStream::connect(authority).unwrap();
         write!(
             stream,
-            "GET /v1/intents HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+            "GET /v1/threads HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
         )
         .unwrap();
         let mut response = String::new();
@@ -2043,17 +2052,17 @@ mod tests {
         let (status, body) = request(
             &daemon,
             "POST",
-            "/v1/intents",
+            "/v1/threads",
             r#"{"outcome":"候选测试"}"#,
             Some("signal-create"),
             None,
         );
         assert_eq!(status, 200, "{body}");
         let snapshot: Value = serde_json::from_str(&body).unwrap();
-        let intent_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
+        let thread_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
         let revision = snapshot["spec"]["revision"].as_u64().unwrap();
 
-        let signals_path = format!("/v1/intents/{intent_id}/signals");
+        let signals_path = format!("/v1/threads/{thread_id}/signals");
         let (status, signals) = request(&daemon, "GET", &signals_path, "", None, None);
         assert_eq!(status, 200, "{signals}");
         assert_eq!(
@@ -2061,7 +2070,7 @@ mod tests {
             0
         );
 
-        let candidates_path = format!("/v1/intents/{intent_id}/candidates");
+        let candidates_path = format!("/v1/threads/{thread_id}/candidates");
         let candidate_body = json!({
             "id": "candidate-api-1",
             "origin": "external_request",
@@ -2081,11 +2090,11 @@ mod tests {
             },
             "deadline": null,
             "related_signal_ids": [],
-            "related_intent_id": intent_id,
+            "related_thread_id": thread_id,
             "confidence": 60,
             "dedupe_key": "daemon-candidate-1",
             "state": "proposed",
-            "accepted_intent_id": null
+            "accepted_thread_id": null
         })
         .to_string();
         let (status, candidate) = request(
@@ -2099,7 +2108,7 @@ mod tests {
         assert_eq!(status, 200, "{candidate}");
         assert!(candidate.contains("candidate-api-1"));
 
-        let accept_path = format!("/v1/intents/{intent_id}/candidates/candidate-api-1/accept");
+        let accept_path = format!("/v1/threads/{thread_id}/candidates/candidate-api-1/accept");
         let (status, accepted) = request(
             &daemon,
             "POST",
@@ -2112,11 +2121,11 @@ mod tests {
         let accepted: Value = serde_json::from_str(&accepted).unwrap();
         assert_eq!(accepted["candidate"]["state"].as_str(), Some("accepted"));
         assert_eq!(
-            accepted["intent"]["origin"]["candidate_id"].as_str(),
+            accepted["thread"]["origin"]["candidate_id"].as_str(),
             Some("candidate-api-1")
         );
         assert_eq!(
-            accepted["intent"]["origin"]["kind"].as_str(),
+            accepted["thread"]["origin"]["kind"].as_str(),
             Some("external_request")
         );
         daemon.shutdown();
@@ -2136,16 +2145,16 @@ mod tests {
         let (status, body) = request(
             &daemon,
             "POST",
-            "/v1/intents",
+            "/v1/threads",
             r#"{"outcome":"Linear webhook 测试"}"#,
             Some("linear-create"),
             None,
         );
         assert_eq!(status, 200, "{body}");
         let snapshot: Value = serde_json::from_str(&body).unwrap();
-        let intent_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
+        let thread_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
         let revision = snapshot["spec"]["revision"].as_u64().unwrap();
-        let connectors_path = format!("/v1/intents/{intent_id}/connectors");
+        let connectors_path = format!("/v1/threads/{thread_id}/connectors");
         let connector_body = json!({
             "kind": "linear",
             "name": "engineering",
@@ -2182,7 +2191,7 @@ mod tests {
             "blockedBy": {"nodes": [{"id": "external"}]}
         });
         let event_body = json!({
-            "intent_id": intent_id,
+            "thread_id": thread_id,
             "connector_id": connector_id,
             "payload": {
                 "action": "update",
@@ -2201,18 +2210,18 @@ mod tests {
         let (status, accepted) =
             request_with_token(&daemon, session, "/v1/connector-events", &event_body);
         assert_eq!(status, 200, "{accepted}");
-        let signals_path = format!("/v1/intents/{intent_id}/signals");
+        let signals_path = format!("/v1/threads/{thread_id}/signals");
         let (status, signals) = request(&daemon, "GET", &signals_path, "", None, None);
         assert_eq!(status, 200, "{signals}");
         assert_eq!(
             serde_json::from_str::<Vec<Value>>(&signals).unwrap().len(),
             1
         );
-        let cursor_path = format!("/v1/intents/{intent_id}/connectors/{connector_id}/cursor");
+        let cursor_path = format!("/v1/threads/{thread_id}/connectors/{connector_id}/cursor");
         let (status, cursors) = request(&daemon, "GET", &cursor_path, "", None, None);
         assert_eq!(status, 200, "{cursors}");
         assert!(cursors.contains("linear-webhook"));
-        let health_path = format!("/v1/intents/{intent_id}/connectors/{connector_id}/health");
+        let health_path = format!("/v1/threads/{thread_id}/connectors/{connector_id}/health");
         let (status, health) = request(&daemon, "GET", &health_path, "", None, None);
         assert_eq!(status, 200, "{health}");
         assert!(health.contains("healthy"));
@@ -2240,7 +2249,7 @@ mod tests {
                 .len(),
             1
         );
-        let world_path = format!("/v1/intents/{intent_id}/world");
+        let world_path = format!("/v1/threads/{thread_id}/world");
         let (status, world) = request(&daemon, "GET", &world_path, "", None, None);
         assert_eq!(status, 200, "{world}");
         assert_eq!(serde_json::from_str::<Vec<Value>>(&world).unwrap().len(), 1);
@@ -2250,7 +2259,7 @@ mod tests {
         assert_eq!(brief["waiting_external"].as_array().unwrap().len(), 1);
         let world_items: Vec<Value> = serde_json::from_str(&world).unwrap();
         let item_id = world_items[0]["id"].as_str().unwrap();
-        let resolve_path = format!("/v1/intents/{intent_id}/world/resolve");
+        let resolve_path = format!("/v1/threads/{thread_id}/world/resolve");
         let resolve_body = json!({
             "item_id": item_id,
             "kind": "completed",
@@ -2270,7 +2279,7 @@ mod tests {
         assert_eq!(status, 200, "{brief}");
         let brief: Value = serde_json::from_str(&brief).unwrap();
         assert!(brief["waiting_external"].as_array().unwrap().is_empty());
-        let projects_path = format!("/v1/intents/{intent_id}/projects");
+        let projects_path = format!("/v1/threads/{thread_id}/projects");
         let (status, projects) = request(&daemon, "GET", &projects_path, "", None, None);
         assert_eq!(status, 200, "{projects}");
         let (status, projects) = request(&daemon, "GET", "/v1/projects", "", None, None);
@@ -2315,15 +2324,15 @@ mod tests {
         daemon.shutdown();
     }
 
-    /// 读取 Intent 当前 Revision。
+    /// 读取 Thread 当前 Revision。
     ///
     /// 写操作都要求 `If-Match` 前置条件；测试里每一步重新读，
     /// 避免把"Revision 变化"和"路由行为"两件事混在一起断言。
-    fn current_revision(daemon: &Daemon, intent_id: &str) -> u64 {
+    fn current_revision(daemon: &Daemon, thread_id: &str) -> u64 {
         let (status, body) = request(
             daemon,
             "GET",
-            &format!("/v1/intents/{intent_id}"),
+            &format!("/v1/threads/{thread_id}"),
             "",
             None,
             None,
@@ -2347,14 +2356,14 @@ mod tests {
         let (status, body) = request(
             &daemon,
             "POST",
-            "/v1/intents",
+            "/v1/threads",
             r#"{"outcome":"daemon 路由覆盖","project":"test"}"#,
             Some("create-routes"),
             None,
         );
         assert_eq!(status, 200, "{body}");
         let snapshot: Value = serde_json::from_str(&body).unwrap();
-        let intent_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
+        let thread_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
 
         // Harness 清单：surface 用它解释执行器能力。
         let (status, harnesses) = request(&daemon, "GET", "/v1/harnesses", "", None, None);
@@ -2370,7 +2379,7 @@ mod tests {
         assert!(names.contains(&"claude-code"), "{names:?}");
 
         // Scope 树：根 Scope 是委托树的起点。
-        let scopes_path = format!("/v1/intents/{intent_id}/scopes");
+        let scopes_path = format!("/v1/threads/{thread_id}/scopes");
         let (status, scopes) = request(&daemon, "GET", &scopes_path, "", None, None);
         assert_eq!(status, 200, "{scopes}");
         let scopes: Value = serde_json::from_str(&scopes).unwrap();
@@ -2378,7 +2387,7 @@ mod tests {
         assert_eq!(scopes[0]["outcome"].as_str(), Some("daemon 路由覆盖"));
 
         // 委托子 Scope：权限只能低于或等于父级。
-        let revision = current_revision(&daemon, &intent_id);
+        let revision = current_revision(&daemon, &thread_id);
         let (status, child) = request(
             &daemon,
             "POST",
@@ -2392,11 +2401,11 @@ mod tests {
         assert!(child["scope_id"].as_str().is_some(), "{child}");
 
         // 推进一个 Kernel 步：长操作走 operation_id，不阻塞响应。
-        let revision = current_revision(&daemon, &intent_id);
+        let revision = current_revision(&daemon, &thread_id);
         let (status, advanced) = request(
             &daemon,
             "POST",
-            &format!("/v1/intents/{intent_id}/advance"),
+            &format!("/v1/threads/{thread_id}/advance"),
             r#"{"harness":"scripted"}"#,
             Some("advance-1"),
             Some(revision),
@@ -2406,11 +2415,11 @@ mod tests {
         assert!(advanced["operation_id"].as_str().is_some(), "{advanced}");
 
         // 等待外部事件：停止空转执行。
-        let revision = current_revision(&daemon, &intent_id);
+        let revision = current_revision(&daemon, &thread_id);
         let (status, waiting) = request(
             &daemon,
             "POST",
-            &format!("/v1/intents/{intent_id}/wait-external"),
+            &format!("/v1/threads/{thread_id}/wait-external"),
             r#"{"reason":"等待合作方回复"}"#,
             Some("wait-1"),
             Some(revision),
@@ -2418,11 +2427,11 @@ mod tests {
         assert_eq!(status, 200, "{waiting}");
 
         // 持久 Timer：重启后仍可用同一 ID 补齐唤醒。
-        let revision = current_revision(&daemon, &intent_id);
+        let revision = current_revision(&daemon, &thread_id);
         let (status, timer) = request(
             &daemon,
             "POST",
-            &format!("/v1/intents/{intent_id}/timers"),
+            &format!("/v1/threads/{thread_id}/timers"),
             r#"{"seconds":3600,"reason":"follow up"}"#,
             Some("timer-1"),
             Some(revision),
@@ -2435,7 +2444,7 @@ mod tests {
         let (status, plan) = request(
             &daemon,
             "GET",
-            &format!("/v1/intents/{intent_id}/plan"),
+            &format!("/v1/threads/{thread_id}/plan"),
             "",
             None,
             None,
@@ -2447,7 +2456,7 @@ mod tests {
         let (status, memory) = request(
             &daemon,
             "GET",
-            &format!("/v1/intents/{intent_id}/memory"),
+            &format!("/v1/threads/{thread_id}/memory"),
             "",
             None,
             None,
@@ -2460,7 +2469,7 @@ mod tests {
         let (status, resources) = request(
             &daemon,
             "GET",
-            &format!("/v1/intents/{intent_id}/resources"),
+            &format!("/v1/threads/{thread_id}/resources"),
             "",
             None,
             None,
@@ -2471,11 +2480,11 @@ mod tests {
         assert!(resources.get("usage").is_some(), "{resources}");
 
         // Checkpoint 与 Compare：派生新 Scope 时不丢上下文。
-        let revision = current_revision(&daemon, &intent_id);
+        let revision = current_revision(&daemon, &thread_id);
         let (status, checkpoint) = request(
             &daemon,
             "POST",
-            &format!("/v1/intents/{intent_id}/checkpoints"),
+            &format!("/v1/threads/{thread_id}/checkpoints"),
             "",
             Some("checkpoint-1"),
             Some(revision),
@@ -2487,7 +2496,7 @@ mod tests {
         let (status, comparison) = request(
             &daemon,
             "GET",
-            &format!("/v1/intents/{intent_id}/compare"),
+            &format!("/v1/threads/{thread_id}/compare"),
             "",
             None,
             None,
@@ -2495,11 +2504,11 @@ mod tests {
         assert_eq!(status, 200, "{comparison}");
 
         // Opaque Profile：默认拒绝，必须显式放通。
-        let revision = current_revision(&daemon, &intent_id);
+        let revision = current_revision(&daemon, &thread_id);
         let (status, opaque) = request(
             &daemon,
             "POST",
-            &format!("/v1/intents/{intent_id}/opaque"),
+            &format!("/v1/threads/{thread_id}/opaque"),
             r#"{"enabled":true,"allow_native_provider_network":false,"use_tool_gateway":true,"max_observed_effect":"reversible"}"#,
             Some("opaque-1"),
             Some(revision),
@@ -2515,7 +2524,7 @@ mod tests {
         let (status, rejected) = request(
             &daemon,
             "POST",
-            &format!("/v1/intents/{intent_id}/advance"),
+            &format!("/v1/threads/{thread_id}/advance"),
             r#"{"harness":"scripted"}"#,
             Some("advance-no-revision"),
             None,
@@ -2591,19 +2600,19 @@ mod tests {
         let (status, body) = request(
             &daemon,
             "POST",
-            "/v1/intents",
+            "/v1/threads",
             r#"{"outcome":"revision 冲突"}"#,
             Some("create-rev"),
             None,
         );
         assert_eq!(status, 200, "{body}");
         let snapshot: Value = serde_json::from_str(&body).unwrap();
-        let intent_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
+        let thread_id = snapshot["spec"]["id"].as_str().unwrap().to_string();
 
         let (status, rejected) = request(
             &daemon,
             "POST",
-            &format!("/v1/intents/{intent_id}/advance"),
+            &format!("/v1/threads/{thread_id}/advance"),
             r#"{"harness":"scripted"}"#,
             Some("advance-stale"),
             Some(9999),

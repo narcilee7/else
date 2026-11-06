@@ -21,7 +21,7 @@ pub enum AppEvent {
     ActionDone {
         label: String,
         detail: String,
-        intent_id: Option<else_protocol::ids::IntentId>,
+        thread_id: Option<else_protocol::ids::ThreadId>,
     },
     /// 一次用户动作失败。
     ActionFailed { error: String },

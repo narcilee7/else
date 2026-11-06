@@ -1,32 +1,32 @@
-//! M2 Context & Memory：Context Compiler、Memory 写入晋升、Intent Revision 联动。
+//! M2 Context & Memory：Context Compiler、Memory 写入晋升、Thread Revision 联动。
 //!
 //! 权威状态都在 Ledger；Memory 投影与 Context Snapshot 随时可重放重建。
-//! Memory 不是权限来源：记忆只进入快照的 `facts`，授权永远来自 IntentSpec。
+//! Memory 不是权限来源：记忆只进入快照的 `facts`，授权永远来自 ThreadSpec。
 
 use chrono::Utc;
 use else_context::{promotion_allowed, MemoryProjection};
 use else_protocol::event::{Actor, EventEnvelope, EventPayload, ScopeState};
-use else_protocol::ids::{IntentId, MemoryId, ScopeId, SnapshotId};
-use else_protocol::intent::{IntentSpec, IntentState};
+use else_protocol::ids::{MemoryId, ScopeId, SnapshotId, ThreadId};
 use else_protocol::memory::{
     ContextSnapshot, ExternalEventContext, MemoryRecord, MemoryScope, MemorySource, MemoryTier,
     SnapshotAudience,
 };
 use else_protocol::plan::Plan;
+use else_protocol::thread::{ThreadSpec, ThreadState};
 
 use crate::{ApiError, Result, Runtime};
 
-/// 用户发起的 Intent 修订。目标语义版本 +1，只有用户或其明确授权能产生。
+/// 用户发起的 Thread 修订。目标语义版本 +1，只有用户或其明确授权能产生。
 #[derive(Debug, Default)]
-pub struct IntentRevision {
+pub struct ThreadRevision {
     pub outcome: Option<String>,
     pub add_constraints: Vec<String>,
     pub reason: String,
 }
 
-/// 不隶属于某个 Intent 的记忆事件（项目/全局纠正、晋升、撤销）的挂载点。
-fn system_intent() -> IntentId {
-    IntentId::from("else-system")
+/// 不隶属于某个 Thread 的记忆事件（项目/全局纠正、晋升、撤销）的挂载点。
+fn system_thread() -> ThreadId {
+    ThreadId::from("else-system")
 }
 
 impl Runtime {
@@ -39,34 +39,34 @@ impl Runtime {
 
     /// Context Compiler：按服务对象生成最小只读快照并落 ContextCompiled 事件。
     ///
-    /// - Planner：完整 Intent 字段 + 召回记忆（Episodic/Semantic）+ 产物引用；
-    /// - Executor：Intent 字段 + 本 Intent 的 Working 暂存 + 产物引用；
+    /// - Planner：完整 Thread 字段 + 召回记忆（Episodic/Semantic）+ 产物引用；
+    /// - Executor：Thread 字段 + 本 Thread 的 Working 暂存 + 产物引用；
     /// - Verifier：快照 revision 时点的原始 DoneWhen 与约束——
     ///   不看计划、不看召回记忆，验收标准不可被下游内容改写。
     pub fn compile_snapshot(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         audience: SnapshotAudience,
     ) -> Result<ContextSnapshot> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let spec = projection
             .spec
             .clone()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
-        let (scope_id, generation) = self.compile_scope(&projection, intent_id)?;
-        self.compile_snapshot_for(intent_id, &spec, &scope_id, generation, audience)
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
+        let (scope_id, generation) = self.compile_scope(&projection, thread_id)?;
+        self.compile_snapshot_for(thread_id, &spec, &scope_id, generation, audience)
     }
 
     /// 按指定 spec/scope 编译快照：Dispatch 为子 Scope 编译任务视图时使用。
     pub(crate) fn compile_snapshot_for(
         &self,
-        intent_id: &IntentId,
-        spec: &IntentSpec,
+        thread_id: &ThreadId,
+        spec: &ThreadSpec,
         scope_id: &ScopeId,
         generation: u64,
         audience: SnapshotAudience,
     ) -> Result<ContextSnapshot> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let memory = self.memory_projection()?;
         let now = Utc::now();
         let artifact_refs = || {
@@ -87,7 +87,7 @@ impl Runtime {
             SnapshotAudience::Planner => (
                 memory.recall(
                     spec.project.as_deref(),
-                    Some(intent_id),
+                    Some(thread_id),
                     &[MemoryTier::Episodic, MemoryTier::Semantic],
                     now,
                 ),
@@ -99,12 +99,12 @@ impl Runtime {
                 memory
                     .recall(
                         spec.project.as_deref(),
-                        Some(intent_id),
+                        Some(thread_id),
                         &[MemoryTier::Working],
                         now,
                     )
                     .into_iter()
-                    .filter(|record| matches!(record.scope, MemoryScope::Intent(_)))
+                    .filter(|record| matches!(record.scope, MemoryScope::Thread(_)))
                     .collect(),
                 artifact_refs(),
                 artifact_paths(),
@@ -143,8 +143,8 @@ impl Runtime {
         };
         let snapshot = ContextSnapshot {
             id: SnapshotId::new(),
-            intent_id: intent_id.clone(),
-            intent_revision: spec.revision,
+            thread_id: thread_id.clone(),
+            thread_revision: spec.revision,
             event_cursor: self.ledger.cursor()?,
             audience,
             outcome: spec.outcome.clone(),
@@ -160,7 +160,7 @@ impl Runtime {
             created_at: now,
         };
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             generation,
             spec.revision,
@@ -174,10 +174,10 @@ impl Runtime {
 
     fn compile_scope(
         &self,
-        projection: &else_ledger::IntentProjection,
-        intent_id: &IntentId,
+        projection: &else_ledger::ThreadProjection,
+        thread_id: &ThreadId,
     ) -> Result<(ScopeId, u64)> {
-        match self.latest_root_scope(intent_id)? {
+        match self.latest_root_scope(thread_id)? {
             Some(scope_id) => {
                 let generation = projection
                     .scopes
@@ -197,29 +197,29 @@ impl Runtime {
             .unwrap_or_else(|_| locator.to_string())
     }
 
-    /// Intent Revision：目标变更 revision +1 并落 IntentRevised；
+    /// Thread Revision：目标变更 revision +1 并落 ThreadRevised；
     /// 运行中的子 Scope 默认受影响而被取消（scope_only 收敛，复用 Abort 机制），
     /// 声明为无关的除外；根 Scope 不取消，新 revision 下继续执行。
     /// 无关分支的产物留在 CAS 与事件流中，不随取消删除。
-    pub fn revise_intent(
+    pub fn revise_thread(
         &self,
-        intent_id: &IntentId,
-        update: IntentRevision,
+        thread_id: &ThreadId,
+        update: ThreadRevision,
         unaffected_scopes: &[ScopeId],
-    ) -> Result<IntentSpec> {
-        let projection = self.projection(intent_id)?;
+    ) -> Result<ThreadSpec> {
+        let projection = self.projection(thread_id)?;
         if matches!(
             projection.state,
-            Some(IntentState::Completed | IntentState::Failed | IntentState::Cancelled)
+            Some(ThreadState::Completed | ThreadState::Failed | ThreadState::Cancelled)
         ) {
             return Err(ApiError::NotFound(format!(
-                "active intent {intent_id} (terminal state)"
+                "active thread {thread_id} (terminal state)"
             )));
         }
         let spec = projection
             .spec
             .clone()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let mut new_spec = spec.clone();
         new_spec.revision += 1;
         if let Some(outcome) = &update.outcome {
@@ -228,20 +228,20 @@ impl Runtime {
         new_spec
             .constraints
             .extend(update.add_constraints.iter().cloned());
-        let root = self.latest_root_scope(intent_id)?;
+        let root = self.latest_root_scope(thread_id)?;
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             root.clone().unwrap_or_else(ScopeId::new),
             1,
             new_spec.revision,
             Actor::User,
-            EventPayload::IntentRevised {
+            EventPayload::ThreadRevised {
                 spec: new_spec.clone(),
                 reason: update.reason.clone(),
             },
         ))?;
 
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         for (scope_id, scope) in &projection.scopes {
             if scope.state != ScopeState::Running {
                 continue;
@@ -250,14 +250,14 @@ impl Runtime {
                 continue;
             }
             self.ledger.append(&EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 scope_id.clone(),
                 scope.generation,
                 new_spec.revision,
                 Actor::System,
                 EventPayload::ScopeAbortRequested {
                     reason: format!(
-                        "Intent revision {}：目标变更，该分支受影响",
+                        "Thread revision {}：目标变更，该分支受影响",
                         new_spec.revision
                     ),
                     scope_only: Some(true),
@@ -265,15 +265,15 @@ impl Runtime {
             ))?;
         }
         // 复用 Abort 收敛机制：传播、逐 Scope 收尾、在途副作用有结论；
-        // scope_only 取消不会关闭整个 Intent。
-        self.recover_abort(intent_id)?;
+        // scope_only 取消不会关闭整个 Thread。
+        self.recover_abort(thread_id)?;
         Ok(new_spec)
     }
 
     /// 提出记忆候选：候选不是权威状态，需晋升后才进入召回。
     pub fn propose_memory(&self, record: MemoryRecord) -> Result<MemoryRecord> {
         self.ledger.append(&EventEnvelope::new(
-            system_intent(),
+            system_thread(),
             ScopeId::new(),
             1,
             1,
@@ -308,7 +308,7 @@ impl Runtime {
             )));
         }
         self.ledger.append(&EventEnvelope::new(
-            system_intent(),
+            system_thread(),
             ScopeId::new(),
             1,
             1,
@@ -323,7 +323,7 @@ impl Runtime {
     /// 撤销记忆（已晋升或候选），撤销本身也是事件，可重放。
     pub fn revoke_memory(&self, memory_id: &MemoryId, reason: &str) -> Result<()> {
         self.ledger.append(&EventEnvelope::new(
-            system_intent(),
+            system_thread(),
             ScopeId::new(),
             1,
             1,
@@ -361,7 +361,7 @@ impl Runtime {
             created_at: now,
         };
         let envelope = |payload| {
-            EventEnvelope::new(system_intent(), ScopeId::new(), 1, 1, Actor::User, payload)
+            EventEnvelope::new(system_thread(), ScopeId::new(), 1, 1, Actor::User, payload)
         };
         self.ledger
             .append(&envelope(EventPayload::MemoryCandidateProposed {
@@ -374,22 +374,22 @@ impl Runtime {
     }
 
     /// 终态自动写 Episodic 记忆：结论 + 产物引用 + 失败原因，
-    /// 作用域取 Intent 的项目（无项目则只归本 Intent）。同一 Intent 只记一次。
-    pub(crate) fn record_episode_if_terminal(&self, intent_id: &IntentId) -> Result<()> {
-        let projection = self.projection(intent_id)?;
+    /// 作用域取 Thread 的项目（无项目则只归本 Thread）。同一 Thread 只记一次。
+    pub(crate) fn record_episode_if_terminal(&self, thread_id: &ThreadId) -> Result<()> {
+        let projection = self.projection(thread_id)?;
         let Some(state) = projection.state else {
             return Ok(());
         };
         if !matches!(
             state,
-            IntentState::Completed | IntentState::Failed | IntentState::Cancelled
+            ThreadState::Completed | ThreadState::Failed | ThreadState::Cancelled
         ) {
             return Ok(());
         }
         let spec = projection
             .spec
             .clone()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let memory = self.memory_projection()?;
         let already = memory
             .promoted
@@ -397,7 +397,7 @@ impl Runtime {
             .chain(memory.candidates.values())
             .any(|record| {
                 record.tier == MemoryTier::Episodic
-                    && record.predicate == "intent_concluded"
+                    && record.predicate == "thread_concluded"
                     && record.subject == spec.outcome
             });
         if already {
@@ -407,7 +407,7 @@ impl Runtime {
             .project
             .clone()
             .map(MemoryScope::Project)
-            .unwrap_or_else(|| MemoryScope::Intent(intent_id.clone()));
+            .unwrap_or_else(|| MemoryScope::Thread(thread_id.clone()));
         let artifacts = projection
             .artifacts
             .iter()
@@ -420,12 +420,12 @@ impl Runtime {
         );
         let evidence = self
             .ledger
-            .read_intent(intent_id)?
+            .read_thread(thread_id)?
             .iter()
             .filter(|event| {
                 matches!(
                     event.envelope.payload,
-                    EventPayload::OutcomeVerified { .. } | EventPayload::IntentStateChanged { .. }
+                    EventPayload::OutcomeVerified { .. } | EventPayload::ThreadStateChanged { .. }
                 )
             })
             .map(|event| event.envelope.event_id.clone())
@@ -436,7 +436,7 @@ impl Runtime {
             tier: MemoryTier::Episodic,
             scope,
             subject: spec.outcome.clone(),
-            predicate: "intent_concluded".into(),
+            predicate: "thread_concluded".into(),
             value,
             source: MemorySource::ExecutionObserved,
             evidence,
@@ -445,10 +445,10 @@ impl Runtime {
             supersedes: None,
             created_at: now,
         };
-        let (scope_id, generation) = self.compile_scope(&projection, intent_id)?;
+        let (scope_id, generation) = self.compile_scope(&projection, thread_id)?;
         let envelope = |payload| {
             EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 scope_id.clone(),
                 generation,
                 spec.revision,

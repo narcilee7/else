@@ -4,7 +4,7 @@
 //! 不直接碰 Runtime —— 这样界面永远不会因为一次慢查询而卡住。
 
 use else_protocol::api::{
-    AttentionWindowSnapshot, EventResponse, IntentSnapshot, PlanView, ResourceView, ScopeView,
+    AttentionWindowSnapshot, EventResponse, PlanView, ResourceView, ScopeView, ThreadSnapshot,
 };
 use else_protocol::attention::AttentionRequest;
 use else_protocol::connector::{ConnectorHealthReport, ConnectorRegistration};
@@ -15,15 +15,15 @@ use else_protocol::world::{IdentityWorld, PersonalBrief, ProjectWorld};
 pub struct OverviewData {
     pub brief: PersonalBrief,
     pub attention: Vec<AttentionWindowSnapshot>,
-    pub intents: Vec<IntentSnapshot>,
+    pub threads: Vec<ThreadSnapshot>,
     pub projects: Vec<ProjectWorld>,
     pub identities: Vec<IdentityWorld>,
 }
 
-/// Intent 详情：目标、委托树、计划、资源账与事件流。
+/// Thread 详情：目标、委托树、计划、资源账与事件流。
 #[derive(Debug, Clone)]
-pub struct IntentDetailData {
-    pub intent: IntentSnapshot,
+pub struct ThreadDetailData {
+    pub thread: ThreadSnapshot,
     pub scopes: Vec<ScopeView>,
     pub plan: PlanView,
     pub resources: ResourceView,
@@ -43,8 +43,8 @@ pub struct ConnectorRow {
 #[derive(Debug, Clone)]
 pub struct DecisionsData {
     pub windows: Vec<AttentionWindowSnapshot>,
-    /// 窗口外但仍可裁决的请求，带上它们所属的 Intent。
-    pub loose: Vec<(else_protocol::ids::IntentId, AttentionRequest)>,
+    /// 窗口外但仍可裁决的请求，带上它们所属的 Thread。
+    pub loose: Vec<(else_protocol::ids::ThreadId, AttentionRequest)>,
 }
 
 /// 当前屏幕的数据。
@@ -53,8 +53,8 @@ pub enum Data {
     #[default]
     Empty,
     Overview(Box<OverviewData>),
-    Intents(Vec<IntentSnapshot>),
-    IntentDetail(Box<IntentDetailData>),
+    Threads(Vec<ThreadSnapshot>),
+    ThreadDetail(Box<ThreadDetailData>),
     Decisions(Box<DecisionsData>),
     Connectors(Vec<ConnectorRow>),
 }

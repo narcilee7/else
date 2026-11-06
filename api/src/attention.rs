@@ -1,10 +1,10 @@
 //! Attention Window 调度：Batch / Defer 的持久窗口、Timer 与幂等关闭。
 
 use chrono::{DateTime, Duration, Utc};
-use else_ledger::IntentProjection;
+use else_ledger::ThreadProjection;
 use else_protocol::attention::{AttentionRequest, AttentionWindow, AttentionWindowKind, Ruling};
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
-use else_protocol::ids::{AttentionId, AttentionWindowId, IntentId, ScopeId, TimerId};
+use else_protocol::ids::{AttentionId, AttentionWindowId, ScopeId, ThreadId, TimerId};
 
 use crate::{Result, Runtime};
 
@@ -32,7 +32,7 @@ pub(crate) enum AttentionScheduleAction {
 /// 从投影推导下一个窗口动作。顺序保证截止窗口先关闭，之后才允许新请求
 /// 进入新窗口，避免晚到请求被塞进已经应关闭的 Batch。
 pub(crate) fn next_attention_action(
-    projection: &IntentProjection,
+    projection: &ThreadProjection,
     now: DateTime<Utc>,
 ) -> Option<AttentionScheduleAction> {
     let mut windows: Vec<_> = projection.attention_windows.values().collect();
@@ -132,29 +132,29 @@ impl Runtime {
     /// Batch / Defer 的实际通知由 Kernel 窗口驱动，而不是调用方直接展示。
     pub fn submit_attention_request(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         request: &AttentionRequest,
     ) -> Result<AttentionId> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let scope_id = projection
             .root_scope_id
-            .ok_or_else(|| crate::ApiError::IntentNotFound(intent_id.clone()))?;
-        self.submit_attention_request_for_scope(intent_id, &scope_id, request)
+            .ok_or_else(|| crate::ApiError::ThreadNotFound(thread_id.clone()))?;
+        self.submit_attention_request_for_scope(thread_id, &scope_id, request)
     }
 
-    /// 为指定 Scope 提交请求；Intent Revision 取消该分支时请求会同步失效。
+    /// 为指定 Scope 提交请求；Thread Revision 取消该分支时请求会同步失效。
     pub fn submit_attention_request_for_scope(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
         request: &AttentionRequest,
     ) -> Result<AttentionId> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let policy = projection
             .spec
             .as_ref()
             .map(|spec| &spec.attention_policy)
-            .ok_or_else(|| crate::ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| crate::ApiError::ThreadNotFound(thread_id.clone()))?;
         let ruling = else_attention::AttentionKernel.rule(request, policy, Utc::now());
         let scope = projection
             .scopes
@@ -163,7 +163,7 @@ impl Runtime {
         let generation = scope.generation;
         let revision = projection.spec.as_ref().map_or(1, |spec| spec.revision);
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             generation,
             revision,
@@ -173,7 +173,7 @@ impl Runtime {
             },
         ))?;
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             generation,
             revision,
@@ -184,13 +184,13 @@ impl Runtime {
             },
         ))?;
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             generation,
             revision,
             Actor::System,
-            EventPayload::IntentStateChanged {
-                state: else_protocol::intent::IntentState::NeedsDecision,
+            EventPayload::ThreadStateChanged {
+                state: else_protocol::thread::ThreadState::NeedsDecision,
             },
         ))?;
         Ok(request.id.clone())
@@ -198,12 +198,12 @@ impl Runtime {
 
     pub(crate) fn open_attention_window(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         kind: AttentionWindowKind,
         request_ids: Vec<AttentionId>,
         due_at: DateTime<Utc>,
     ) -> Result<()> {
-        let (scope_id, generation, revision) = self.kernel_context(intent_id)?;
+        let (scope_id, generation, revision) = self.kernel_context(thread_id)?;
         let opened_at = Utc::now();
         let id = AttentionWindowId::new();
         let timer_id = TimerId::from(format!("attention-window/{id}"));
@@ -218,36 +218,36 @@ impl Runtime {
             request_ids,
         };
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             generation,
             revision,
             Actor::System,
             EventPayload::AttentionWindowOpened { window },
         ))?;
-        self.schedule_attention_window_timer(intent_id, &id, &timer_id, due_at)
+        self.schedule_attention_window_timer(thread_id, &id, &timer_id, due_at)
     }
 
     pub(crate) fn add_attention_window_members(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         window_id: &AttentionWindowId,
         request_ids: Vec<AttentionId>,
     ) -> Result<()> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let Some(window) = projection.attention_windows.get(window_id) else {
             return Ok(());
         };
         if window.closed_at.is_some() {
             return Ok(());
         }
-        let (scope_id, generation, revision) = self.kernel_context(intent_id)?;
+        let (scope_id, generation, revision) = self.kernel_context(thread_id)?;
         for request_id in request_ids {
             if window.request_ids.contains(&request_id) {
                 continue;
             }
             self.ledger.append(&EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 scope_id.clone(),
                 generation,
                 revision,
@@ -263,17 +263,17 @@ impl Runtime {
 
     pub(crate) fn close_attention_window(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         window_id: &AttentionWindowId,
     ) -> Result<()> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let Some(window) = projection.attention_windows.get(window_id) else {
             return Ok(());
         };
         if window.closed_at.is_some() {
             return Ok(());
         }
-        let (scope_id, generation, revision) = self.kernel_context(intent_id)?;
+        let (scope_id, generation, revision) = self.kernel_context(thread_id)?;
         let closed_at = Utc::now();
         let delivered_at = (window.due_at <= closed_at
             && window
@@ -283,7 +283,7 @@ impl Runtime {
         .then_some(closed_at);
         if projection.timers.contains_key(&window.timer_id) {
             self.ledger.append(&EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 scope_id.clone(),
                 generation,
                 revision,
@@ -295,7 +295,7 @@ impl Runtime {
             ))?;
         }
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id,
             generation,
             revision,
@@ -311,18 +311,18 @@ impl Runtime {
 
     pub(crate) fn schedule_attention_window_timer(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         window_id: &AttentionWindowId,
         timer_id: &TimerId,
         due_at: DateTime<Utc>,
     ) -> Result<()> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         if projection.timers.contains_key(timer_id) {
             return Ok(());
         }
-        let (scope_id, generation, revision) = self.kernel_context(intent_id)?;
+        let (scope_id, generation, revision) = self.kernel_context(thread_id)?;
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id,
             generation,
             revision,
@@ -338,9 +338,9 @@ impl Runtime {
 
     /// Decision / Abort / Revision 改变成员后，关闭已经没有任何未决请求的窗口，
     /// 同时取消尚未触发的 Timer，避免后续空唤醒。
-    pub(crate) fn close_empty_attention_windows(&self, intent_id: &IntentId) -> Result<()> {
+    pub(crate) fn close_empty_attention_windows(&self, thread_id: &ThreadId) -> Result<()> {
         loop {
-            let projection = self.projection(intent_id)?;
+            let projection = self.projection(thread_id)?;
             let stale = projection
                 .attention_windows
                 .values()
@@ -355,15 +355,15 @@ impl Runtime {
             let Some(window_id) = stale else {
                 return Ok(());
             };
-            self.close_attention_window(intent_id, &window_id)?;
+            self.close_attention_window(thread_id, &window_id)?;
         }
     }
 
     /// Scope 被取消或 Revision 使分支失效时，关闭其未决注意力请求。
     /// 请求和窗口都保留为历史，不做原地删除。
-    pub(crate) fn expire_requests_for_cancelled_scopes(&self, intent_id: &IntentId) -> Result<()> {
-        let projection = self.projection(intent_id)?;
-        let events = self.events(intent_id)?;
+    pub(crate) fn expire_requests_for_cancelled_scopes(&self, thread_id: &ThreadId) -> Result<()> {
+        let projection = self.projection(thread_id)?;
+        let events = self.events(thread_id)?;
         let mut expired = 0_u64;
         for request_id in projection.open_requests.keys() {
             let Some(request_event) = events.iter().rev().find(|event| {
@@ -387,10 +387,10 @@ impl Runtime {
                 continue;
             }
             self.ledger.append(&EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 request_event.envelope.scope_id.clone(),
                 request_event.envelope.generation,
-                request_event.envelope.intent_revision,
+                request_event.envelope.thread_revision,
                 Actor::System,
                 EventPayload::DecisionResolved {
                     decision: else_protocol::attention::Decision {
@@ -404,7 +404,7 @@ impl Runtime {
             expired += 1;
         }
         if expired > 0 {
-            self.close_empty_attention_windows(intent_id)?;
+            self.close_empty_attention_windows(thread_id)?;
         }
         Ok(())
     }
@@ -413,7 +413,7 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IntentRevision, KernelAction, KernelDriveStop};
+    use crate::{KernelAction, KernelDriveStop, ThreadRevision};
     use else_protocol::attention::{AttentionKind, DecisionOption, ExpectedLoss};
     use else_protocol::effect::SideEffectKind;
     use else_protocol::event::ScopeState;
@@ -442,7 +442,7 @@ mod tests {
     fn batch_window_opens_once_and_aggregates_new_requests() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_intent("整理待办", None).unwrap();
+        let spec = runtime.create_thread("整理待办", None).unwrap();
         runtime.wait_for_external(&spec.id, "等待批量判断").unwrap();
         let first = attention_request(ExpectedLoss::Low, false, false);
         let second = attention_request(ExpectedLoss::Low, false, false);
@@ -473,7 +473,7 @@ mod tests {
     fn due_window_fires_timer_then_closes_exactly_once() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_intent("整理待办", None).unwrap();
+        let spec = runtime.create_thread("整理待办", None).unwrap();
         runtime
             .wait_for_external(&spec.id, "等待注意力窗口")
             .unwrap();
@@ -525,7 +525,7 @@ mod tests {
     fn defer_has_a_persistent_timer_and_stays_hidden_until_closed() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_intent("整理待办", None).unwrap();
+        let spec = runtime.create_thread("整理待办", None).unwrap();
         runtime.wait_for_external(&spec.id, "等待专注间隙").unwrap();
         let request = attention_request(ExpectedLoss::Medium, true, true);
         let request_id = request.id.clone();
@@ -546,7 +546,7 @@ mod tests {
     fn abort_closes_empty_attention_window_and_cancels_timer() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_intent("整理待办", None).unwrap();
+        let spec = runtime.create_thread("整理待办", None).unwrap();
         runtime.wait_for_external(&spec.id, "等待判断").unwrap();
         let request = attention_request(ExpectedLoss::Low, false, false);
         runtime
@@ -568,7 +568,7 @@ mod tests {
     fn revision_invalidates_requests_owned_by_cancelled_scopes() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_intent("整理待办", None).unwrap();
+        let spec = runtime.create_thread("整理待办", None).unwrap();
         let root = runtime.projection(&spec.id).unwrap().root_scope_id.unwrap();
         let child = runtime
             .spawn_subagent(&spec.id, &root, "受影响分支", SideEffectKind::ReadOnly)
@@ -580,11 +580,11 @@ mod tests {
         runtime.advance(&spec.id, None).unwrap();
 
         runtime
-            .revise_intent(
+            .revise_thread(
                 &spec.id,
-                IntentRevision {
+                ThreadRevision {
                     reason: "目标变化".into(),
-                    ..IntentRevision::default()
+                    ..ThreadRevision::default()
                 },
                 &[],
             )

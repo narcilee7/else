@@ -1,7 +1,7 @@
 import ElseClientCore
 import SwiftUI
 
-extension IntentState {
+extension ThreadState {
     var label: String {
         switch self {
         case .active: "执行中"
@@ -73,7 +73,7 @@ extension ExpectedLoss {
 }
 
 struct StateBadge: View {
-    let state: IntentState
+    let state: ThreadState
 
     var body: some View {
         Label(state.label, systemImage: state.systemImage)
@@ -112,7 +112,7 @@ struct MetricRow: View {
 }
 
 struct StatusRail: View {
-    let state: IntentState
+    let state: ThreadState
     var height: CGFloat = 42
 
     var body: some View {

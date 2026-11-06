@@ -1,4 +1,4 @@
-//! Personal World：Signal Interpretation 聚合、Overdue 与跨 Intent Brief。
+//! Personal World：Signal Interpretation 聚合、Overdue 与跨 Thread Brief。
 
 use chrono::{Duration, Utc};
 use else_api::Runtime;
@@ -54,7 +54,7 @@ fn linear_work_payload() -> serde_json::Value {
 fn personal_world_aggregates_commitments_waiting_overdue_and_brief() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("推进发布承诺", None).unwrap();
+    let spec = runtime.create_thread("推进发布承诺", None).unwrap();
     let source = dir.path().join("linear.json");
     std::fs::write(&source, linear_work_payload().to_string()).unwrap();
     let connector = runtime

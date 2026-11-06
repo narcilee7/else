@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use else_context::MemoryProjection;
-use else_ledger::{IntentProjection, StoredEvent};
+use else_ledger::{StoredEvent, ThreadProjection};
 use else_protocol::attention::{AttentionRequest, DecisionChoice};
 use else_protocol::capability::{
     AgentBinding, AgentBindingEvent, AgentBindingState, AgentTransport, CapabilityRegistration,
@@ -15,53 +15,53 @@ use else_protocol::capability::{
 use else_protocol::connector::{
     ConnectorAction, ConnectorActionPreview, ConnectorCredential, ConnectorCredentialMetadata,
     ConnectorHealthReport, ConnectorManifest, ConnectorPolicy, ConnectorRegistration,
-    ConnectorSyncResult, IntentCandidate,
+    ConnectorSyncResult, ThreadCandidate,
 };
 use else_protocol::effect::SideEffectKind;
 use else_protocol::ids::{
     AgentBindingId, AgentId, AttentionId, CapabilityId, CheckpointId, ConnectorActionId,
-    ConnectorId, IntentCandidateId, IntentId, MemoryId, RunId, ScopeId, TimerId,
+    ConnectorId, MemoryId, RunId, ScopeId, ThreadCandidateId, ThreadId, TimerId,
 };
-use else_protocol::intent::{IntentSpec, OpaqueHarnessPolicy};
 use else_protocol::memory::{MemoryRecord, MemoryScope};
 use else_protocol::plan::{Plan, PlanImpact};
+use else_protocol::thread::{OpaqueHarnessPolicy, ThreadSpec};
 
 use crate::kernel::KernelDrive;
 use crate::resources::ResourceReport;
 use crate::{
-    ApiError, ConnectorRepairReport, IntentDeletionReport, IntentRevision, LeaseCleanupReport,
-    Result, Runtime, RuntimeDataExport, RuntimeDiagnosticReport, RuntimeSettings,
+    ApiError, ConnectorRepairReport, LeaseCleanupReport, Result, Runtime, RuntimeDataExport,
+    RuntimeDiagnosticReport, RuntimeSettings, ThreadDeletionReport, ThreadRevision,
 };
 
 type Reply<T> = SyncSender<Result<T>>;
 
 enum Command {
-    CreateIntent {
+    CreateThread {
         outcome: String,
         project: Option<String>,
-        reply: Reply<IntentSpec>,
+        reply: Reply<ThreadSpec>,
     },
     Projection {
-        intent_id: IntentId,
-        reply: Reply<IntentProjection>,
+        thread_id: ThreadId,
+        reply: Reply<ThreadProjection>,
     },
-    ListIntents {
-        reply: Reply<Vec<IntentSpec>>,
+    ListThreads {
+        reply: Reply<Vec<ThreadSpec>>,
     },
     Events {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         reply: Reply<Vec<StoredEvent>>,
     },
     ExportData {
         reply: Reply<RuntimeDataExport>,
     },
-    DeleteIntent {
-        intent_id: IntentId,
-        reply: Reply<IntentDeletionReport>,
+    DeleteThread {
+        thread_id: ThreadId,
+        reply: Reply<ThreadDeletionReport>,
     },
     RetryFailedScopes {
-        intent_id: IntentId,
-        reply: Reply<(Vec<ScopeId>, IntentProjection)>,
+        thread_id: ThreadId,
+        reply: Reply<(Vec<ScopeId>, ThreadProjection)>,
     },
     GetRuntimeSettings {
         reply: Reply<RuntimeSettings>,
@@ -77,26 +77,26 @@ enum Command {
         reply: Reply<LeaseCleanupReport>,
     },
     Capabilities {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         reply: Reply<Vec<CapabilityRegistration>>,
     },
     Bindings {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         reply: Reply<Vec<AgentBinding>>,
     },
     RegisterCapability {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         capability: CapabilityRegistration,
         reply: Reply<()>,
     },
     DiscoverMcp {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         server_name: String,
         command: String,
         reply: Reply<Vec<CapabilityRegistration>>,
     },
     BindAgent {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         agent_id: AgentId,
         name: String,
         scope_id: ScopeId,
@@ -107,43 +107,43 @@ enum Command {
         reply: Reply<AgentBinding>,
     },
     RevokeBinding {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         binding_id: AgentBindingId,
         reason: String,
         reply: Reply<()>,
     },
     DispatchBinding {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         binding_id: AgentBindingId,
-        reply: Reply<IntentProjection>,
+        reply: Reply<ThreadProjection>,
     },
     RecordBindingEvent {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         binding_id: AgentBindingId,
         session: String,
         event: AgentBindingEvent,
-        reply: Reply<IntentProjection>,
+        reply: Reply<ThreadProjection>,
     },
     TransitionBinding {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         binding_id: AgentBindingId,
         state: AgentBindingState,
         reply: Reply<()>,
     },
     RegisterCalendar {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         name: String,
         source: String,
         reply: Reply<ConnectorRegistration>,
     },
     RegisterLinear {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         name: String,
         source: String,
         reply: Reply<ConnectorRegistration>,
     },
     RegisterConnectorAdapter {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         name: String,
         source: String,
         adapter: String,
@@ -152,23 +152,23 @@ enum Command {
         reply: Reply<ConnectorRegistration>,
     },
     AttachConnectorCredential {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         connector_id: ConnectorId,
         credential: ConnectorCredential,
         reply: Reply<ConnectorCredentialMetadata>,
     },
     RevokeConnectorCredential {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         connector_id: ConnectorId,
         reply: Reply<ConnectorCredentialMetadata>,
     },
     ConnectorHealth {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         connector_id: ConnectorId,
         reply: Reply<ConnectorHealthReport>,
     },
     PreviewConnectorAction {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         connector_id: ConnectorId,
         capability: String,
         target: String,
@@ -176,7 +176,7 @@ enum Command {
         reply: Reply<ConnectorActionPreview>,
     },
     ProposeConnectorAction {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         connector_id: ConnectorId,
         capability: String,
         target: String,
@@ -185,48 +185,48 @@ enum Command {
         reply: Reply<ConnectorAction>,
     },
     ExecuteConnectorAction {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         action_id: ConnectorActionId,
         reply: Reply<ConnectorAction>,
     },
     VerifyConnectorAction {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         action_id: ConnectorActionId,
         reply: Reply<ConnectorAction>,
     },
     CompensateConnectorAction {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         action_id: ConnectorActionId,
         reply: Reply<ConnectorAction>,
     },
     ConnectorActions {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         reply: Reply<Vec<ConnectorAction>>,
     },
     ConnectorAdapters {
         reply: Reply<Vec<ConnectorManifest>>,
     },
     SyncConnector {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         connector_id: ConnectorId,
         reply: Reply<ConnectorSyncResult>,
     },
     RepairConnector {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         connector_id: ConnectorId,
         reply: Reply<ConnectorRepairReport>,
     },
     IngestConnectorWebhook {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         connector_id: ConnectorId,
         session_token: String,
         payload: serde_json::Value,
         reply: Reply<ConnectorSyncResult>,
     },
     ConfigureConnectorPolicy {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         policy: ConnectorPolicy,
-        reply: Reply<IntentSpec>,
+        reply: Reply<ThreadSpec>,
     },
     WorldSignals {
         cursor: u64,
@@ -234,12 +234,12 @@ enum Command {
         entity: Option<String>,
         reply: Reply<Vec<else_protocol::connector::WorldSignalRecord>>,
     },
-    IntentCandidates {
+    ThreadCandidates {
         cursor: u64,
-        reply: Reply<Vec<else_protocol::connector::IntentCandidateRecord>>,
+        reply: Reply<Vec<else_protocol::connector::ThreadCandidateRecord>>,
     },
     WorldItems {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         include_resolved: bool,
         reply: Reply<Vec<else_protocol::world::WorldItem>>,
     },
@@ -247,100 +247,100 @@ enum Command {
         reply: Reply<else_protocol::world::PersonalBrief>,
     },
     ResolveWorldItem {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         item_id: else_protocol::ids::WorldItemId,
         kind: else_protocol::world::WorldItemResolutionKind,
         note: Option<String>,
         reply: Reply<else_protocol::world::WorldItem>,
     },
     CorrectWorldCorrelation {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         correction: else_protocol::world::WorldCorrelationCorrection,
         reply: Reply<else_protocol::world::WorldCorrelationCorrection>,
     },
     ProjectWorlds {
-        intent_id: Option<IntentId>,
+        thread_id: Option<ThreadId>,
         include_resolved: bool,
         reply: Reply<Vec<else_protocol::world::ProjectWorld>>,
     },
     IdentityWorlds {
-        intent_id: Option<IntentId>,
+        thread_id: Option<ThreadId>,
         include_resolved: bool,
         reply: Reply<Vec<else_protocol::world::IdentityWorld>>,
     },
     ResolveSignals {
-        intent_id: IntentId,
-        reply: Reply<Vec<IntentCandidate>>,
+        thread_id: ThreadId,
+        reply: Reply<Vec<ThreadCandidate>>,
     },
     ProposeCandidate {
-        intent_id: IntentId,
-        candidate: IntentCandidate,
-        reply: Reply<IntentCandidate>,
+        thread_id: ThreadId,
+        candidate: ThreadCandidate,
+        reply: Reply<ThreadCandidate>,
     },
     ResolveCandidate {
-        intent_id: IntentId,
-        candidate_id: IntentCandidateId,
+        thread_id: ThreadId,
+        candidate_id: ThreadCandidateId,
         accept: bool,
-        reply: Reply<Option<IntentSpec>>,
+        reply: Reply<Option<ThreadSpec>>,
     },
     RecordExternalEvent {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         source: String,
         summary: String,
-        reply: Reply<IntentProjection>,
+        reply: Reply<ThreadProjection>,
     },
     WaitForExternal {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         reason: String,
-        reply: Reply<IntentProjection>,
+        reply: Reply<ThreadProjection>,
     },
     ScheduleTimer {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         fire_at: DateTime<Utc>,
         reason: String,
         reply: Reply<TimerId>,
     },
     Decide {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         request_id: AttentionId,
         choice: DecisionChoice,
-        reply: Reply<IntentProjection>,
+        reply: Reply<ThreadProjection>,
     },
     SubmitAttention {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         scope_id: Option<ScopeId>,
         request: AttentionRequest,
         reply: Reply<AttentionId>,
     },
     ProposePlan {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         plan: Plan,
         reply: Reply<Plan>,
     },
     Abort {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         reason: String,
-        reply: Reply<IntentProjection>,
+        reply: Reply<ThreadProjection>,
     },
     Drive {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         harness_hint: Option<String>,
         max_steps: u64,
         reply: Reply<KernelDrive>,
     },
     Advance {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         harness_hint: Option<String>,
-        reply: Reply<IntentProjection>,
+        reply: Reply<ThreadProjection>,
     },
     DispatchScope {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         scope_id: ScopeId,
         harness_hint: Option<String>,
-        reply: Reply<IntentProjection>,
+        reply: Reply<ThreadProjection>,
     },
     SpawnSubagent {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         parent_scope: ScopeId,
         task: String,
         max_autonomous_effect: SideEffectKind,
@@ -348,11 +348,11 @@ enum Command {
         reply: Reply<ScopeId>,
     },
     PlanHistory {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         reply: Reply<Vec<Plan>>,
     },
     AnalyzePlanImpact {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         source_event_id: String,
         source: String,
         summary: String,
@@ -379,33 +379,33 @@ enum Command {
         reply: Reply<MemoryRecord>,
     },
     Checkpoint {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         reply: Reply<else_protocol::artifact::Checkpoint>,
     },
     Rerun {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         checkpoint_id: CheckpointId,
         alternative: bool,
         reply: Reply<(ScopeId, u64)>,
     },
     Compare {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         reply: Reply<String>,
     },
     ConfigureOpaqueHarness {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         policy: OpaqueHarnessPolicy,
-        reply: Reply<IntentSpec>,
+        reply: Reply<ThreadSpec>,
     },
     Resources {
-        intent_id: IntentId,
+        thread_id: ThreadId,
         reply: Reply<ResourceReport>,
     },
-    ReviseIntent {
-        intent_id: IntentId,
-        update: IntentRevision,
+    ReviseThread {
+        thread_id: ThreadId,
+        update: ThreadRevision,
         unaffected_scopes: Vec<ScopeId>,
-        reply: Reply<IntentSpec>,
+        reply: Reply<ThreadSpec>,
     },
     Shutdown {
         reply: Reply<()>,
@@ -418,28 +418,28 @@ pub struct RuntimeHandle {
 }
 
 impl RuntimeHandle {
-    pub fn create_intent(&self, outcome: &str, project: Option<String>) -> Result<IntentSpec> {
-        self.request(|reply| Command::CreateIntent {
+    pub fn create_thread(&self, outcome: &str, project: Option<String>) -> Result<ThreadSpec> {
+        self.request(|reply| Command::CreateThread {
             outcome: outcome.to_string(),
             project,
             reply,
         })
     }
 
-    pub fn projection(&self, intent_id: &IntentId) -> Result<IntentProjection> {
+    pub fn projection(&self, thread_id: &ThreadId) -> Result<ThreadProjection> {
         self.request(|reply| Command::Projection {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             reply,
         })
     }
 
-    pub fn list_intents(&self) -> Result<Vec<IntentSpec>> {
-        self.request(|reply| Command::ListIntents { reply })
+    pub fn list_threads(&self) -> Result<Vec<ThreadSpec>> {
+        self.request(|reply| Command::ListThreads { reply })
     }
 
-    pub fn events(&self, intent_id: &IntentId) -> Result<Vec<StoredEvent>> {
+    pub fn events(&self, thread_id: &ThreadId) -> Result<Vec<StoredEvent>> {
         self.request(|reply| Command::Events {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             reply,
         })
     }
@@ -448,19 +448,19 @@ impl RuntimeHandle {
         self.request(|reply| Command::ExportData { reply })
     }
 
-    pub fn delete_intent(&self, intent_id: &IntentId) -> Result<IntentDeletionReport> {
-        self.request(|reply| Command::DeleteIntent {
-            intent_id: intent_id.clone(),
+    pub fn delete_thread(&self, thread_id: &ThreadId) -> Result<ThreadDeletionReport> {
+        self.request(|reply| Command::DeleteThread {
+            thread_id: thread_id.clone(),
             reply,
         })
     }
 
     pub fn retry_failed_scopes(
         &self,
-        intent_id: &IntentId,
-    ) -> Result<(Vec<ScopeId>, IntentProjection)> {
+        thread_id: &ThreadId,
+    ) -> Result<(Vec<ScopeId>, ThreadProjection)> {
         self.request(|reply| Command::RetryFailedScopes {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             reply,
         })
     }
@@ -481,27 +481,27 @@ impl RuntimeHandle {
         self.request(|reply| Command::CleanupOrphanLeases { reply })
     }
 
-    pub fn capabilities(&self, intent_id: &IntentId) -> Result<Vec<CapabilityRegistration>> {
+    pub fn capabilities(&self, thread_id: &ThreadId) -> Result<Vec<CapabilityRegistration>> {
         self.request(|reply| Command::Capabilities {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             reply,
         })
     }
 
-    pub fn agent_bindings(&self, intent_id: &IntentId) -> Result<Vec<AgentBinding>> {
+    pub fn agent_bindings(&self, thread_id: &ThreadId) -> Result<Vec<AgentBinding>> {
         self.request(|reply| Command::Bindings {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             reply,
         })
     }
 
     pub fn register_capability(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         capability: CapabilityRegistration,
     ) -> Result<()> {
         self.request(|reply| Command::RegisterCapability {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             capability,
             reply,
         })
@@ -509,12 +509,12 @@ impl RuntimeHandle {
 
     pub fn discover_mcp_tools(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         server_name: &str,
         command: &str,
     ) -> Result<Vec<CapabilityRegistration>> {
         self.request(|reply| Command::DiscoverMcp {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             server_name: server_name.into(),
             command: command.into(),
             reply,
@@ -524,7 +524,7 @@ impl RuntimeHandle {
     #[allow(clippy::too_many_arguments)]
     pub fn bind_agent(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         agent_id: AgentId,
         name: &str,
         scope_id: ScopeId,
@@ -534,7 +534,7 @@ impl RuntimeHandle {
         ttl_seconds: i64,
     ) -> Result<AgentBinding> {
         self.request(|reply| Command::BindAgent {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             agent_id,
             name: name.into(),
             scope_id,
@@ -548,12 +548,12 @@ impl RuntimeHandle {
 
     pub fn revoke_binding(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         binding_id: &AgentBindingId,
         reason: &str,
     ) -> Result<()> {
         self.request(|reply| Command::RevokeBinding {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             binding_id: binding_id.clone(),
             reason: reason.into(),
             reply,
@@ -562,11 +562,11 @@ impl RuntimeHandle {
 
     pub fn dispatch_agent_binding(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         binding_id: &AgentBindingId,
-    ) -> Result<IntentProjection> {
+    ) -> Result<ThreadProjection> {
         self.request(|reply| Command::DispatchBinding {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             binding_id: binding_id.clone(),
             reply,
         })
@@ -574,13 +574,13 @@ impl RuntimeHandle {
 
     pub fn record_agent_binding_event(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         binding_id: &AgentBindingId,
         session: &str,
         event: AgentBindingEvent,
-    ) -> Result<IntentProjection> {
+    ) -> Result<ThreadProjection> {
         self.request(|reply| Command::RecordBindingEvent {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             binding_id: binding_id.clone(),
             session: session.into(),
             event,
@@ -590,12 +590,12 @@ impl RuntimeHandle {
 
     pub fn transition_agent_binding(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         binding_id: &AgentBindingId,
         state: AgentBindingState,
     ) -> Result<()> {
         self.request(|reply| Command::TransitionBinding {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             binding_id: binding_id.clone(),
             state,
             reply,
@@ -604,12 +604,12 @@ impl RuntimeHandle {
 
     pub fn register_calendar_connector(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         name: &str,
         source: &str,
     ) -> Result<ConnectorRegistration> {
         self.request(|reply| Command::RegisterCalendar {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             name: name.into(),
             source: source.into(),
             reply,
@@ -618,12 +618,12 @@ impl RuntimeHandle {
 
     pub fn register_linear_connector(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         name: &str,
         source: &str,
     ) -> Result<ConnectorRegistration> {
         self.request(|reply| Command::RegisterLinear {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             name: name.into(),
             source: source.into(),
             reply,
@@ -632,17 +632,17 @@ impl RuntimeHandle {
 
     pub fn register_connector_adapter(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         name: &str,
         source: &str,
         adapter: &str,
     ) -> Result<ConnectorRegistration> {
-        self.register_connector_adapter_with_credential(intent_id, name, source, adapter, None, 300)
+        self.register_connector_adapter_with_credential(thread_id, name, source, adapter, None, 300)
     }
 
     pub fn register_connector_adapter_with_credential(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         name: &str,
         source: &str,
         adapter: &str,
@@ -650,7 +650,7 @@ impl RuntimeHandle {
         sync_interval_seconds: u64,
     ) -> Result<ConnectorRegistration> {
         self.request(|reply| Command::RegisterConnectorAdapter {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             name: name.into(),
             source: source.into(),
             adapter: adapter.into(),
@@ -662,12 +662,12 @@ impl RuntimeHandle {
 
     pub fn attach_connector_credential(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
         credential: ConnectorCredential,
     ) -> Result<ConnectorCredentialMetadata> {
         self.request(|reply| Command::AttachConnectorCredential {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             connector_id: connector_id.clone(),
             credential,
             reply,
@@ -676,11 +676,11 @@ impl RuntimeHandle {
 
     pub fn revoke_connector_credential(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
     ) -> Result<ConnectorCredentialMetadata> {
         self.request(|reply| Command::RevokeConnectorCredential {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             connector_id: connector_id.clone(),
             reply,
         })
@@ -688,11 +688,11 @@ impl RuntimeHandle {
 
     pub fn connector_health(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
     ) -> Result<ConnectorHealthReport> {
         self.request(|reply| Command::ConnectorHealth {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             connector_id: connector_id.clone(),
             reply,
         })
@@ -700,7 +700,7 @@ impl RuntimeHandle {
 
     pub fn propose_connector_action(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
         capability: &str,
         target: &str,
@@ -708,7 +708,7 @@ impl RuntimeHandle {
         idempotency_key: Option<String>,
     ) -> Result<ConnectorAction> {
         self.request(|reply| Command::ProposeConnectorAction {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             connector_id: connector_id.clone(),
             capability: capability.into(),
             target: target.into(),
@@ -720,14 +720,14 @@ impl RuntimeHandle {
 
     pub fn preview_connector_action(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
         capability: &str,
         target: &str,
         input: serde_json::Value,
     ) -> Result<ConnectorActionPreview> {
         self.request(|reply| Command::PreviewConnectorAction {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             connector_id: connector_id.clone(),
             capability: capability.into(),
             target: target.into(),
@@ -738,30 +738,30 @@ impl RuntimeHandle {
 
     pub fn execute_connector_action(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         action_id: &ConnectorActionId,
     ) -> Result<ConnectorAction> {
         self.request(|reply| Command::ExecuteConnectorAction {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             action_id: action_id.clone(),
             reply,
         })
     }
 
-    pub fn connector_actions(&self, intent_id: &IntentId) -> Result<Vec<ConnectorAction>> {
+    pub fn connector_actions(&self, thread_id: &ThreadId) -> Result<Vec<ConnectorAction>> {
         self.request(|reply| Command::ConnectorActions {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             reply,
         })
     }
 
     pub fn verify_connector_action(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         action_id: &ConnectorActionId,
     ) -> Result<ConnectorAction> {
         self.request(|reply| Command::VerifyConnectorAction {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             action_id: action_id.clone(),
             reply,
         })
@@ -769,11 +769,11 @@ impl RuntimeHandle {
 
     pub fn compensate_connector_action(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         action_id: &ConnectorActionId,
     ) -> Result<ConnectorAction> {
         self.request(|reply| Command::CompensateConnectorAction {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             action_id: action_id.clone(),
             reply,
         })
@@ -785,11 +785,11 @@ impl RuntimeHandle {
 
     pub fn sync_connector(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
     ) -> Result<ConnectorSyncResult> {
         self.request(|reply| Command::SyncConnector {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             connector_id: connector_id.clone(),
             reply,
         })
@@ -797,11 +797,11 @@ impl RuntimeHandle {
 
     pub fn repair_connector(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
     ) -> Result<ConnectorRepairReport> {
         self.request(|reply| Command::RepairConnector {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             connector_id: connector_id.clone(),
             reply,
         })
@@ -809,13 +809,13 @@ impl RuntimeHandle {
 
     pub fn ingest_connector_webhook(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         connector_id: &ConnectorId,
         session_token: &str,
         payload: serde_json::Value,
     ) -> Result<ConnectorSyncResult> {
         self.request(|reply| Command::IngestConnectorWebhook {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             connector_id: connector_id.clone(),
             session_token: session_token.into(),
             payload,
@@ -825,11 +825,11 @@ impl RuntimeHandle {
 
     pub fn configure_connector_policy(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         policy: ConnectorPolicy,
-    ) -> Result<IntentSpec> {
+    ) -> Result<ThreadSpec> {
         self.request(|reply| Command::ConfigureConnectorPolicy {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             policy,
             reply,
         })
@@ -849,20 +849,20 @@ impl RuntimeHandle {
         })
     }
 
-    pub fn intent_candidates(
+    pub fn thread_candidates(
         &self,
         cursor: u64,
-    ) -> Result<Vec<else_protocol::connector::IntentCandidateRecord>> {
-        self.request(|reply| Command::IntentCandidates { cursor, reply })
+    ) -> Result<Vec<else_protocol::connector::ThreadCandidateRecord>> {
+        self.request(|reply| Command::ThreadCandidates { cursor, reply })
     }
 
     pub fn world_items(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         include_resolved: bool,
     ) -> Result<Vec<else_protocol::world::WorldItem>> {
         self.request(|reply| Command::WorldItems {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             include_resolved,
             reply,
         })
@@ -874,13 +874,13 @@ impl RuntimeHandle {
 
     pub fn resolve_world_item(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         item_id: &else_protocol::ids::WorldItemId,
         kind: else_protocol::world::WorldItemResolutionKind,
         note: Option<String>,
     ) -> Result<else_protocol::world::WorldItem> {
         self.request(|reply| Command::ResolveWorldItem {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             item_id: item_id.clone(),
             kind,
             note,
@@ -890,11 +890,11 @@ impl RuntimeHandle {
 
     pub fn correct_world_correlation(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         correction: else_protocol::world::WorldCorrelationCorrection,
     ) -> Result<else_protocol::world::WorldCorrelationCorrection> {
         self.request(|reply| Command::CorrectWorldCorrelation {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             correction,
             reply,
         })
@@ -902,11 +902,11 @@ impl RuntimeHandle {
 
     pub fn project_worlds(
         &self,
-        intent_id: Option<&IntentId>,
+        thread_id: Option<&ThreadId>,
         include_resolved: bool,
     ) -> Result<Vec<else_protocol::world::ProjectWorld>> {
         self.request(|reply| Command::ProjectWorlds {
-            intent_id: intent_id.cloned(),
+            thread_id: thread_id.cloned(),
             include_resolved,
             reply,
         })
@@ -914,43 +914,43 @@ impl RuntimeHandle {
 
     pub fn identity_worlds(
         &self,
-        intent_id: Option<&IntentId>,
+        thread_id: Option<&ThreadId>,
         include_resolved: bool,
     ) -> Result<Vec<else_protocol::world::IdentityWorld>> {
         self.request(|reply| Command::IdentityWorlds {
-            intent_id: intent_id.cloned(),
+            thread_id: thread_id.cloned(),
             include_resolved,
             reply,
         })
     }
 
-    pub fn resolve_signals(&self, intent_id: &IntentId) -> Result<Vec<IntentCandidate>> {
+    pub fn resolve_signals(&self, thread_id: &ThreadId) -> Result<Vec<ThreadCandidate>> {
         self.request(|reply| Command::ResolveSignals {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             reply,
         })
     }
 
-    pub fn propose_intent_candidate(
+    pub fn propose_thread_candidate(
         &self,
-        intent_id: &IntentId,
-        candidate: IntentCandidate,
-    ) -> Result<IntentCandidate> {
+        thread_id: &ThreadId,
+        candidate: ThreadCandidate,
+    ) -> Result<ThreadCandidate> {
         self.request(|reply| Command::ProposeCandidate {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             candidate,
             reply,
         })
     }
 
-    pub fn resolve_intent_candidate(
+    pub fn resolve_thread_candidate(
         &self,
-        intent_id: &IntentId,
-        candidate_id: &IntentCandidateId,
+        thread_id: &ThreadId,
+        candidate_id: &ThreadCandidateId,
         accept: bool,
-    ) -> Result<Option<IntentSpec>> {
+    ) -> Result<Option<ThreadSpec>> {
         self.request(|reply| Command::ResolveCandidate {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             candidate_id: candidate_id.clone(),
             accept,
             reply,
@@ -959,12 +959,12 @@ impl RuntimeHandle {
 
     pub fn record_external_event(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         source: &str,
         summary: &str,
-    ) -> Result<IntentProjection> {
+    ) -> Result<ThreadProjection> {
         self.request(|reply| Command::RecordExternalEvent {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             source: source.to_string(),
             summary: summary.to_string(),
             reply,
@@ -973,11 +973,11 @@ impl RuntimeHandle {
 
     pub fn wait_for_external(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         reason: &str,
-    ) -> Result<IntentProjection> {
+    ) -> Result<ThreadProjection> {
         self.request(|reply| Command::WaitForExternal {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             reason: reason.to_string(),
             reply,
         })
@@ -985,12 +985,12 @@ impl RuntimeHandle {
 
     pub fn schedule_timer(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         fire_at: DateTime<Utc>,
         reason: &str,
     ) -> Result<TimerId> {
         self.request(|reply| Command::ScheduleTimer {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             fire_at,
             reason: reason.to_string(),
             reply,
@@ -999,12 +999,12 @@ impl RuntimeHandle {
 
     pub fn decide(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         request_id: &AttentionId,
         choice: DecisionChoice,
-    ) -> Result<IntentProjection> {
+    ) -> Result<ThreadProjection> {
         self.request(|reply| Command::Decide {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             request_id: request_id.clone(),
             choice,
             reply,
@@ -1013,29 +1013,29 @@ impl RuntimeHandle {
 
     pub fn submit_attention_request(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: Option<ScopeId>,
         request: AttentionRequest,
     ) -> Result<AttentionId> {
         self.request(|reply| Command::SubmitAttention {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             scope_id,
             request,
             reply,
         })
     }
 
-    pub fn propose_plan(&self, intent_id: &IntentId, plan: Plan) -> Result<Plan> {
+    pub fn propose_plan(&self, thread_id: &ThreadId, plan: Plan) -> Result<Plan> {
         self.request(|reply| Command::ProposePlan {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             plan,
             reply,
         })
     }
 
-    pub fn abort(&self, intent_id: &IntentId, reason: &str) -> Result<IntentProjection> {
+    pub fn abort(&self, thread_id: &ThreadId, reason: &str) -> Result<ThreadProjection> {
         self.request(|reply| Command::Abort {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             reason: reason.to_string(),
             reply,
         })
@@ -1043,12 +1043,12 @@ impl RuntimeHandle {
 
     pub fn drive(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         harness_hint: Option<&str>,
         max_steps: u64,
     ) -> Result<KernelDrive> {
         self.request(|reply| Command::Drive {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             harness_hint: harness_hint.map(str::to_string),
             max_steps,
             reply,
@@ -1057,11 +1057,11 @@ impl RuntimeHandle {
 
     pub fn advance(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         harness_hint: Option<&str>,
-    ) -> Result<IntentProjection> {
+    ) -> Result<ThreadProjection> {
         self.request(|reply| Command::Advance {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             harness_hint: harness_hint.map(str::to_string),
             reply,
         })
@@ -1069,12 +1069,12 @@ impl RuntimeHandle {
 
     pub fn dispatch_scope(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
         harness_hint: Option<&str>,
-    ) -> Result<IntentProjection> {
+    ) -> Result<ThreadProjection> {
         self.request(|reply| Command::DispatchScope {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             scope_id: scope_id.clone(),
             harness_hint: harness_hint.map(str::to_string),
             reply,
@@ -1083,14 +1083,14 @@ impl RuntimeHandle {
 
     pub fn spawn_subagent_with_dependencies(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         parent_scope: &ScopeId,
         task: &str,
         max_autonomous_effect: SideEffectKind,
         depends_on: Vec<ScopeId>,
     ) -> Result<ScopeId> {
         self.request(|reply| Command::SpawnSubagent {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             parent_scope: parent_scope.clone(),
             task: task.to_string(),
             max_autonomous_effect,
@@ -1099,22 +1099,22 @@ impl RuntimeHandle {
         })
     }
 
-    pub fn plan_history(&self, intent_id: &IntentId) -> Result<Vec<Plan>> {
+    pub fn plan_history(&self, thread_id: &ThreadId) -> Result<Vec<Plan>> {
         self.request(|reply| Command::PlanHistory {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             reply,
         })
     }
 
     pub fn analyze_plan_impact(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         source_event_id: &str,
         source: &str,
         summary: &str,
     ) -> Result<Option<PlanImpact>> {
         self.request(|reply| Command::AnalyzePlanImpact {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             source_event_id: source_event_id.to_string(),
             source: source.to_string(),
             summary: summary.to_string(),
@@ -1162,61 +1162,61 @@ impl RuntimeHandle {
         })
     }
 
-    pub fn checkpoint(&self, intent_id: &IntentId) -> Result<else_protocol::artifact::Checkpoint> {
+    pub fn checkpoint(&self, thread_id: &ThreadId) -> Result<else_protocol::artifact::Checkpoint> {
         self.request(|reply| Command::Checkpoint {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             reply,
         })
     }
 
     pub fn rerun(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         checkpoint_id: &CheckpointId,
         alternative: bool,
     ) -> Result<(ScopeId, u64)> {
         self.request(|reply| Command::Rerun {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             checkpoint_id: checkpoint_id.clone(),
             alternative,
             reply,
         })
     }
 
-    pub fn compare(&self, intent_id: &IntentId) -> Result<String> {
+    pub fn compare(&self, thread_id: &ThreadId) -> Result<String> {
         self.request(|reply| Command::Compare {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             reply,
         })
     }
 
     pub fn configure_opaque_harness(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         policy: OpaqueHarnessPolicy,
-    ) -> Result<IntentSpec> {
+    ) -> Result<ThreadSpec> {
         self.request(|reply| Command::ConfigureOpaqueHarness {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             policy,
             reply,
         })
     }
 
-    pub fn resources(&self, intent_id: &IntentId) -> Result<ResourceReport> {
+    pub fn resources(&self, thread_id: &ThreadId) -> Result<ResourceReport> {
         self.request(|reply| Command::Resources {
-            intent_id: intent_id.clone(),
+            thread_id: thread_id.clone(),
             reply,
         })
     }
 
-    pub fn revise_intent(
+    pub fn revise_thread(
         &self,
-        intent_id: &IntentId,
-        update: IntentRevision,
+        thread_id: &ThreadId,
+        update: ThreadRevision,
         unaffected_scopes: &[ScopeId],
-    ) -> Result<IntentSpec> {
-        self.request(|reply| Command::ReviseIntent {
-            intent_id: intent_id.clone(),
+    ) -> Result<ThreadSpec> {
+        self.request(|reply| Command::ReviseThread {
+            thread_id: thread_id.clone(),
             update,
             unaffected_scopes: unaffected_scopes.to_vec(),
             reply,
@@ -1293,30 +1293,30 @@ fn worker_loop(runtime: Runtime, receiver: mpsc::Receiver<Command>) {
 
 fn handle_command(runtime: &Runtime, command: Command) {
     match command {
-        Command::CreateIntent {
+        Command::CreateThread {
             outcome,
             project,
             reply,
         } => {
-            let _ = reply.send(runtime.create_intent(&outcome, project));
+            let _ = reply.send(runtime.create_thread(&outcome, project));
         }
-        Command::Projection { intent_id, reply } => {
-            let _ = reply.send(runtime.projection(&intent_id));
+        Command::Projection { thread_id, reply } => {
+            let _ = reply.send(runtime.projection(&thread_id));
         }
-        Command::ListIntents { reply } => {
-            let _ = reply.send(runtime.list_intents());
+        Command::ListThreads { reply } => {
+            let _ = reply.send(runtime.list_threads());
         }
-        Command::Events { intent_id, reply } => {
-            let _ = reply.send(runtime.events(&intent_id));
+        Command::Events { thread_id, reply } => {
+            let _ = reply.send(runtime.events(&thread_id));
         }
         Command::ExportData { reply } => {
             let _ = reply.send(runtime.export_data());
         }
-        Command::DeleteIntent { intent_id, reply } => {
-            let _ = reply.send(runtime.delete_intent(&intent_id));
+        Command::DeleteThread { thread_id, reply } => {
+            let _ = reply.send(runtime.delete_thread(&thread_id));
         }
-        Command::RetryFailedScopes { intent_id, reply } => {
-            let _ = reply.send(runtime.retry_failed_scopes(&intent_id));
+        Command::RetryFailedScopes { thread_id, reply } => {
+            let _ = reply.send(runtime.retry_failed_scopes(&thread_id));
         }
         Command::GetRuntimeSettings { reply } => {
             let _ = reply.send(runtime.runtime_settings());
@@ -1330,29 +1330,29 @@ fn handle_command(runtime: &Runtime, command: Command) {
         Command::CleanupOrphanLeases { reply } => {
             let _ = reply.send(runtime.cleanup_orphan_leases());
         }
-        Command::Capabilities { intent_id, reply } => {
-            let _ = reply.send(runtime.capabilities(&intent_id));
+        Command::Capabilities { thread_id, reply } => {
+            let _ = reply.send(runtime.capabilities(&thread_id));
         }
-        Command::Bindings { intent_id, reply } => {
-            let _ = reply.send(runtime.agent_bindings(&intent_id));
+        Command::Bindings { thread_id, reply } => {
+            let _ = reply.send(runtime.agent_bindings(&thread_id));
         }
         Command::RegisterCapability {
-            intent_id,
+            thread_id,
             capability,
             reply,
         } => {
-            let _ = reply.send(runtime.register_capability(&intent_id, capability));
+            let _ = reply.send(runtime.register_capability(&thread_id, capability));
         }
         Command::DiscoverMcp {
-            intent_id,
+            thread_id,
             server_name,
             command,
             reply,
         } => {
-            let _ = reply.send(runtime.discover_mcp_tools(&intent_id, &server_name, &command));
+            let _ = reply.send(runtime.discover_mcp_tools(&thread_id, &server_name, &command));
         }
         Command::BindAgent {
-            intent_id,
+            thread_id,
             agent_id,
             name,
             scope_id,
@@ -1363,7 +1363,7 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.bind_agent(
-                &intent_id,
+                &thread_id,
                 agent_id,
                 &name,
                 scope_id,
@@ -1374,60 +1374,60 @@ fn handle_command(runtime: &Runtime, command: Command) {
             ));
         }
         Command::RevokeBinding {
-            intent_id,
+            thread_id,
             binding_id,
             reason,
             reply,
         } => {
-            let _ = reply.send(runtime.revoke_agent_binding(&intent_id, &binding_id, &reason));
+            let _ = reply.send(runtime.revoke_agent_binding(&thread_id, &binding_id, &reason));
         }
         Command::DispatchBinding {
-            intent_id,
+            thread_id,
             binding_id,
             reply,
         } => {
-            let _ = reply.send(runtime.dispatch_agent_binding(&intent_id, &binding_id));
+            let _ = reply.send(runtime.dispatch_agent_binding(&thread_id, &binding_id));
         }
         Command::RecordBindingEvent {
-            intent_id,
+            thread_id,
             binding_id,
             session,
             event,
             reply,
         } => {
             let _ = reply.send(runtime.record_agent_binding_event(
-                &intent_id,
+                &thread_id,
                 &binding_id,
                 &session,
                 event,
             ));
         }
         Command::TransitionBinding {
-            intent_id,
+            thread_id,
             binding_id,
             state,
             reply,
         } => {
-            let _ = reply.send(runtime.transition_agent_binding(&intent_id, &binding_id, state));
+            let _ = reply.send(runtime.transition_agent_binding(&thread_id, &binding_id, state));
         }
         Command::RegisterCalendar {
-            intent_id,
+            thread_id,
             name,
             source,
             reply,
         } => {
-            let _ = reply.send(runtime.register_calendar_connector(&intent_id, &name, &source));
+            let _ = reply.send(runtime.register_calendar_connector(&thread_id, &name, &source));
         }
         Command::RegisterLinear {
-            intent_id,
+            thread_id,
             name,
             source,
             reply,
         } => {
-            let _ = reply.send(runtime.register_linear_connector(&intent_id, &name, &source));
+            let _ = reply.send(runtime.register_linear_connector(&thread_id, &name, &source));
         }
         Command::RegisterConnectorAdapter {
-            intent_id,
+            thread_id,
             name,
             source,
             adapter,
@@ -1436,7 +1436,7 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.register_connector_adapter_with_credential(
-                &intent_id,
+                &thread_id,
                 &name,
                 &source,
                 &adapter,
@@ -1445,33 +1445,33 @@ fn handle_command(runtime: &Runtime, command: Command) {
             ));
         }
         Command::AttachConnectorCredential {
-            intent_id,
+            thread_id,
             connector_id,
             credential,
             reply,
         } => {
             let _ = reply.send(runtime.attach_connector_credential(
-                &intent_id,
+                &thread_id,
                 &connector_id,
                 credential,
             ));
         }
         Command::RevokeConnectorCredential {
-            intent_id,
+            thread_id,
             connector_id,
             reply,
         } => {
-            let _ = reply.send(runtime.revoke_connector_credential(&intent_id, &connector_id));
+            let _ = reply.send(runtime.revoke_connector_credential(&thread_id, &connector_id));
         }
         Command::ConnectorHealth {
-            intent_id,
+            thread_id,
             connector_id,
             reply,
         } => {
-            let _ = reply.send(runtime.connector_health(&intent_id, &connector_id));
+            let _ = reply.send(runtime.connector_health(&thread_id, &connector_id));
         }
         Command::PreviewConnectorAction {
-            intent_id,
+            thread_id,
             connector_id,
             capability,
             target,
@@ -1479,7 +1479,7 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.preview_connector_action(
-                &intent_id,
+                &thread_id,
                 &connector_id,
                 &capability,
                 &target,
@@ -1487,7 +1487,7 @@ fn handle_command(runtime: &Runtime, command: Command) {
             ));
         }
         Command::ProposeConnectorAction {
-            intent_id,
+            thread_id,
             connector_id,
             capability,
             target,
@@ -1496,7 +1496,7 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.propose_connector_action(
-                &intent_id,
+                &thread_id,
                 &connector_id,
                 &capability,
                 &target,
@@ -1505,66 +1505,66 @@ fn handle_command(runtime: &Runtime, command: Command) {
             ));
         }
         Command::ExecuteConnectorAction {
-            intent_id,
+            thread_id,
             action_id,
             reply,
         } => {
-            let _ = reply.send(runtime.execute_connector_action(&intent_id, &action_id));
+            let _ = reply.send(runtime.execute_connector_action(&thread_id, &action_id));
         }
         Command::VerifyConnectorAction {
-            intent_id,
+            thread_id,
             action_id,
             reply,
         } => {
-            let _ = reply.send(runtime.verify_connector_action(&intent_id, &action_id));
+            let _ = reply.send(runtime.verify_connector_action(&thread_id, &action_id));
         }
         Command::CompensateConnectorAction {
-            intent_id,
+            thread_id,
             action_id,
             reply,
         } => {
-            let _ = reply.send(runtime.compensate_connector_action(&intent_id, &action_id));
+            let _ = reply.send(runtime.compensate_connector_action(&thread_id, &action_id));
         }
-        Command::ConnectorActions { intent_id, reply } => {
-            let _ = reply.send(runtime.connector_actions(&intent_id));
+        Command::ConnectorActions { thread_id, reply } => {
+            let _ = reply.send(runtime.connector_actions(&thread_id));
         }
         Command::ConnectorAdapters { reply } => {
             let _ = reply.send(Ok(runtime.connector_manifests()));
         }
         Command::SyncConnector {
-            intent_id,
+            thread_id,
             connector_id,
             reply,
         } => {
-            let _ = reply.send(runtime.sync_connector(&intent_id, &connector_id));
+            let _ = reply.send(runtime.sync_connector(&thread_id, &connector_id));
         }
         Command::RepairConnector {
-            intent_id,
+            thread_id,
             connector_id,
             reply,
         } => {
-            let _ = reply.send(runtime.repair_connector(&intent_id, &connector_id));
+            let _ = reply.send(runtime.repair_connector(&thread_id, &connector_id));
         }
         Command::IngestConnectorWebhook {
-            intent_id,
+            thread_id,
             connector_id,
             session_token,
             payload,
             reply,
         } => {
             let _ = reply.send(runtime.ingest_connector_webhook(
-                &intent_id,
+                &thread_id,
                 &connector_id,
                 &session_token,
                 payload,
             ));
         }
         Command::ConfigureConnectorPolicy {
-            intent_id,
+            thread_id,
             policy,
             reply,
         } => {
-            let _ = reply.send(runtime.configure_connector_policy(&intent_id, policy));
+            let _ = reply.send(runtime.configure_connector_policy(&thread_id, policy));
         }
         Command::WorldSignals {
             cursor,
@@ -1575,152 +1575,152 @@ fn handle_command(runtime: &Runtime, command: Command) {
             let _ =
                 reply.send(runtime.world_signals(cursor, provider.as_deref(), entity.as_deref()));
         }
-        Command::IntentCandidates { cursor, reply } => {
-            let _ = reply.send(runtime.intent_candidates(cursor));
+        Command::ThreadCandidates { cursor, reply } => {
+            let _ = reply.send(runtime.thread_candidates(cursor));
         }
         Command::WorldItems {
-            intent_id,
+            thread_id,
             include_resolved,
             reply,
         } => {
-            let _ = reply.send(runtime.world_items(&intent_id, include_resolved));
+            let _ = reply.send(runtime.world_items(&thread_id, include_resolved));
         }
         Command::PersonalBrief { reply } => {
             let _ = reply.send(runtime.personal_brief());
         }
         Command::ResolveWorldItem {
-            intent_id,
+            thread_id,
             item_id,
             kind,
             note,
             reply,
         } => {
-            let _ = reply.send(runtime.resolve_world_item(&intent_id, &item_id, kind, note));
+            let _ = reply.send(runtime.resolve_world_item(&thread_id, &item_id, kind, note));
         }
         Command::CorrectWorldCorrelation {
-            intent_id,
+            thread_id,
             correction,
             reply,
         } => {
-            let _ = reply.send(runtime.correct_world_correlation(&intent_id, correction));
+            let _ = reply.send(runtime.correct_world_correlation(&thread_id, correction));
         }
         Command::ProjectWorlds {
-            intent_id,
+            thread_id,
             include_resolved,
             reply,
         } => {
-            let _ = reply.send(runtime.project_worlds(intent_id.as_ref(), include_resolved));
+            let _ = reply.send(runtime.project_worlds(thread_id.as_ref(), include_resolved));
         }
         Command::IdentityWorlds {
-            intent_id,
+            thread_id,
             include_resolved,
             reply,
         } => {
-            let _ = reply.send(runtime.identity_worlds(intent_id.as_ref(), include_resolved));
+            let _ = reply.send(runtime.identity_worlds(thread_id.as_ref(), include_resolved));
         }
-        Command::ResolveSignals { intent_id, reply } => {
-            let _ = reply.send(runtime.resolve_signals(&intent_id));
+        Command::ResolveSignals { thread_id, reply } => {
+            let _ = reply.send(runtime.resolve_signals(&thread_id));
         }
         Command::ProposeCandidate {
-            intent_id,
+            thread_id,
             candidate,
             reply,
         } => {
-            let _ = reply.send(runtime.propose_intent_candidate(&intent_id, candidate));
+            let _ = reply.send(runtime.propose_thread_candidate(&thread_id, candidate));
         }
         Command::ResolveCandidate {
-            intent_id,
+            thread_id,
             candidate_id,
             accept,
             reply,
         } => {
-            let _ = reply.send(runtime.resolve_intent_candidate(&intent_id, &candidate_id, accept));
+            let _ = reply.send(runtime.resolve_thread_candidate(&thread_id, &candidate_id, accept));
         }
         Command::RecordExternalEvent {
-            intent_id,
+            thread_id,
             source,
             summary,
             reply,
         } => {
-            let _ = reply.send(runtime.record_external_event(&intent_id, &source, &summary));
+            let _ = reply.send(runtime.record_external_event(&thread_id, &source, &summary));
         }
         Command::WaitForExternal {
-            intent_id,
+            thread_id,
             reason,
             reply,
         } => {
-            let _ = reply.send(runtime.wait_for_external(&intent_id, &reason));
+            let _ = reply.send(runtime.wait_for_external(&thread_id, &reason));
         }
         Command::ScheduleTimer {
-            intent_id,
+            thread_id,
             fire_at,
             reason,
             reply,
         } => {
-            let _ = reply.send(runtime.schedule_timer(&intent_id, fire_at, &reason));
+            let _ = reply.send(runtime.schedule_timer(&thread_id, fire_at, &reason));
         }
         Command::Decide {
-            intent_id,
+            thread_id,
             request_id,
             choice,
             reply,
         } => {
-            let _ = reply.send(runtime.decide(&intent_id, &request_id, choice));
+            let _ = reply.send(runtime.decide(&thread_id, &request_id, choice));
         }
         Command::SubmitAttention {
-            intent_id,
+            thread_id,
             scope_id,
             request,
             reply,
         } => {
             let result = match scope_id {
                 Some(scope_id) => {
-                    runtime.submit_attention_request_for_scope(&intent_id, &scope_id, &request)
+                    runtime.submit_attention_request_for_scope(&thread_id, &scope_id, &request)
                 }
-                None => runtime.submit_attention_request(&intent_id, &request),
+                None => runtime.submit_attention_request(&thread_id, &request),
             };
             let _ = reply.send(result);
         }
         Command::ProposePlan {
-            intent_id,
+            thread_id,
             plan,
             reply,
         } => {
-            let _ = reply.send(runtime.propose_plan(&intent_id, plan));
+            let _ = reply.send(runtime.propose_plan(&thread_id, plan));
         }
         Command::Abort {
-            intent_id,
+            thread_id,
             reason,
             reply,
         } => {
-            let _ = reply.send(runtime.abort(&intent_id, &reason));
+            let _ = reply.send(runtime.abort(&thread_id, &reason));
         }
         Command::Drive {
-            intent_id,
+            thread_id,
             harness_hint,
             max_steps,
             reply,
         } => {
-            let _ = reply.send(runtime.drive(&intent_id, harness_hint.as_deref(), max_steps));
+            let _ = reply.send(runtime.drive(&thread_id, harness_hint.as_deref(), max_steps));
         }
         Command::Advance {
-            intent_id,
+            thread_id,
             harness_hint,
             reply,
         } => {
-            let _ = reply.send(runtime.advance(&intent_id, harness_hint.as_deref()));
+            let _ = reply.send(runtime.advance(&thread_id, harness_hint.as_deref()));
         }
         Command::DispatchScope {
-            intent_id,
+            thread_id,
             scope_id,
             harness_hint,
             reply,
         } => {
             let _ =
-                reply.send(runtime.dispatch_scope(&intent_id, &scope_id, harness_hint.as_deref()));
+                reply.send(runtime.dispatch_scope(&thread_id, &scope_id, harness_hint.as_deref()));
         }
         Command::SpawnSubagent {
-            intent_id,
+            thread_id,
             parent_scope,
             task,
             max_autonomous_effect,
@@ -1728,25 +1728,25 @@ fn handle_command(runtime: &Runtime, command: Command) {
             reply,
         } => {
             let _ = reply.send(runtime.spawn_subagent_with_dependencies(
-                &intent_id,
+                &thread_id,
                 &parent_scope,
                 &task,
                 max_autonomous_effect,
                 depends_on,
             ));
         }
-        Command::PlanHistory { intent_id, reply } => {
-            let _ = reply.send(runtime.plan_history(&intent_id));
+        Command::PlanHistory { thread_id, reply } => {
+            let _ = reply.send(runtime.plan_history(&thread_id));
         }
         Command::AnalyzePlanImpact {
-            intent_id,
+            thread_id,
             source_event_id,
             source,
             summary,
             reply,
         } => {
             let _ = reply.send(runtime.analyze_plan_impact(
-                &intent_id,
+                &thread_id,
                 &source_event_id,
                 &source,
                 &summary,
@@ -1778,37 +1778,37 @@ fn handle_command(runtime: &Runtime, command: Command) {
         } => {
             let _ = reply.send(runtime.correct_memory(scope, &subject, &predicate, &value));
         }
-        Command::Checkpoint { intent_id, reply } => {
-            let _ = reply.send(runtime.checkpoint(&intent_id));
+        Command::Checkpoint { thread_id, reply } => {
+            let _ = reply.send(runtime.checkpoint(&thread_id));
         }
         Command::Rerun {
-            intent_id,
+            thread_id,
             checkpoint_id,
             alternative,
             reply,
         } => {
-            let _ = reply.send(runtime.rerun(&intent_id, &checkpoint_id, alternative));
+            let _ = reply.send(runtime.rerun(&thread_id, &checkpoint_id, alternative));
         }
-        Command::Compare { intent_id, reply } => {
-            let _ = reply.send(runtime.compare(&intent_id));
+        Command::Compare { thread_id, reply } => {
+            let _ = reply.send(runtime.compare(&thread_id));
         }
         Command::ConfigureOpaqueHarness {
-            intent_id,
+            thread_id,
             policy,
             reply,
         } => {
-            let _ = reply.send(runtime.configure_opaque_harness(&intent_id, policy));
+            let _ = reply.send(runtime.configure_opaque_harness(&thread_id, policy));
         }
-        Command::Resources { intent_id, reply } => {
-            let _ = reply.send(runtime.resources(&intent_id));
+        Command::Resources { thread_id, reply } => {
+            let _ = reply.send(runtime.resources(&thread_id));
         }
-        Command::ReviseIntent {
-            intent_id,
+        Command::ReviseThread {
+            thread_id,
             update,
             unaffected_scopes,
             reply,
         } => {
-            let _ = reply.send(runtime.revise_intent(&intent_id, update, &unaffected_scopes));
+            let _ = reply.send(runtime.revise_thread(&thread_id, update, &unaffected_scopes));
         }
         Command::Shutdown { reply } => {
             let _ = reply.send(Ok(()));
@@ -1820,11 +1820,11 @@ fn reconcile_all(runtime: &Runtime) -> Option<DateTime<Utc>> {
     let _ = runtime.enforce_retention(Utc::now());
     let _ = runtime.refresh_dirty_mcp_servers();
     let mut next_wake = runtime.sync_due_connectors(Utc::now());
-    let Ok(intents) = runtime.list_intents() else {
+    let Ok(threads) = runtime.list_threads() else {
         return Some(Utc::now() + chrono::Duration::seconds(2));
     };
     let mut had_error = false;
-    for spec in intents {
+    for spec in threads {
         let Ok(projection) = runtime.projection(&spec.id) else {
             had_error = true;
             continue;
@@ -1832,9 +1832,9 @@ fn reconcile_all(runtime: &Runtime) -> Option<DateTime<Utc>> {
         if matches!(
             projection.state,
             Some(
-                else_protocol::intent::IntentState::Completed
-                    | else_protocol::intent::IntentState::Failed
-                    | else_protocol::intent::IntentState::Cancelled
+                else_protocol::thread::ThreadState::Completed
+                    | else_protocol::thread::ThreadState::Failed
+                    | else_protocol::thread::ThreadState::Cancelled
             )
         ) {
             continue;

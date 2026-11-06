@@ -20,7 +20,7 @@ fn cold_start_reaches_today_and_quits_cleanly() {
 
     terminal.expect("Today").expect("Today screen");
     terminal
-        .expect("No active intents")
+        .expect("No active threads")
         .expect("loaded empty state proves the embedded runtime stayed alive");
     terminal.send("q").expect("quit key");
     terminal.expect(Eof).expect("clean process exit");
@@ -30,7 +30,7 @@ fn cold_start_reaches_today_and_quits_cleanly() {
 }
 
 #[test]
-fn intent_can_be_created_through_the_real_terminal() {
+fn thread_can_be_created_through_the_real_terminal() {
     let runtime = tempfile::tempdir().expect("temporary runtime directory");
     let mut command = Command::new(env!("CARGO_BIN_EXE_else-bot"));
     command
@@ -40,7 +40,7 @@ fn intent_can_be_created_through_the_real_terminal() {
     let mut terminal = expectrl::session::OsSession::spawn(command).expect("spawn TUI in a PTY");
     terminal.set_expect_timeout(Some(Duration::from_secs(20)));
 
-    terminal.expect("No active intents").expect("Today loaded");
+    terminal.expect("No active threads").expect("Today loaded");
     terminal.send("n").expect("open composer");
     terminal
         .expect("What outcome should Else own?")
@@ -48,7 +48,7 @@ fn intent_can_be_created_through_the_real_terminal() {
     terminal
         .send("Verify the terminal product flow")
         .expect("enter outcome");
-    terminal.send("\r").expect("submit intent");
+    terminal.send("\r").expect("submit thread");
     terminal.send("q").expect("quit key");
     terminal.expect(Eof).expect("clean process exit");
 
@@ -58,7 +58,7 @@ fn intent_can_be_created_through_the_real_terminal() {
         .arg(runtime.path())
         .args(["list", "--json"])
         .output()
-        .expect("list persisted intents");
+        .expect("list persisted threads");
     assert!(list.status.success());
     assert!(String::from_utf8_lossy(&list.stdout).contains("Verify the terminal product flow"));
 }

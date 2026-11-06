@@ -1,17 +1,17 @@
-//! 只读连接器：World Signal、Resolver、Candidate 与 Intent 血缘。
+//! 只读连接器：World Signal、Resolver、Candidate 与 Thread 血缘。
 
 use chrono::{DateTime, Duration, Utc};
 use else_api::{ApiError, Runtime};
 use else_connector::{AdapterRegistry, ConnectorAdapter, InterpretationRule, SignalInterpreter};
 use else_protocol::connector::{
     ConnectorAuthMode, ConnectorHealth, ConnectorManifest, ConnectorObservation, ConnectorPolicy,
-    ConnectorPullPage, ConnectorSyncMode, IntentAcceptedBy, IntentCandidate, IntentCandidateState,
-    IntentOriginKind, ObjectKind, ObservationChange, SignalInterpretation, SignalMeaning,
-    SignalStatus, SyncCursor, WorldSignal,
+    ConnectorPullPage, ConnectorSyncMode, ObjectKind, ObservationChange, SignalInterpretation,
+    SignalMeaning, SignalStatus, SyncCursor, ThreadAcceptedBy, ThreadCandidate,
+    ThreadCandidateState, ThreadOriginKind, WorldSignal,
 };
 use else_protocol::effect::SideEffectKind;
-use else_protocol::intent::{AttentionPolicy, Authority, Criterion};
 use else_protocol::memory::SnapshotAudience;
+use else_protocol::thread::{AttentionPolicy, Authority, Criterion};
 
 fn calendar_ics(uid: &str, summary: &str, start: DateTime<Utc>) -> String {
     let end = start + Duration::hours(1);
@@ -26,10 +26,10 @@ fn manual_candidate(
     outcome: &str,
     dedupe_key: &str,
     max_effect: SideEffectKind,
-) -> IntentCandidate {
-    IntentCandidate {
-        id: else_protocol::ids::IntentCandidateId::new(),
-        origin: IntentOriginKind::AgentProposal,
+) -> ThreadCandidate {
+    ThreadCandidate {
+        id: else_protocol::ids::ThreadCandidateId::new(),
+        origin: ThreadOriginKind::AgentProposal,
         proposed_outcome: outcome.into(),
         done_when: vec![Criterion::manual("确认完成")],
         constraints: vec![],
@@ -43,11 +43,11 @@ fn manual_candidate(
         },
         deadline: None,
         related_signal_ids: vec![],
-        related_intent_id: None,
+        related_thread_id: None,
         confidence: 70,
         dedupe_key: dedupe_key.into(),
-        state: IntentCandidateState::Proposed,
-        accepted_intent_id: None,
+        state: ThreadCandidateState::Proposed,
+        accepted_thread_id: None,
         accepted_by: None,
     }
 }
@@ -186,7 +186,7 @@ fn notion_payload() -> serde_json::Value {
 fn calendar_signals_are_versioned_deduplicated_and_resolved() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("准备明天的会议", None).unwrap();
+    let spec = runtime.create_thread("准备明天的会议", None).unwrap();
     let start = Utc::now() + Duration::hours(2);
     let path = dir.path().join("calendar.ics");
     std::fs::write(&path, calendar_ics("meeting-1", "产品评审", start)).unwrap();
@@ -206,7 +206,7 @@ fn calendar_signals_are_versioned_deduplicated_and_resolved() {
     let projection = runtime.projection(&spec.id).unwrap();
     assert_eq!(projection.world_signals.len(), 1);
     assert_eq!(projection.external_events.len(), 1);
-    assert_eq!(projection.intent_candidates.len(), 1);
+    assert_eq!(projection.thread_candidates.len(), 1);
     assert_eq!(projection.connectors[&connector.id].adapter, "calendar.ics");
     let snapshot = runtime
         .compile_snapshot(&spec.id, SnapshotAudience::Planner)
@@ -232,21 +232,21 @@ fn calendar_signals_are_versioned_deduplicated_and_resolved() {
         .summary
         .contains("产品评审（改期）"));
     assert!(projection
-        .intent_candidates
+        .thread_candidates
         .values()
-        .any(|candidate| candidate.state == IntentCandidateState::Proposed));
+        .any(|candidate| candidate.state == ThreadCandidateState::Proposed));
     assert!(projection
-        .intent_candidates
+        .thread_candidates
         .values()
-        .any(|candidate| candidate.state == IntentCandidateState::Superseded));
+        .any(|candidate| candidate.state == ThreadCandidateState::Superseded));
     let proposed = projection
-        .intent_candidates
+        .thread_candidates
         .values()
-        .find(|candidate| candidate.state == IntentCandidateState::Proposed)
+        .find(|candidate| candidate.state == ThreadCandidateState::Proposed)
         .unwrap()
         .clone();
     let accepted = runtime
-        .resolve_intent_candidate(&spec.id, &proposed.id, true)
+        .resolve_thread_candidate(&spec.id, &proposed.id, true)
         .unwrap()
         .unwrap();
     let origin = accepted.origin.as_ref().unwrap();
@@ -259,8 +259,8 @@ fn calendar_signals_are_versioned_deduplicated_and_resolved() {
     let replayed = reopened.projection(&spec.id).unwrap();
     assert_eq!(replayed.world_signals, projection.world_signals);
     assert_eq!(
-        replayed.intent_candidates[&proposed.id].state,
-        IntentCandidateState::Accepted
+        replayed.thread_candidates[&proposed.id].state,
+        ThreadCandidateState::Accepted
     );
     assert_eq!(replayed.external_events, projection.external_events);
     assert_eq!(
@@ -278,7 +278,7 @@ fn calendar_signals_are_versioned_deduplicated_and_resolved() {
 fn signal_tombstone_removes_context_and_supersedes_candidate() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("跟进会议", None).unwrap();
+    let spec = runtime.create_thread("跟进会议", None).unwrap();
     let path = dir.path().join("calendar.ics");
     let start = Utc::now() + Duration::hours(3);
     std::fs::write(&path, calendar_ics("meeting-2", "客户同步", start)).unwrap();
@@ -289,7 +289,7 @@ fn signal_tombstone_removes_context_and_supersedes_candidate() {
     let projection = runtime.projection(&spec.id).unwrap();
     let (signal_id, candidate_id) = (
         projection.world_signals.keys().next().unwrap().clone(),
-        projection.intent_candidates.keys().next().unwrap().clone(),
+        projection.thread_candidates.keys().next().unwrap().clone(),
     );
     let signal_seq = projection.signal_seqs[&signal_id];
 
@@ -302,8 +302,8 @@ fn signal_tombstone_removes_context_and_supersedes_candidate() {
         SignalStatus::Deleted
     );
     assert_eq!(
-        projection.intent_candidates[&candidate_id].state,
-        IntentCandidateState::Superseded
+        projection.thread_candidates[&candidate_id].state,
+        ThreadCandidateState::Superseded
     );
     assert!(projection.external_events.is_empty());
     let updates = runtime
@@ -322,9 +322,9 @@ fn signal_tombstone_removes_context_and_supersedes_candidate() {
 fn candidate_acceptance_preserves_lineage_and_rejects_duplicate_proposals() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("准备客户评审", None).unwrap();
+    let spec = runtime.create_thread("准备客户评审", None).unwrap();
     let first = runtime
-        .propose_intent_candidate(
+        .propose_thread_candidate(
             &spec.id,
             manual_candidate(
                 "整理客户评审材料",
@@ -334,7 +334,7 @@ fn candidate_acceptance_preserves_lineage_and_rejects_duplicate_proposals() {
         )
         .unwrap();
     let duplicate = runtime
-        .propose_intent_candidate(
+        .propose_thread_candidate(
             &spec.id,
             manual_candidate(
                 "另一个描述但同一语义",
@@ -348,52 +348,52 @@ fn candidate_acceptance_preserves_lineage_and_rejects_duplicate_proposals() {
         runtime
             .projection(&spec.id)
             .unwrap()
-            .intent_candidates
+            .thread_candidates
             .len(),
         1
     );
 
     let candidate_seq = runtime
-        .intent_candidates(0)
+        .thread_candidates(0)
         .unwrap()
         .into_iter()
         .find(|record| record.candidate.id == first.id)
         .unwrap()
         .seq;
     let accepted = runtime
-        .resolve_intent_candidate(&spec.id, &first.id, true)
+        .resolve_thread_candidate(&spec.id, &first.id, true)
         .unwrap()
         .unwrap();
     let origin = accepted.origin.as_ref().unwrap();
-    assert_eq!(origin.kind, IntentOriginKind::AgentProposal);
+    assert_eq!(origin.kind, ThreadOriginKind::AgentProposal);
     assert_eq!(origin.candidate_id.as_ref(), Some(&first.id));
     assert_eq!(
         origin.accepted_by,
-        else_protocol::connector::IntentAcceptedBy::User
+        else_protocol::connector::ThreadAcceptedBy::User
     );
     let source = runtime.projection(&spec.id).unwrap();
     assert_eq!(
-        source.intent_candidates[&first.id].state,
-        IntentCandidateState::Accepted
+        source.thread_candidates[&first.id].state,
+        ThreadCandidateState::Accepted
     );
     assert_eq!(
-        source.intent_candidates[&first.id]
-            .accepted_intent_id
+        source.thread_candidates[&first.id]
+            .accepted_thread_id
             .as_ref(),
         Some(&accepted.id)
     );
-    let feed = runtime.intent_candidates(candidate_seq).unwrap();
+    let feed = runtime.thread_candidates(candidate_seq).unwrap();
     assert_eq!(feed.len(), 1);
-    assert_eq!(feed[0].candidate.state, IntentCandidateState::Accepted);
-    assert_eq!(feed[0].candidate.accepted_by, Some(IntentAcceptedBy::User));
-    assert_eq!(runtime.list_intents().unwrap().len(), 2);
+    assert_eq!(feed[0].candidate.state, ThreadCandidateState::Accepted);
+    assert_eq!(feed[0].candidate.accepted_by, Some(ThreadAcceptedBy::User));
+    assert_eq!(runtime.list_threads().unwrap().len(), 2);
     assert_eq!(accepted.project, spec.project);
 
     drop(runtime);
     let reopened = Runtime::open(dir.path()).unwrap();
     assert_eq!(
-        reopened.projection(&spec.id).unwrap().intent_candidates[&first.id].state,
-        IntentCandidateState::Accepted
+        reopened.projection(&spec.id).unwrap().thread_candidates[&first.id].state,
+        ThreadCandidateState::Accepted
     );
     assert_eq!(
         reopened
@@ -407,34 +407,34 @@ fn candidate_acceptance_preserves_lineage_and_rejects_duplicate_proposals() {
 }
 
 #[test]
-fn candidate_rejection_creates_no_intent() {
+fn candidate_rejection_creates_no_thread() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("整理材料", None).unwrap();
+    let spec = runtime.create_thread("整理材料", None).unwrap();
     let candidate = runtime
-        .propose_intent_candidate(
+        .propose_thread_candidate(
             &spec.id,
             manual_candidate("发送外部邮件", "reject-me", SideEffectKind::ReadOnly),
         )
         .unwrap();
     assert!(runtime
-        .resolve_intent_candidate(&spec.id, &candidate.id, false)
+        .resolve_thread_candidate(&spec.id, &candidate.id, false)
         .unwrap()
         .is_none());
-    assert_eq!(runtime.list_intents().unwrap().len(), 1);
+    assert_eq!(runtime.list_threads().unwrap().len(), 1);
     assert_eq!(
-        runtime.projection(&spec.id).unwrap().intent_candidates[&candidate.id].state,
-        IntentCandidateState::Rejected
+        runtime.projection(&spec.id).unwrap().thread_candidates[&candidate.id].state,
+        ThreadCandidateState::Rejected
     );
 }
 
 #[test]
-fn candidate_cannot_escalate_source_intent_authority() {
+fn candidate_cannot_escalate_source_thread_authority() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("只读分析", None).unwrap();
+    let spec = runtime.create_thread("只读分析", None).unwrap();
     let error = runtime
-        .propose_intent_candidate(
+        .propose_thread_candidate(
             &spec.id,
             manual_candidate(
                 "直接发布",
@@ -447,7 +447,7 @@ fn candidate_cannot_escalate_source_intent_authority() {
     assert!(runtime
         .projection(&spec.id)
         .unwrap()
-        .intent_candidates
+        .thread_candidates
         .is_empty());
 }
 
@@ -455,7 +455,7 @@ fn candidate_cannot_escalate_source_intent_authority() {
 fn linear_pull_classifies_work_and_persists_cursor() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("推进发布", None).unwrap();
+    let spec = runtime.create_thread("推进发布", None).unwrap();
     let path = dir.path().join("linear.json");
     std::fs::write(&path, linear_payload().to_string()).unwrap();
     let connector = runtime
@@ -487,7 +487,7 @@ fn linear_pull_classifies_work_and_persists_cursor() {
     let projection = runtime.projection(&spec.id).unwrap();
     assert_eq!(
         projection.state,
-        Some(else_protocol::intent::IntentState::Active)
+        Some(else_protocol::thread::ThreadState::Active)
     );
     assert_eq!(projection.world_signals.len(), 4);
     assert_eq!(projection.external_events.len(), 3);
@@ -537,12 +537,12 @@ fn linear_pull_classifies_work_and_persists_cursor() {
         .world_signals(0, Some("linear"), Some("issue-commit"))
         .unwrap();
     assert_eq!(global_signals.len(), 1);
-    assert_eq!(global_signals[0].intent_id, spec.id);
-    let candidates = runtime.intent_candidates(0).unwrap();
+    assert_eq!(global_signals[0].thread_id, spec.id);
+    let candidates = runtime.thread_candidates(0).unwrap();
     assert_eq!(candidates.len(), 3);
     let last_candidate_seq = candidates.last().unwrap().seq;
     assert!(runtime
-        .intent_candidates(last_candidate_seq)
+        .thread_candidates(last_candidate_seq)
         .unwrap()
         .is_empty());
     assert!(runtime
@@ -584,7 +584,7 @@ fn linear_pull_classifies_work_and_persists_cursor() {
 fn linear_webhook_is_session_scoped_deduplicated_and_handles_completion() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("跟进外部依赖", None).unwrap();
+    let spec = runtime.create_thread("跟进外部依赖", None).unwrap();
     let path = dir.path().join("linear.json");
     std::fs::write(&path, r#"{"issues":[]}"#).unwrap();
     let connector = runtime
@@ -626,9 +626,9 @@ fn linear_webhook_is_session_scoped_deduplicated_and_handles_completion() {
         0
     );
     assert!(projection
-        .intent_candidates
+        .thread_candidates
         .values()
-        .all(|candidate| candidate.state == IntentCandidateState::Superseded));
+        .all(|candidate| candidate.state == ThreadCandidateState::Superseded));
     assert!(runtime
         .compile_snapshot(&spec.id, SnapshotAudience::Planner)
         .unwrap()
@@ -640,10 +640,10 @@ fn linear_webhook_is_session_scoped_deduplicated_and_handles_completion() {
 fn connector_policy_only_auto_accepts_explicit_low_risk_origins() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("推进发布", None).unwrap();
+    let spec = runtime.create_thread("推进发布", None).unwrap();
     let policy = ConnectorPolicy {
         auto_accept_low_risk: true,
-        allowed_origins: vec![IntentOriginKind::Commitment],
+        allowed_origins: vec![ThreadOriginKind::Commitment],
         min_confidence: 80,
         max_autonomous_effect: SideEffectKind::ReadOnly,
     };
@@ -660,26 +660,26 @@ fn connector_policy_only_auto_accepts_explicit_low_risk_origins() {
         .unwrap();
     let result = runtime.sync_connector(&spec.id, &connector.id).unwrap();
     assert_eq!(result.auto_accepted, 1);
-    assert_eq!(runtime.list_intents().unwrap().len(), 2);
+    assert_eq!(runtime.list_threads().unwrap().len(), 2);
     let projection = runtime.projection(&spec.id).unwrap();
     let accepted = projection
-        .intent_candidates
+        .thread_candidates
         .values()
-        .find(|candidate| candidate.state == IntentCandidateState::Accepted)
+        .find(|candidate| candidate.state == ThreadCandidateState::Accepted)
         .unwrap();
-    assert_eq!(accepted.origin, IntentOriginKind::Commitment);
-    assert_eq!(accepted.accepted_by, Some(IntentAcceptedBy::AutonomousRule));
-    let child_id = accepted.accepted_intent_id.as_ref().unwrap();
+    assert_eq!(accepted.origin, ThreadOriginKind::Commitment);
+    assert_eq!(accepted.accepted_by, Some(ThreadAcceptedBy::AutonomousRule));
+    let child_id = accepted.accepted_thread_id.as_ref().unwrap();
     let child = runtime.projection(child_id).unwrap().spec.unwrap();
     assert_eq!(
         child.origin.unwrap().accepted_by,
-        IntentAcceptedBy::AutonomousRule
+        ThreadAcceptedBy::AutonomousRule
     );
     assert_eq!(
         projection
-            .intent_candidates
+            .thread_candidates
             .values()
-            .filter(|candidate| candidate.state == IntentCandidateState::Proposed)
+            .filter(|candidate| candidate.state == ThreadCandidateState::Proposed)
             .count(),
         2
     );
@@ -866,7 +866,7 @@ fn injected_adapter_and_interpreter_do_not_require_runtime_changes() {
         SignalInterpreter::with_rules(vec![Box::new(FixtureRule)]),
     )
     .unwrap();
-    let spec = runtime.create_intent("处理外部承诺", None).unwrap();
+    let spec = runtime.create_thread("处理外部承诺", None).unwrap();
     let connector = runtime
         .register_connector_adapter(&spec.id, "fixture", source.to_str().unwrap(), "fixture")
         .unwrap();
@@ -885,8 +885,8 @@ fn injected_adapter_and_interpreter_do_not_require_runtime_changes() {
         SignalMeaning::Commitment
     );
     assert_eq!(
-        projection.intent_candidates.values().next().unwrap().origin,
-        IntentOriginKind::Commitment
+        projection.thread_candidates.values().next().unwrap().origin,
+        ThreadOriginKind::Commitment
     );
 }
 
@@ -904,7 +904,7 @@ fn paginated_backfill_resumes_from_continuation_after_restart() {
         .unwrap()
     };
     let runtime = open_runtime();
-    let spec = runtime.create_intent("分页同步外部事项", None).unwrap();
+    let spec = runtime.create_thread("分页同步外部事项", None).unwrap();
     let connector = runtime
         .register_connector_adapter(&spec.id, "paged", source.to_str().unwrap(), "fixture.paged")
         .unwrap();
@@ -951,7 +951,7 @@ fn paginated_backfill_resumes_from_continuation_after_restart() {
 fn linear_webhook_id_only_hydrates_from_connector_source() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("处理 Linear 更新", None).unwrap();
+    let spec = runtime.create_thread("处理 Linear 更新", None).unwrap();
     let source = dir.path().join("linear.json");
     std::fs::write(&source, linear_payload().to_string()).unwrap();
     let connector = runtime
@@ -981,7 +981,7 @@ fn linear_webhook_id_only_hydrates_from_connector_source() {
 fn notion_documents_and_database_rows_flow_through_generic_pipeline() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("准备发布资料", None).unwrap();
+    let spec = runtime.create_thread("准备发布资料", None).unwrap();
     let path = dir.path().join("notion.json");
     std::fs::write(&path, notion_payload().to_string()).unwrap();
     let connector = runtime
@@ -1022,8 +1022,8 @@ fn notion_documents_and_database_rows_flow_through_generic_pipeline() {
             .count(),
         1
     );
-    let candidate = projection.intent_candidates.values().next().unwrap();
-    assert_eq!(candidate.origin, IntentOriginKind::InferredNeed);
+    let candidate = projection.thread_candidates.values().next().unwrap();
+    assert_eq!(candidate.origin, ThreadOriginKind::InferredNeed);
     assert!(candidate.proposed_outcome.contains("等待安全审批"));
     let snapshot = runtime
         .compile_snapshot(&spec.id, SnapshotAudience::Planner)

@@ -13,14 +13,14 @@ public struct RuntimeSettings: Codable, Equatable, Sendable {
 }
 
 public struct LeaseCleanupReport: Codable, Equatable, Sendable {
-    public let scannedIntents: Int
+    public let scannedThreads: Int
     public let orphanLeases: Int
     public let revokedLeases: Int
     public let sandboxFinishRecords: Int
     public let skippedActiveLeases: Int
 
     private enum CodingKeys: String, CodingKey {
-        case scannedIntents = "scanned_intents"
+        case scannedThreads = "scanned_threads"
         case orphanLeases = "orphan_leases"
         case revokedLeases = "revoked_leases"
         case sandboxFinishRecords = "sandbox_finish_records"

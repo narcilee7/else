@@ -1,59 +1,59 @@
-//! Intent 详情：默认展示目标、下一步、计划与证据；调试信息显式展开。
+//! Thread 详情：默认展示目标、下一步、计划与证据；调试信息显式展开。
 
 use else_protocol::plan::PlanStepStatus;
 
-use super::super::data::IntentDetailData;
+use super::super::data::ThreadDetailData;
 use super::super::row::{Pane, Row, RowAction};
 use super::super::theme;
-use super::{intent_state_label, intent_style, results, short_id};
+use super::{results, short_id, thread_state_label, thread_style};
 
-pub fn pane(detail: &IntentDetailData, debug: bool) -> Pane {
+pub fn pane(detail: &ThreadDetailData, debug: bool) -> Pane {
     let mut rows = Vec::new();
-    let intent = &detail.intent;
+    let thread = &detail.thread;
 
     rows.push(Row::styled(
-        format!("  {}", intent.spec.outcome),
+        format!("  {}", thread.spec.outcome),
         theme::heading(),
     ));
     rows.push(Row::styled(
-        format!("  {}", intent_state_label(intent.state)),
-        intent_style(intent.state),
+        format!("  {}", thread_state_label(thread.state)),
+        thread_style(thread.state),
     ));
-    if let Some(project) = intent.spec.project.as_deref() {
+    if let Some(project) = thread.spec.project.as_deref() {
         rows.push(Row::muted(format!("  Project · {project}")));
     }
-    if !intent.spec.constraints.is_empty() {
+    if !thread.spec.constraints.is_empty() {
         rows.push(Row::heading("Boundaries"));
-        for constraint in &intent.spec.constraints {
+        for constraint in &thread.spec.constraints {
             rows.push(Row::muted(format!("  • {constraint}")));
         }
     }
 
-    if let Some(request) = intent.decisions.first() {
+    if let Some(request) = thread.decisions.first() {
         rows.push(Row::heading("Next step"));
         rows.push(Row::action(
             format!("  Review · {}", request.summary),
             theme::critical(),
             RowAction::OpenDecision {
-                intent_id: intent.spec.id.clone(),
+                thread_id: thread.spec.id.clone(),
                 request_id: request.id.clone(),
             },
         ));
     } else if !matches!(
-        intent.state,
-        else_protocol::intent::IntentState::Completed
-            | else_protocol::intent::IntentState::Cancelled
-            | else_protocol::intent::IntentState::Failed
+        thread.state,
+        else_protocol::thread::ThreadState::Completed
+            | else_protocol::thread::ThreadState::Cancelled
+            | else_protocol::thread::ThreadState::Failed
     ) {
         rows.push(Row::heading("Next step"));
         rows.push(Row::action(
-            "  Advance this intent",
+            "  Advance this thread",
             theme::focused(),
-            RowAction::AdvanceIntent(intent.spec.id.clone()),
+            RowAction::AdvanceThread(thread.spec.id.clone()),
         ));
     }
 
-    rows.extend(results::acceptance_rows(intent));
+    rows.extend(results::acceptance_rows(thread));
 
     rows.push(Row::heading("Plan"));
     match detail.plan.current.as_ref() {
@@ -104,10 +104,10 @@ pub fn pane(detail: &IntentDetailData, debug: bool) -> Pane {
             )));
         }
         rows.push(Row::muted(format!(
-            "  intent={} revision={} cursor={}",
-            short_id(&intent.spec.id),
-            intent.spec.revision,
-            intent.cursor
+            "  thread={} revision={} cursor={}",
+            short_id(&thread.spec.id),
+            thread.spec.revision,
+            thread.cursor
         )));
     } else {
         rows.push(Row::muted(
@@ -116,7 +116,7 @@ pub fn pane(detail: &IntentDetailData, debug: bool) -> Pane {
     }
 
     Pane {
-        title: format!("Intent · {}", short_id(&intent.spec.id)),
+        title: format!("Thread · {}", short_id(&thread.spec.id)),
         rows,
     }
 }

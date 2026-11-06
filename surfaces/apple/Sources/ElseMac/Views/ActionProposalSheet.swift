@@ -4,7 +4,7 @@ import SwiftUI
 struct ActionProposalSheet: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    let intentID: IntentID
+    let threadID: ThreadID
 
     @State private var connectorID: ConnectorID?
     @State private var capability = ""
@@ -20,7 +20,7 @@ struct ActionProposalSheet: View {
     @State private var previewError: String?
 
     private var connectors: [ConnectorRegistration] {
-        store.connectorsByIntent[intentID, default: []]
+        store.connectorsByThread[threadID, default: []]
             .filter { !$0.manifest.writeCapabilities.isEmpty }
     }
 
@@ -47,7 +47,7 @@ struct ActionProposalSheet: View {
         guard let connectorID else {
             return nil
         }
-        return store.capabilitiesByIntent[intentID]?
+        return store.capabilitiesByThread[threadID]?
             .first(where: { registration in
                 registration.externalAction?.connectorID == connectorID
                     && registration.externalAction?.operation == capability
@@ -322,7 +322,7 @@ struct ActionProposalSheet: View {
             isSaving = true
             defer { isSaving = false }
             let action = await store.proposeConnectorAction(
-                intentID: intentID,
+                threadID: threadID,
                 request: ProposeConnectorActionRequest(
                     connectorID: connectorID,
                     capability: capability,
@@ -356,7 +356,7 @@ struct ActionProposalSheet: View {
         previewError = nil
         defer { isPreviewing = false }
         preview = await store.previewConnectorAction(
-            intentID: intentID,
+            threadID: threadID,
             connectorID: connectorID,
             request: PreviewConnectorActionRequest(
                 capability: capability,

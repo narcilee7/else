@@ -5,9 +5,9 @@ use std::path::Path;
 
 use chrono::{DateTime, Duration, Utc};
 use else_protocol::event::EventPayload;
-use else_protocol::intent::IntentState;
+use else_protocol::thread::ThreadState;
 
-use crate::{ApiError, IntentDeletionReport, Result, Runtime};
+use crate::{ApiError, Result, Runtime, ThreadDeletionReport};
 
 pub use else_protocol::runtime::RuntimeSettings;
 
@@ -37,26 +37,26 @@ impl Runtime {
         Ok(settings)
     }
 
-    pub fn enforce_retention(&self, now: DateTime<Utc>) -> Result<Vec<IntentDeletionReport>> {
+    pub fn enforce_retention(&self, now: DateTime<Utc>) -> Result<Vec<ThreadDeletionReport>> {
         let Some(days) = self.runtime_settings()?.retention_days else {
             return Ok(vec![]);
         };
         let cutoff = now - Duration::days(days as i64);
         let mut deleted = Vec::new();
-        for spec in self.list_intents()? {
+        for spec in self.list_threads()? {
             let projection = self.projection(&spec.id)?;
             if !matches!(
                 projection.state,
-                Some(IntentState::Completed | IntentState::Failed | IntentState::Cancelled)
+                Some(ThreadState::Completed | ThreadState::Failed | ThreadState::Cancelled)
             ) {
                 continue;
             }
             let terminal_at = self.events(&spec.id)?.iter().rev().find_map(|event| {
                 match &event.envelope.payload {
-                    EventPayload::IntentStateChanged { state }
+                    EventPayload::ThreadStateChanged { state }
                         if matches!(
                             *state,
-                            IntentState::Completed | IntentState::Failed | IntentState::Cancelled
+                            ThreadState::Completed | ThreadState::Failed | ThreadState::Cancelled
                         ) =>
                     {
                         Some(event.envelope.occurred_at)
@@ -65,7 +65,7 @@ impl Runtime {
                 }
             });
             if terminal_at.is_some_and(|terminal_at| terminal_at <= cutoff) {
-                deleted.push(self.delete_intent(&spec.id)?);
+                deleted.push(self.delete_thread(&spec.id)?);
             }
         }
         Ok(deleted)

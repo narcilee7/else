@@ -7,14 +7,14 @@ struct DemoRuntimeClientTests {
     @Test
     func supportsThePrimaryDecisionLoop() async throws {
         let client = DemoRuntimeClient()
-        let initial = try await client.listIntents()
+        let initial = try await client.listThreads()
         let waiting = try #require(
             initial.first { $0.state == .needsDecision }
         )
         let decision = try #require(waiting.decisions.first)
 
         let updated = try await client.resolveDecision(
-            intentID: waiting.id,
+            threadID: waiting.id,
             decisionID: decision.id,
             choice: .option("approve")
         )
@@ -32,7 +32,7 @@ struct DemoRuntimeClientTests {
 
         #expect(brief.outstandingCount == 2)
         let resolved = try await client.resolveWorldItem(
-            intentID: record.intentID,
+            threadID: record.threadID,
             itemID: record.item.id,
             kind: .completed
         )
@@ -46,17 +46,17 @@ struct DemoRuntimeClientTests {
     @Test
     func exposesAndCompensatesCalendarAction() async throws {
         let client = DemoRuntimeClient()
-        let intent = try #require(
-            try await client.listIntents().first { $0.state == .active }
+        let thread = try #require(
+            try await client.listThreads().first { $0.state == .active }
         )
         let action = try #require(
-            try await client.connectorActions(intentID: intent.id).first
+            try await client.connectorActions(threadID: thread.id).first
         )
         #expect(action.status == .applied)
         #expect(action.capability == "calendar.event.update")
 
         let compensated = try await client.compensateConnectorAction(
-            intentID: intent.id,
+            threadID: thread.id,
             actionID: action.id
         )
         #expect(compensated.status == .compensated)
@@ -79,10 +79,10 @@ struct DemoRuntimeClientTests {
         let client = DemoRuntimeClient()
         let projects = try await client.projectWorlds(includeResolved: false)
         let project = try #require(projects.first)
-        let intentID = try #require(project.items.first?.intentID)
+        let threadID = try #require(project.items.first?.threadID)
 
         _ = try await client.correctWorldCorrelation(
-            intentID: intentID,
+            threadID: threadID,
             correction: WorldCorrelationCorrection(
                 kind: .rename,
                 correlationKind: .project,
@@ -102,14 +102,14 @@ struct DemoRuntimeClientTests {
     @Test
     func exposesConnectorAdaptersAndHealth() async throws {
         let client = DemoRuntimeClient()
-        let intent = try #require(
-            try await client.listIntents().first { $0.state == .active }
+        let thread = try #require(
+            try await client.listThreads().first { $0.state == .active }
         )
         let adapters = try await client.connectorAdapters()
-        let connectors = try await client.connectors(intentID: intent.id)
+        let connectors = try await client.connectors(threadID: thread.id)
         let connector = try #require(connectors.first)
         let health = try await client.connectorHealth(
-            intentID: intent.id,
+            threadID: thread.id,
             connectorID: connector.id
         )
 
@@ -122,14 +122,14 @@ struct DemoRuntimeClientTests {
     @Test
     func proposesTypedConnectorAction() async throws {
         let client = DemoRuntimeClient()
-        let intent = try #require(
-            try await client.listIntents().first { $0.state == .active }
+        let thread = try #require(
+            try await client.listThreads().first { $0.state == .active }
         )
         let connector = try #require(
-            try await client.connectors(intentID: intent.id).first
+            try await client.connectors(threadID: thread.id).first
         )
         let action = try await client.proposeConnectorAction(
-            intentID: intent.id,
+            threadID: thread.id,
             request: ProposeConnectorActionRequest(
                 connectorID: connector.id,
                 capability: "calendar.event.update",

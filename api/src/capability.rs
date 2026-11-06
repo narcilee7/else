@@ -11,7 +11,7 @@ use else_protocol::capability::{
 use else_protocol::effect::SideEffectKind;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::ids::{
-    AgentBindingId, AgentId, CapabilityId, IntentId, McpServerId, RunId, ScopeId,
+    AgentBindingId, AgentId, CapabilityId, McpServerId, RunId, ScopeId, ThreadId,
 };
 
 use crate::{ApiError, Result, Runtime};
@@ -19,7 +19,7 @@ use crate::{ApiError, Result, Runtime};
 impl Runtime {
     pub fn discover_mcp_tools(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         server_name: &str,
         command: &str,
     ) -> Result<Vec<CapabilityRegistration>> {
@@ -27,7 +27,7 @@ impl Runtime {
             "mcp/{server_name}/{:016x}",
             stable_hash(server_name, command)
         ));
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let server = McpServerRegistration {
             id: server_id.clone(),
             name: server_name.into(),
@@ -36,9 +36,9 @@ impl Runtime {
             enabled: true,
         };
         if projection.mcp_servers.get(&server_id) != Some(&server) {
-            let (root, generation, revision) = self.kernel_context(intent_id)?;
+            let (root, generation, revision) = self.kernel_context(thread_id)?;
             self.ledger.append(&EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 root,
                 generation,
                 revision,
@@ -79,16 +79,16 @@ impl Runtime {
                     tool_name: tool_name.into(),
                 }),
             };
-            self.register_capability(intent_id, registration.clone())?;
+            self.register_capability(thread_id, registration.clone())?;
             registrations.push(registration);
         }
         let capability_ids = registrations
             .iter()
             .map(|registration| registration.manifest.id.clone())
             .collect();
-        let (root, generation, revision) = self.kernel_context(intent_id)?;
+        let (root, generation, revision) = self.kernel_context(thread_id)?;
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             root,
             generation,
             revision,
@@ -101,16 +101,16 @@ impl Runtime {
         Ok(registrations)
     }
 
-    pub fn capabilities(&self, intent_id: &IntentId) -> Result<Vec<CapabilityRegistration>> {
-        let projection = self.projection(intent_id)?;
+    pub fn capabilities(&self, thread_id: &ThreadId) -> Result<Vec<CapabilityRegistration>> {
+        let projection = self.projection(thread_id)?;
         let mut capabilities = else_gateway::tool::builtin_capabilities();
         capabilities.extend(projection.capabilities.into_values());
         Ok(capabilities)
     }
 
-    pub fn agent_bindings(&self, intent_id: &IntentId) -> Result<Vec<AgentBinding>> {
+    pub fn agent_bindings(&self, thread_id: &ThreadId) -> Result<Vec<AgentBinding>> {
         Ok(self
-            .projection(intent_id)?
+            .projection(thread_id)?
             .agent_bindings
             .into_values()
             .filter(|binding| binding.active && binding.expires_at > Utc::now())
@@ -119,7 +119,7 @@ impl Runtime {
 
     pub fn register_skill(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         name: &str,
         description: &str,
         instructions: &str,
@@ -142,14 +142,14 @@ impl Runtime {
                 capability_ids,
             }),
         };
-        self.register_capability(intent_id, registration.clone())?;
+        self.register_capability(thread_id, registration.clone())?;
         Ok(registration)
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn register_mcp_tool(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         name: &str,
         description: &str,
         command: &str,
@@ -173,18 +173,18 @@ impl Runtime {
                 tool_name: tool_name.into(),
             }),
         };
-        self.register_capability(intent_id, registration.clone())?;
+        self.register_capability(thread_id, registration.clone())?;
         Ok(registration)
     }
 
     pub fn register_capability(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         capability: CapabilityRegistration,
     ) -> Result<()> {
-        let (root, generation, revision) = self.kernel_context(intent_id)?;
+        let (root, generation, revision) = self.kernel_context(thread_id)?;
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             root,
             generation,
             revision,
@@ -197,7 +197,7 @@ impl Runtime {
     #[allow(clippy::too_many_arguments)]
     pub fn bind_agent(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         agent_id: AgentId,
         name: &str,
         scope_id: ScopeId,
@@ -206,7 +206,7 @@ impl Runtime {
         capability_ids: Vec<CapabilityId>,
         ttl_seconds: i64,
     ) -> Result<AgentBinding> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let scope = projection
             .scopes
             .get(&scope_id)
@@ -235,7 +235,7 @@ impl Runtime {
         };
         let revision = projection.spec.as_ref().map_or(1, |spec| spec.revision);
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id,
             scope.generation,
             revision,
@@ -249,18 +249,18 @@ impl Runtime {
 
     pub fn revoke_agent_binding(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         binding_id: &AgentBindingId,
         reason: &str,
     ) -> Result<()> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let binding = projection
             .agent_bindings
             .get(binding_id)
             .ok_or_else(|| ApiError::NotFound(format!("binding {binding_id}")))?;
         let revision = projection.spec.as_ref().map_or(1, |spec| spec.revision);
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             binding.scope_id.clone(),
             binding.generation,
             revision,
@@ -275,7 +275,7 @@ impl Runtime {
 
     /// Runtime 启动时重建所有持久 MCP Server 的 stdio session。
     pub fn restore_mcp_sessions(&self) -> Result<()> {
-        for spec in self.list_intents()? {
+        for spec in self.list_threads()? {
             let projection = self.projection(&spec.id)?;
             for server in projection
                 .mcp_servers
@@ -291,7 +291,7 @@ impl Runtime {
 
     /// 处理 MCP list_changed：刷新 dirty server，新增/移除 Capability。
     pub fn refresh_dirty_mcp_servers(&self) -> Result<()> {
-        for spec in self.list_intents()? {
+        for spec in self.list_threads()? {
             let projection = self.projection(&spec.id)?;
             for server_id in projection.dirty_mcp_servers {
                 let Some(server) = projection.mcp_servers.get(&server_id) else {

@@ -6,7 +6,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use else_protocol::artifact::Artifact;
 use else_protocol::event::EventEnvelope;
-use else_protocol::intent::{IntentSpec, IntentState};
+use else_protocol::thread::{ThreadSpec, ThreadState};
 use else_protocol::PROTOCOL_VERSION;
 use serde::Serialize;
 
@@ -17,13 +17,13 @@ pub struct RuntimeDataExport {
     pub export_version: u32,
     pub protocol_version: String,
     pub exported_at: DateTime<Utc>,
-    pub intents: Vec<IntentDataExport>,
+    pub threads: Vec<ThreadDataExport>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct IntentDataExport {
-    pub spec: IntentSpec,
-    pub state: IntentState,
+pub struct ThreadDataExport {
+    pub spec: ThreadSpec,
+    pub state: ThreadState,
     pub cursor: u64,
     pub events: Vec<EventDataExport>,
     pub artifacts: Vec<ArtifactDataExport>,
@@ -53,8 +53,8 @@ pub struct ExportFile {
 impl Runtime {
     pub fn export_data(&self) -> Result<RuntimeDataExport> {
         let workspace_root = self.workspace.canonicalize()?;
-        let mut intents = Vec::new();
-        for spec in self.list_intents()? {
+        let mut threads = Vec::new();
+        for spec in self.list_threads()? {
             let projection = self.projection(&spec.id)?;
             let events = self
                 .events(&spec.id)?
@@ -69,9 +69,9 @@ impl Runtime {
                 .iter()
                 .map(|artifact| self.export_artifact(artifact, &workspace_root))
                 .collect();
-            intents.push(IntentDataExport {
+            threads.push(ThreadDataExport {
                 spec,
-                state: projection.state.unwrap_or(IntentState::Active),
+                state: projection.state.unwrap_or(ThreadState::Active),
                 cursor: projection.cursor,
                 events,
                 artifacts,
@@ -81,7 +81,7 @@ impl Runtime {
             export_version: 1,
             protocol_version: PROTOCOL_VERSION.into(),
             exported_at: Utc::now(),
-            intents,
+            threads,
         })
     }
 

@@ -1,6 +1,6 @@
 //! else Runtime API：所有表面（CLI/Web/桌面/App/IM）共用的薄接口。
 //!
-//! 表面只能读投影、提交 Intent 与 Decision，不能绕过 Gateway 触碰执行层。
+//! 表面只能读投影、提交 Thread 与 Decision，不能绕过 Gateway 触碰执行层。
 //! W2 以库接口形式提供（进程内调用）；daemon 与远程 IPC 复用同一接口。
 
 mod abort;
@@ -29,9 +29,9 @@ mod wake;
 mod world;
 
 pub use connector::ConnectorRepairReport;
-pub use context::IntentRevision;
+pub use context::ThreadRevision;
 pub use data_export::RuntimeDataExport;
-pub use data_lifecycle::IntentDeletionReport;
+pub use data_lifecycle::ThreadDeletionReport;
 pub use diagnostics::RuntimeDiagnosticReport;
 pub use kernel::{KernelAction, KernelDrive, KernelDriveStop};
 pub use resources::LeaseCleanupReport;
@@ -43,13 +43,13 @@ use std::path::{Path, PathBuf};
 use else_gateway::{
     ExecContext, GatewayError, GenAiProvider, MockProvider, ModelGateway, ToolGateway,
 };
-use else_ledger::{IntentProjection, Ledger, Projection, StoredEvent};
+use else_ledger::{Ledger, Projection, StoredEvent, ThreadProjection};
 use else_protocol::attention::{AttentionKind, Decision, DecisionChoice};
-use else_protocol::connector::{IntentAcceptedBy, IntentOrigin, IntentOriginKind};
+use else_protocol::connector::{ThreadAcceptedBy, ThreadOrigin, ThreadOriginKind};
 use else_protocol::effect::SideEffectKind;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
-use else_protocol::ids::{AttentionId, IntentId, RunId, ScopeId};
-use else_protocol::intent::{AttentionPolicy, Authority, IntentSpec, IntentState};
+use else_protocol::ids::{AttentionId, RunId, ScopeId, ThreadId};
+use else_protocol::thread::{AttentionPolicy, Authority, ThreadSpec, ThreadState};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -57,8 +57,8 @@ pub enum ApiError {
     Ledger(#[from] else_ledger::LedgerError),
     #[error("gateway: {0}")]
     Gateway(#[from] GatewayError),
-    #[error("intent not found: {0}")]
-    IntentNotFound(IntentId),
+    #[error("thread not found: {0}")]
+    ThreadNotFound(ThreadId),
     #[error("workspace: {0}")]
     Workspace(#[from] else_workspace::WorkspaceError),
     #[error("credential: {0}")]
@@ -94,15 +94,15 @@ pub struct Runtime {
     credential_store: else_secrets::CredentialStore,
 }
 
-pub(crate) struct IntentDraft {
+pub(crate) struct ThreadDraft {
     pub outcome: String,
     pub project: Option<String>,
-    pub done_when: Vec<else_protocol::intent::Criterion>,
+    pub done_when: Vec<else_protocol::thread::Criterion>,
     pub constraints: Vec<String>,
     pub authority: Authority,
     pub attention_policy: AttentionPolicy,
     pub deadline: Option<chrono::DateTime<chrono::Utc>>,
-    pub origin: Option<IntentOrigin>,
+    pub origin: Option<ThreadOrigin>,
 }
 
 impl Runtime {
@@ -117,7 +117,7 @@ impl Runtime {
     }
 
     /// 使用外部注入的 Adapter Registry / Interpreter 打开 Runtime。
-    /// 新 Provider 可通过组合根注入，无需修改 Intent Kernel。
+    /// 新 Provider 可通过组合根注入，无需修改 Thread Kernel。
     pub fn open_with_connector_runtime(
         dir: &Path,
         connector_adapters: else_connector::AdapterRegistry,
@@ -160,28 +160,28 @@ impl Runtime {
         Ok(runtime)
     }
 
-    /// 提交一个抽象 Intent（Intent Resolution 最小实现）：
+    /// 提交一个抽象 Thread（Thread Resolution 最小实现）：
     /// 系统补全默认验收标准与显式假设，补全内容可修正，不是隐蔽事实。
     /// `project` 决定 Episodic/Semantic 记忆的项目召回作用域。
-    pub fn create_intent(&self, outcome: &str, project: Option<String>) -> Result<IntentSpec> {
-        self.create_intent_with_done_when(
+    pub fn create_thread(&self, outcome: &str, project: Option<String>) -> Result<ThreadSpec> {
+        self.create_thread_with_done_when(
             outcome,
             project,
-            vec![else_protocol::intent::Criterion::file_exists(
+            vec![else_protocol::thread::Criterion::file_exists(
                 "计划产物写入工作区且校验通过",
                 "plan.md",
             )],
         )
     }
 
-    /// 使用显式 DoneWhen 创建 Intent。机器检查与人工确认标准可混合。
-    pub fn create_intent_with_done_when(
+    /// 使用显式 DoneWhen 创建 Thread。机器检查与人工确认标准可混合。
+    pub fn create_thread_with_done_when(
         &self,
         outcome: &str,
         project: Option<String>,
-        done_when: Vec<else_protocol::intent::Criterion>,
-    ) -> Result<IntentSpec> {
-        self.create_intent_from_parts(IntentDraft {
+        done_when: Vec<else_protocol::thread::Criterion>,
+    ) -> Result<ThreadSpec> {
+        self.create_thread_from_parts(ThreadDraft {
             outcome: outcome.into(),
             project,
             done_when,
@@ -195,30 +195,30 @@ impl Runtime {
                 batch_interval_minutes: 30,
             },
             deadline: None,
-            origin: Some(IntentOrigin {
-                kind: IntentOriginKind::UserDirect,
+            origin: Some(ThreadOrigin {
+                kind: ThreadOriginKind::UserDirect,
                 connector_ids: vec![],
                 signal_ids: vec![],
                 candidate_id: None,
-                accepted_by: IntentAcceptedBy::User,
+                accepted_by: ThreadAcceptedBy::User,
                 accepted_at: chrono::Utc::now(),
             }),
         })
     }
 
-    pub(crate) fn create_intent_from_parts(&self, draft: IntentDraft) -> Result<IntentSpec> {
+    pub(crate) fn create_thread_from_parts(&self, draft: ThreadDraft) -> Result<ThreadSpec> {
         let root_scope_id = ScopeId::new();
-        let spec = IntentSpec {
-            id: IntentId::new(),
+        let spec = ThreadSpec {
+            id: ThreadId::new(),
             revision: 1,
             outcome: draft.outcome,
             done_when: draft.done_when,
             constraints: draft.constraints,
             authority: draft.authority,
             attention_policy: draft.attention_policy,
-            opaque_harness_policy: else_protocol::intent::OpaqueHarnessPolicy::default(),
+            opaque_harness_policy: else_protocol::thread::OpaqueHarnessPolicy::default(),
             deadline: draft.deadline,
-            assumptions: vec![else_protocol::intent::Assumption {
+            assumptions: vec![else_protocol::thread::Assumption {
                 text: "假设：在当前工作区推进该目标（系统补全，可修正）".into(),
                 confirmed: false,
             }],
@@ -232,7 +232,7 @@ impl Runtime {
             1,
             1,
             Actor::User,
-            EventPayload::IntentCreated { spec: spec.clone() },
+            EventPayload::ThreadCreated { spec: spec.clone() },
         ))?;
         self.ledger.append(&EventEnvelope::new(
             spec.id.clone(),
@@ -249,9 +249,9 @@ impl Runtime {
 
     /// 启动一次执行（一个 Harness、一次 Run）。返回最新投影。
     /// 终态幂等：Completed/Failed/Cancelled 不重复执行。
-    pub fn run(&self, intent_id: &IntentId) -> Result<IntentProjection> {
-        let Some((ctx, _snapshot)) = self.prepare_root_run(intent_id, false)? else {
-            return self.projection(intent_id);
+    pub fn run(&self, thread_id: &ThreadId) -> Result<ThreadProjection> {
+        let Some((ctx, _snapshot)) = self.prepare_root_run(thread_id, false)? else {
+            return self.projection(thread_id);
         };
         let lease = self.admit_run_with_failure(&ctx)?;
         ctx.record(
@@ -275,25 +275,25 @@ impl Runtime {
             &self.model_name(),
             else_harness::RunOptions::default(),
         );
-        self.finish_run(intent_id, &ctx, &lease, sandbox_started, result)
+        self.finish_run(thread_id, &ctx, &lease, sandbox_started, result)
     }
 
     /// 用真实 Harness 适配器执行（MVP-2）：能力随 RunStarted 落账，
     /// Harness 输出桥接为 else 事件；Harness 会话不是权威状态。
     pub fn run_adapter(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         adapter: &dyn else_harness::adapter::HarnessAdapter,
-    ) -> Result<IntentProjection> {
-        let projection = self.projection(intent_id)?;
+    ) -> Result<ThreadProjection> {
+        let projection = self.projection(thread_id)?;
         let spec = projection
             .spec
             .as_ref()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         self.ensure_harness_allowed(spec, adapter)?;
         let egress_proxy = self.start_egress_proxy(adapter)?;
-        let Some((ctx, snapshot)) = self.prepare_root_run(intent_id, true)? else {
-            return self.projection(intent_id);
+        let Some((ctx, snapshot)) = self.prepare_root_run(thread_id, true)? else {
+            return self.projection(thread_id);
         };
         let tool_gateway = self.start_tool_gateway(&ctx.spec, &ctx, &self.workspace, None)?;
         let tool_gateway_endpoint = tool_gateway.as_ref().map(|gateway| {
@@ -327,40 +327,40 @@ impl Runtime {
         };
         let result = adapter.execute(&request);
         self.record_egress_decisions(&ctx, egress_proxy.as_ref())?;
-        self.finish_run(intent_id, &ctx, &lease, sandbox_started, result)
+        self.finish_run(thread_id, &ctx, &lease, sandbox_started, result)
     }
 
     /// Run 前奏：终态幂等检查、编译 Planner 快照、构造执行上下文。
-    /// 返回 None 表示 Intent 已在终态，本次 Run 不产生任何事件。
+    /// 返回 None 表示 Thread 已在终态，本次 Run 不产生任何事件。
     fn prepare_root_run(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         ensure_plan: bool,
     ) -> Result<Option<(ExecContext, else_protocol::memory::ContextSnapshot)>> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         if matches!(
             projection.state,
-            Some(IntentState::Completed | IntentState::Failed | IntentState::Cancelled)
+            Some(ThreadState::Completed | ThreadState::Failed | ThreadState::Cancelled)
         ) {
             return Ok(None);
         }
         let spec = projection
             .spec
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let scope_id = projection
             .root_scope_id
             .clone()
             .or_else(|| projection.scopes.keys().next().cloned())
             .unwrap_or_else(ScopeId::new);
         self.ensure_slot_available()?;
-        self.ensure_scope_not_active(intent_id, &scope_id)?;
-        let generation = self.next_scope_generation(intent_id, &scope_id)?;
+        self.ensure_scope_not_active(thread_id, &scope_id)?;
+        let generation = self.next_scope_generation(thread_id, &scope_id)?;
         if ensure_plan {
-            self.ensure_plan_for_scope(intent_id, &spec, &scope_id)?;
+            self.ensure_plan_for_scope(thread_id, &spec, &scope_id)?;
         }
         // 执行前编译 Planner 快照；本 Run 后续事件都标记该上下文版本。
         let snapshot =
-            self.compile_snapshot(intent_id, else_protocol::memory::SnapshotAudience::Planner)?;
+            self.compile_snapshot(thread_id, else_protocol::memory::SnapshotAudience::Planner)?;
         Ok(Some((
             ExecContext {
                 spec,
@@ -376,12 +376,12 @@ impl Runtime {
     /// Run 收尾：RunFinished、回收 Lease、终态写 Episodic 记忆。
     fn finish_run(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         ctx: &ExecContext,
         lease: &else_protocol::resource::ResourceLease,
         sandbox_started: chrono::DateTime<chrono::Utc>,
         result: else_gateway::Result<()>,
-    ) -> Result<IntentProjection> {
+    ) -> Result<ThreadProjection> {
         let (success, error, termination, basis) = match result {
             Ok(()) => (
                 true,
@@ -429,25 +429,25 @@ impl Runtime {
         if let Some(e) = error {
             return Err(e.into());
         }
-        self.record_episode_if_terminal(intent_id)?;
-        self.projection(intent_id)
+        self.record_episode_if_terminal(thread_id)?;
+        self.projection(thread_id)
     }
 
     /// 读投影（局部重放）。
-    pub fn projection(&self, intent_id: &IntentId) -> Result<IntentProjection> {
-        let mut projection = IntentProjection::default();
-        for event in self.ledger.read_intent(intent_id)? {
+    pub fn projection(&self, thread_id: &ThreadId) -> Result<ThreadProjection> {
+        let mut projection = ThreadProjection::default();
+        for event in self.ledger.read_thread(thread_id)? {
             projection.apply(&event);
         }
         Ok(projection)
     }
 
-    /// 列出全部 Intent（以最新 revision 为准）。
-    pub fn list_intents(&self) -> Result<Vec<IntentSpec>> {
+    /// 列出全部 Thread（以最新 revision 为准）。
+    pub fn list_threads(&self) -> Result<Vec<ThreadSpec>> {
         let mut specs = std::collections::BTreeMap::new();
         for event in self.ledger.read_all()? {
             match event.envelope.payload {
-                EventPayload::IntentCreated { spec } | EventPayload::IntentRevised { spec, .. } => {
+                EventPayload::ThreadCreated { spec } | EventPayload::ThreadRevised { spec, .. } => {
                     specs.insert(spec.id.clone(), spec);
                 }
                 _ => {}
@@ -456,22 +456,22 @@ impl Runtime {
         Ok(specs.into_values().collect())
     }
 
-    /// 本人决策：落 DecisionResolved 事件，Intent 回到 Active，
+    /// 本人决策：落 DecisionResolved 事件，Thread 回到 Active，
     /// 随后自动续跑——批准则原路径继续，否决则自动重规划。
     /// 返回续跑后的最新投影。
     pub fn decide(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         request_id: &AttentionId,
         choice: DecisionChoice,
-    ) -> Result<IntentProjection> {
-        let projection = self.projection(intent_id)?;
+    ) -> Result<ThreadProjection> {
+        let projection = self.projection(thread_id)?;
         if !projection.open_requests.contains_key(request_id) {
-            return Err(ApiError::IntentNotFound(intent_id.clone()));
+            return Err(ApiError::ThreadNotFound(thread_id.clone()));
         }
         let request_event = self
             .ledger
-            .read_intent(intent_id)?
+            .read_thread(thread_id)?
             .into_iter()
             .rev()
             .find(|event| {
@@ -494,7 +494,7 @@ impl Runtime {
         );
         let revision = projection.spec.map(|s| s.revision).unwrap_or(1);
         let envelope = EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             generation,
             revision,
@@ -510,33 +510,33 @@ impl Runtime {
         );
         self.ledger.append(&envelope)?;
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             scope_id.clone(),
             generation,
             revision,
             Actor::System,
-            EventPayload::IntentStateChanged {
-                state: IntentState::Active,
+            EventPayload::ThreadStateChanged {
+                state: ThreadState::Active,
             },
         ))?;
-        self.close_empty_attention_windows(intent_id)?;
+        self.close_empty_attention_windows(thread_id)?;
         if request_kind == AttentionKind::Verification {
             return if approved {
-                self.confirm_manual_verification(intent_id, &scope_id, generation, run_id)
+                self.confirm_manual_verification(thread_id, &scope_id, generation, run_id)
             } else {
-                self.projection(intent_id)
+                self.projection(thread_id)
             };
         }
         // 在发起请求的同一 Scope 续跑：一次性授权不会跨委托泄漏。
-        self.run_scope(intent_id, &scope_id)
+        self.run_scope(thread_id, &scope_id)
     }
 
     /// 创建检查点：事件水位 + 工作区快照 + 在途副作用结论，三者缺一不可。
-    pub fn checkpoint(&self, intent_id: &IntentId) -> Result<else_protocol::artifact::Checkpoint> {
-        let projection = self.projection(intent_id)?;
+    pub fn checkpoint(&self, thread_id: &ThreadId) -> Result<else_protocol::artifact::Checkpoint> {
+        let projection = self.projection(thread_id)?;
         let spec = projection
             .spec
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let artifact = self.store.snapshot(&self.workspace, &RunId::new())?;
         let cursor = self.ledger.cursor()?;
         let ctx = ExecContext {
@@ -557,10 +557,10 @@ impl Runtime {
             id: else_protocol::ids::CheckpointId::new(),
             scope_id: ctx.scope_id.clone(),
             generation: 1,
-            intent_revision: spec.revision,
+            thread_revision: spec.revision,
             event_cursor: cursor,
             artifact_root: Some(artifact.id.clone()),
-            inflight: self.inflight(intent_id)?,
+            inflight: self.inflight(thread_id)?,
             created_at: chrono::Utc::now(),
         };
         ctx.record(
@@ -576,9 +576,9 @@ impl Runtime {
     /// 在途副作用：已调用但尚未完成的工具调用。
     fn inflight(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
     ) -> Result<Vec<else_protocol::artifact::InFlightEffect>> {
-        let events = self.ledger.read_intent(intent_id)?;
+        let events = self.ledger.read_thread(thread_id)?;
         let mut called = std::collections::BTreeMap::new();
         let mut done = std::collections::BTreeSet::new();
         for event in events {
@@ -608,11 +608,11 @@ impl Runtime {
     /// `alternative` 强制走不依赖 shell 的替代路径。返回 (分支 Scope, Generation)。
     pub fn rerun(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         checkpoint_id: &else_protocol::ids::CheckpointId,
         alternative: bool,
     ) -> Result<(ScopeId, u64)> {
-        let events = self.ledger.read_intent(intent_id)?;
+        let events = self.ledger.read_thread(thread_id)?;
         let checkpoint = events
             .iter()
             .rev()
@@ -640,12 +640,12 @@ impl Runtime {
             })
             .ok_or_else(|| ApiError::NotFound("snapshot manifest".into()))?;
         let spec = events.iter().rev().find_map(|e| match &e.envelope.payload {
-            EventPayload::IntentCreated { spec } | EventPayload::IntentRevised { spec, .. } => {
+            EventPayload::ThreadCreated { spec } | EventPayload::ThreadRevised { spec, .. } => {
                 Some(spec.clone())
             }
             _ => None,
         });
-        let spec = spec.ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+        let spec = spec.ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let generation = events
             .iter()
             .map(|e| e.envelope.generation)
@@ -744,8 +744,8 @@ impl Runtime {
     }
 
     /// 三维度 Compare（按 Generation）：Outcome Evidence、模型与副作用账、工件差异。
-    pub fn compare(&self, intent_id: &IntentId) -> Result<String> {
-        let events = self.ledger.read_intent(intent_id)?;
+    pub fn compare(&self, thread_id: &ThreadId) -> Result<String> {
+        let events = self.ledger.read_thread(thread_id)?;
         let mut tool_names = std::collections::HashMap::new();
         for event in &events {
             match &event.envelope.payload {
@@ -877,8 +877,8 @@ impl Runtime {
         Ok(out)
     }
 
-    pub fn events(&self, intent_id: &IntentId) -> Result<Vec<StoredEvent>> {
-        Ok(self.ledger.read_intent(intent_id)?)
+    pub fn events(&self, thread_id: &ThreadId) -> Result<Vec<StoredEvent>> {
+        Ok(self.ledger.read_thread(thread_id)?)
     }
 
     /// 默认模型：环境变量 ELSE_MODEL（genai 模型名，如 `gpt-4o-mini`、

@@ -1,10 +1,10 @@
 import ElseClientCore
 import SwiftUI
 
-struct IntentListView: View {
+struct ThreadListView: View {
     @EnvironmentObject private var store: AppStore
 
-    private var visibleSnapshots: [IntentSnapshot] {
+    private var visibleSnapshots: [ThreadSnapshot] {
         switch store.section {
         case .today: store.today
         case .world: []
@@ -53,15 +53,15 @@ struct IntentListView: View {
                             }
                         } else {
                             ForEach(visibleSnapshots) { snapshot in
-                                IntentRow(
+                                ThreadRow(
                                     snapshot: snapshot,
-                                    isMutating: store.mutatingIntentIDs.contains(snapshot.id)
+                                    isMutating: store.mutatingThreadIDs.contains(snapshot.id)
                                 )
                                 .onTapGesture {
-                                    store.selectedIntentID = snapshot.id
+                                    store.selectedThreadID = snapshot.id
                                 }
                                 .background(
-                                    store.selectedIntentID == snapshot.id
+                                    store.selectedThreadID == snapshot.id
                                         ? ElseColor.selection
                                         : Color.clear,
                                     in: Rectangle()
@@ -71,13 +71,13 @@ struct IntentListView: View {
                                         Button("继续执行") {
                                             Task { await store.run(snapshot) }
                                         }
-                                        Button("取消 Intent", role: .destructive) {
+                                        Button("取消 Thread", role: .destructive) {
                                             Task { await store.abort(snapshot) }
                                         }
                                     }
                                     Divider()
                                     Button("永久删除", role: .destructive) {
-                                        Task { await store.deleteIntent(snapshot) }
+                                        Task { await store.deleteThread(snapshot) }
                                     }
                                 }
                             }
@@ -114,13 +114,13 @@ struct IntentListView: View {
             Spacer()
 
             Button {
-                store.isCreatingIntent = true
+                store.isCreatingThread = true
             } label: {
                 Image(systemName: "plus")
             }
             .buttonStyle(.borderless)
             .foregroundStyle(ElseColor.textSecondary)
-            .help("新建 Intent")
+            .help("新建 Thread")
 
             Button {
                 Task { await store.refresh() }
@@ -140,17 +140,17 @@ struct IntentListView: View {
         Set(store.attentionWindows.flatMap(\.window.requestIDs))
     }
 
-    private var ungroupedDecisions: [(snapshot: IntentSnapshot, request: AttentionRequest)] {
+    private var ungroupedDecisions: [(snapshot: ThreadSnapshot, request: AttentionRequest)] {
         let grouped = groupedDecisionIDs
         return store.decisions.filter { !grouped.contains($0.request.id) }
     }
 
     private func decisions(
         in window: AttentionWindowRecord
-    ) -> [(snapshot: IntentSnapshot, request: AttentionRequest)] {
+    ) -> [(snapshot: ThreadSnapshot, request: AttentionRequest)] {
         let ids = Set(window.window.requestIDs)
         return store.decisions.filter {
-            $0.snapshot.id == window.intentID && ids.contains($0.request.id)
+            $0.snapshot.id == window.threadID && ids.contains($0.request.id)
         }
     }
 
@@ -197,9 +197,9 @@ private struct DecisionWindowHeader: View {
     }
 }
 
-private struct IntentRow: View {
+private struct ThreadRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let snapshot: IntentSnapshot
+    let snapshot: ThreadSnapshot
     let isMutating: Bool
 
     var body: some View {
@@ -255,7 +255,7 @@ private struct IntentRow: View {
 
 private struct DecisionSummaryRow: View {
     @EnvironmentObject private var store: AppStore
-    let item: (snapshot: IntentSnapshot, request: AttentionRequest)
+    let item: (snapshot: ThreadSnapshot, request: AttentionRequest)
 
     var body: some View {
         SignalBand {
@@ -289,16 +289,16 @@ private struct DecisionSummaryRow: View {
                     Spacer()
 
                     Button {
-                        store.selectedIntentID = item.snapshot.id
+                        store.selectedThreadID = item.snapshot.id
                     } label: {
                         Image(systemName: "chevron.right")
                     }
                     .buttonStyle(.borderless)
                     .foregroundStyle(ElseColor.textSecondary)
-                    .help("查看完整 Intent")
+                    .help("查看完整 Thread")
                 }
                 .controlSize(.small)
-                .disabled(store.mutatingIntentIDs.contains(item.snapshot.id))
+                .disabled(store.mutatingThreadIDs.contains(item.snapshot.id))
             }
         }
         .padding(ElseSpacing.x4)
@@ -363,7 +363,7 @@ private struct EmptySectionView: View {
 
     private var emptyTitle: String {
         switch section {
-        case .today: "今天没有进行中的 Intent"
+        case .today: "今天没有进行中的 Thread"
         case .world: "世界中没有聚合事项"
         case .connectors: "还没有连接器"
         case .decisions: "目前无需决策"
@@ -377,7 +377,7 @@ private struct EmptySectionView: View {
         case .world: ""
         case .connectors: ""
         case .decisions: "只有真正需要你的判断时，请求才会出现在这里。"
-        case .results: "完成的 Intent 会带着证据和资源账回到这里。"
+        case .results: "完成的 Thread 会带着证据和资源账回到这里。"
         }
     }
 }

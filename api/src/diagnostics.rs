@@ -6,8 +6,8 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use else_protocol::connector::ConnectorHealth;
 use else_protocol::event::ScopeState;
-use else_protocol::ids::{ConnectorId, IntentId, ScopeId};
-use else_protocol::intent::IntentState;
+use else_protocol::ids::{ConnectorId, ScopeId, ThreadId};
+use else_protocol::thread::ThreadState;
 use else_protocol::PROTOCOL_VERSION;
 use serde::Serialize;
 
@@ -22,8 +22,8 @@ pub struct RuntimeDiagnosticReport {
     pub database_integrity: String,
     pub event_count: u64,
     pub event_cursor: u64,
-    pub intent_count: u64,
-    pub intent_states: BTreeMap<String, u64>,
+    pub thread_count: u64,
+    pub thread_states: BTreeMap<String, u64>,
     pub connectors: Vec<ConnectorDiagnostic>,
     pub scopes: Vec<ScopeDiagnostic>,
     pub storage: RuntimeStorageDiagnostic,
@@ -34,7 +34,7 @@ pub struct RuntimeDiagnosticReport {
 #[derive(Debug, Serialize)]
 pub struct ConnectorDiagnostic {
     pub id: ConnectorId,
-    pub intent_id: IntentId,
+    pub thread_id: ThreadId,
     pub name: String,
     pub adapter: String,
     pub health: ConnectorHealth,
@@ -46,7 +46,7 @@ pub struct ConnectorDiagnostic {
 
 #[derive(Debug, Serialize)]
 pub struct ScopeDiagnostic {
-    pub intent_id: IntentId,
+    pub thread_id: ThreadId,
     pub scope_id: ScopeId,
     pub parent_scope_id: Option<ScopeId>,
     pub state: ScopeState,
@@ -69,14 +69,14 @@ impl Runtime {
         let database_integrity = self.ledger.integrity_check()?;
         let event_count = self.ledger.event_count()?;
         let event_cursor = self.ledger.cursor()?;
-        let specs = self.list_intents()?;
-        let mut intent_states = BTreeMap::new();
+        let specs = self.list_threads()?;
+        let mut thread_states = BTreeMap::new();
         let mut connectors = Vec::new();
         let mut scopes = Vec::new();
         for spec in &specs {
             let projection = self.projection(&spec.id)?;
-            let state = projection.state.unwrap_or(IntentState::Active);
-            *intent_states.entry(state_name(state).into()).or_insert(0) += 1;
+            let state = projection.state.unwrap_or(ThreadState::Active);
+            *thread_states.entry(state_name(state).into()).or_insert(0) += 1;
             for connector in projection.connectors.values() {
                 let health = projection
                     .connector_sync_status
@@ -86,7 +86,7 @@ impl Runtime {
                 let status = projection.connector_sync_status.get(&connector.id);
                 connectors.push(ConnectorDiagnostic {
                     id: connector.id.clone(),
-                    intent_id: spec.id.clone(),
+                    thread_id: spec.id.clone(),
                     name: connector.name.clone(),
                     adapter: connector.adapter.clone(),
                     health,
@@ -100,7 +100,7 @@ impl Runtime {
             }
             for (scope_id, scope) in &projection.scopes {
                 scopes.push(ScopeDiagnostic {
-                    intent_id: spec.id.clone(),
+                    thread_id: spec.id.clone(),
                     scope_id: scope_id.clone(),
                     parent_scope_id: scope.parent.clone(),
                     state: scope.state,
@@ -118,13 +118,13 @@ impl Runtime {
             }
         }
         connectors.sort_by(|left, right| {
-            left.intent_id
-                .cmp(&right.intent_id)
+            left.thread_id
+                .cmp(&right.thread_id)
                 .then_with(|| left.name.cmp(&right.name))
         });
         scopes.sort_by(|left, right| {
-            left.intent_id
-                .cmp(&right.intent_id)
+            left.thread_id
+                .cmp(&right.thread_id)
                 .then_with(|| left.scope_id.cmp(&right.scope_id))
         });
         let connector_error = connectors
@@ -144,8 +144,8 @@ impl Runtime {
             database_integrity,
             event_count,
             event_cursor,
-            intent_count: specs.len() as u64,
-            intent_states,
+            thread_count: specs.len() as u64,
+            thread_states,
             connectors,
             scopes,
             storage: RuntimeStorageDiagnostic {
@@ -160,15 +160,15 @@ impl Runtime {
     }
 }
 
-fn state_name(state: IntentState) -> &'static str {
+fn state_name(state: ThreadState) -> &'static str {
     match state {
-        IntentState::Active => "active",
-        IntentState::WaitingExternal => "waiting_external",
-        IntentState::NeedsDecision => "needs_decision",
-        IntentState::Paused => "paused",
-        IntentState::Completed => "completed",
-        IntentState::Cancelled => "cancelled",
-        IntentState::Failed => "failed",
+        ThreadState::Active => "active",
+        ThreadState::WaitingExternal => "waiting_external",
+        ThreadState::NeedsDecision => "needs_decision",
+        ThreadState::Paused => "paused",
+        ThreadState::Completed => "completed",
+        ThreadState::Cancelled => "cancelled",
+        ThreadState::Failed => "failed",
     }
 }
 

@@ -19,13 +19,13 @@ pub use tool::{ExternalActionExecutor, ToolGateway};
 use else_ledger::Ledger;
 use else_protocol::event::EventPayload;
 use else_protocol::ids::{AttentionId, RunId, ScopeId, SnapshotId};
-use else_protocol::intent::IntentSpec;
+use else_protocol::thread::ThreadSpec;
 
-/// 一次执行的上下文：授权依据（IntentSpec）与执行定位。
+/// 一次执行的上下文：授权依据（ThreadSpec）与执行定位。
 /// generation 在 M1 用于围栏旧世代的写入。
 #[derive(Debug, Clone)]
 pub struct ExecContext {
-    pub spec: IntentSpec,
+    pub spec: ThreadSpec,
     pub scope_id: ScopeId,
     pub run_id: RunId,
     pub generation: u64,
@@ -58,7 +58,7 @@ impl ExecContext {
 /// Generation Fencing：旧世代与已请求 Abort 的世代不得再产生执行事件或外部动作。
 /// 检查放在 Gateway 入口与完成回调落账前，覆盖晚到回调。
 pub fn ensure_not_fenced(ledger: &Ledger, ctx: &ExecContext) -> Result<()> {
-    let events = ledger.read_intent(&ctx.spec.id)?;
+    let events = ledger.read_thread(&ctx.spec.id)?;
     let latest_generation = events
         .iter()
         .map(|event| event.envelope.generation)
@@ -67,7 +67,7 @@ pub fn ensure_not_fenced(ledger: &Ledger, ctx: &ExecContext) -> Result<()> {
     let aborted = events.iter().any(|event| {
         event.envelope.generation == ctx.generation
             && match &event.envelope.payload {
-                // Intent 级取消围栏同代所有执行；scope_only 取消（Revision 联动）
+                // Thread 级取消围栏同代所有执行；scope_only 取消（Revision 联动）
                 // 只围栏目标 Scope 自身，同代无关分支继续有效。
                 EventPayload::ScopeAbortRequested { scope_only, .. } => {
                     scope_only != &Some(true) || event.envelope.scope_id == ctx.scope_id

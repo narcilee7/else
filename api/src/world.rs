@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
-use else_ledger::IntentProjection;
+use else_ledger::ThreadProjection;
 use else_protocol::connector::{CorrelationKind, ObjectKind, SignalMeaning, SignalStatus};
-use else_protocol::ids::{ConnectorId, IntentId, WorldItemId};
+use else_protocol::ids::{ConnectorId, ThreadId, WorldItemId};
 use else_protocol::world::{
     IdentityWorld, PersonalBrief, ProjectWorld, WorldCorrelationCorrection,
     WorldCorrelationCorrectionKind, WorldItem, WorldItemKind, WorldItemRecord, WorldItemResolution,
@@ -32,12 +32,12 @@ struct CorrelationCorrections {
 impl Runtime {
     pub fn world_items(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         include_resolved: bool,
     ) -> Result<Vec<WorldItem>> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         if projection.spec.is_none() {
-            return Err(ApiError::IntentNotFound(intent_id.clone()));
+            return Err(ApiError::ThreadNotFound(thread_id.clone()));
         }
         let corrections = self.world_corrections()?;
         Ok(build_world_items(
@@ -101,10 +101,10 @@ impl Runtime {
 
     pub fn project_worlds(
         &self,
-        intent_id: Option<&IntentId>,
+        thread_id: Option<&ThreadId>,
         include_resolved: bool,
     ) -> Result<Vec<ProjectWorld>> {
-        let records = self.world_records(intent_id, include_resolved, Utc::now())?;
+        let records = self.world_records(thread_id, include_resolved, Utc::now())?;
         let mut projects = BTreeMap::<String, ProjectWorld>::new();
         for record in records {
             for project in record
@@ -119,7 +119,7 @@ impl Runtime {
                         key: project.key.clone(),
                         title: project.label.clone(),
                         items: vec![],
-                        intent_ids: vec![],
+                        thread_ids: vec![],
                         connector_ids: vec![],
                         open_items: 0,
                         waiting_external: 0,
@@ -127,7 +127,7 @@ impl Runtime {
                         next_deadline: None,
                     });
                 entry.items.push(record.clone());
-                entry.intent_ids.push(record.intent_id.clone());
+                entry.thread_ids.push(record.thread_id.clone());
                 entry
                     .connector_ids
                     .extend(record.item.connector_ids.iter().cloned());
@@ -151,8 +151,8 @@ impl Runtime {
         }
         let mut projects = projects.into_values().collect::<Vec<_>>();
         for project in &mut projects {
-            project.intent_ids.sort();
-            project.intent_ids.dedup();
+            project.thread_ids.sort();
+            project.thread_ids.dedup();
             project.connector_ids.sort();
             project.connector_ids.dedup();
             sort_records(&mut project.items);
@@ -170,10 +170,10 @@ impl Runtime {
 
     pub fn identity_worlds(
         &self,
-        intent_id: Option<&IntentId>,
+        thread_id: Option<&ThreadId>,
         include_resolved: bool,
     ) -> Result<Vec<IdentityWorld>> {
-        let records = self.world_records(intent_id, include_resolved, Utc::now())?;
+        let records = self.world_records(thread_id, include_resolved, Utc::now())?;
         let mut identities = BTreeMap::<(CorrelationKind, String), IdentityWorld>::new();
         for record in records {
             for identity in record
@@ -190,14 +190,14 @@ impl Runtime {
                         key: key.1,
                         title: identity.label.clone(),
                         items: vec![],
-                        intent_ids: vec![],
+                        thread_ids: vec![],
                         connector_ids: vec![],
                         open_items: 0,
                         overdue: 0,
                         next_deadline: None,
                     });
                 entry.items.push(record.clone());
-                entry.intent_ids.push(record.intent_id.clone());
+                entry.thread_ids.push(record.thread_id.clone());
                 entry
                     .connector_ids
                     .extend(record.item.connector_ids.iter().cloned());
@@ -218,8 +218,8 @@ impl Runtime {
         }
         let mut identities = identities.into_values().collect::<Vec<_>>();
         for identity in &mut identities {
-            identity.intent_ids.sort();
-            identity.intent_ids.dedup();
+            identity.thread_ids.sort();
+            identity.thread_ids.dedup();
             identity.connector_ids.sort();
             identity.connector_ids.dedup();
             sort_records(&mut identity.items);
@@ -237,14 +237,14 @@ impl Runtime {
 
     pub fn resolve_world_item(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         item_id: &WorldItemId,
         kind: WorldItemResolutionKind,
         note: Option<String>,
     ) -> Result<WorldItem> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         if projection.spec.is_none() {
-            return Err(ApiError::IntentNotFound(intent_id.clone()));
+            return Err(ApiError::ThreadNotFound(thread_id.clone()));
         }
         let corrections = self.world_corrections()?;
         let items = build_world_items(&projection, Utc::now(), true, &corrections);
@@ -259,7 +259,7 @@ impl Runtime {
         {
             return Ok(item);
         }
-        let (root, generation, revision) = self.kernel_context(intent_id)?;
+        let (root, generation, revision) = self.kernel_context(thread_id)?;
         let resolution = WorldItemResolution {
             item_id: item_id.clone(),
             kind,
@@ -268,7 +268,7 @@ impl Runtime {
         };
         self.ledger
             .append(&else_protocol::event::EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 root,
                 generation,
                 revision,
@@ -286,7 +286,7 @@ impl Runtime {
 
     pub fn correct_world_correlation(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         mut correction: WorldCorrelationCorrection,
     ) -> Result<WorldCorrelationCorrection> {
         match correction.kind {
@@ -326,10 +326,10 @@ impl Runtime {
             }
         }
         correction.corrected_at = Utc::now();
-        let (root, generation, revision) = self.kernel_context(intent_id)?;
+        let (root, generation, revision) = self.kernel_context(thread_id)?;
         self.ledger
             .append(&else_protocol::event::EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 root,
                 generation,
                 revision,
@@ -343,16 +343,16 @@ impl Runtime {
 
     fn world_records(
         &self,
-        intent_id: Option<&IntentId>,
+        thread_id: Option<&ThreadId>,
         include_resolved: bool,
         now: DateTime<Utc>,
     ) -> Result<Vec<WorldItemRecord>> {
-        let specs = match intent_id {
-            Some(intent_id) => vec![self
-                .projection(intent_id)?
+        let specs = match thread_id {
+            Some(thread_id) => vec![self
+                .projection(thread_id)?
                 .spec
-                .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?],
-            None => self.list_intents()?,
+                .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?],
+            None => self.list_threads()?,
         };
         let corrections = self.world_corrections()?;
         let mut records = Vec::new();
@@ -362,7 +362,7 @@ impl Runtime {
                 build_world_items(&projection, now, include_resolved, &corrections)
                     .into_iter()
                     .map(|item| WorldItemRecord {
-                        intent_id: spec.id.clone(),
+                        thread_id: spec.id.clone(),
                         item,
                     }),
             );
@@ -372,7 +372,7 @@ impl Runtime {
 
     fn world_corrections(&self) -> Result<CorrelationCorrections> {
         let mut corrections = self
-            .list_intents()?
+            .list_threads()?
             .into_iter()
             .flat_map(|spec| {
                 self.projection(&spec.id)
@@ -428,7 +428,7 @@ impl Runtime {
 }
 
 fn build_world_items(
-    projection: &IntentProjection,
+    projection: &ThreadProjection,
     now: DateTime<Utc>,
     include_resolved: bool,
     corrections: &CorrelationCorrections,
@@ -748,6 +748,6 @@ fn sort_records(records: &mut [WorldItemRecord]) {
             .cmp(&left.item.priority)
             .then_with(|| left.item.deadline.cmp(&right.item.deadline))
             .then_with(|| left.item.id.cmp(&right.item.id))
-            .then_with(|| left.intent_id.cmp(&right.intent_id))
+            .then_with(|| left.thread_id.cmp(&right.thread_id))
     });
 }

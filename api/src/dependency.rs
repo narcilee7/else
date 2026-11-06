@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::Utc;
-use else_ledger::IntentProjection;
+use else_ledger::ThreadProjection;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload, ScopeState};
-use else_protocol::ids::{IntentId, PlanId, PlanStepId, ScopeId};
+use else_protocol::ids::{PlanId, PlanStepId, ScopeId, ThreadId};
 use else_protocol::plan::{PlanEvidence, PlanEvidenceKind, PlanStep, PlanStepStatus};
 
 use crate::{ApiError, Result, Runtime};
@@ -15,11 +15,11 @@ impl Runtime {
     /// Failed 上游可自动替换一次；替换链耗尽或上游被用户取消时，只裁剪下游。
     pub(crate) fn converge_dependency_failure(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         scope_id: &ScopeId,
         dependencies: &[ScopeId],
-    ) -> Result<IntentProjection> {
-        let mut projection = self.projection(intent_id)?;
+    ) -> Result<ThreadProjection> {
+        let mut projection = self.projection(thread_id)?;
         let Some(dependent) = projection.scopes.get(scope_id).cloned() else {
             return Ok(projection);
         };
@@ -52,7 +52,7 @@ impl Runtime {
             {
                 continue;
             }
-            match self.spawn_dependency_replacement(intent_id, dependency, failed) {
+            match self.spawn_dependency_replacement(thread_id, dependency, failed) {
                 Ok(replacement) => {
                     replacements.insert(dependency.clone(), replacement);
                 }
@@ -62,12 +62,12 @@ impl Runtime {
         }
 
         // 先把替换接到所有受影响下游，避免其他 Scope 继续等旧节点。
-        let updated_projection = self.projection(intent_id)?;
+        let updated_projection = self.projection(thread_id)?;
         for (previous, replacement) in &replacements {
             for (dependent_id, scope) in &updated_projection.scopes {
                 if scope.depends_on.contains(previous) {
                     self.record_dependency_replacement(
-                        intent_id,
+                        thread_id,
                         dependent_id,
                         previous,
                         replacement,
@@ -76,7 +76,7 @@ impl Runtime {
             }
         }
 
-        projection = self.projection(intent_id)?;
+        projection = self.projection(thread_id)?;
         let mut mapped = Vec::new();
         for dependency in dependencies {
             mapped.push(
@@ -103,7 +103,7 @@ impl Runtime {
                 .unwrap_or(dependent.clone());
             let revision = projection.spec.as_ref().map_or(1, |spec| spec.revision);
             self.ledger.append(&EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 scope_id.clone(),
                 current.generation,
                 revision,
@@ -114,32 +114,32 @@ impl Runtime {
             ))?;
             if projection.root_scope_id.as_ref() == Some(scope_id) {
                 self.ledger.append(&EventEnvelope::new(
-                    intent_id.clone(),
+                    thread_id.clone(),
                     scope_id.clone(),
                     current.generation,
                     revision,
                     Actor::System,
-                    EventPayload::IntentStateChanged {
-                        state: else_protocol::intent::IntentState::Failed,
+                    EventPayload::ThreadStateChanged {
+                        state: else_protocol::thread::ThreadState::Failed,
                     },
                 ))?;
             }
         }
 
-        self.record_dependency_replan(intent_id, scope_id, dependencies, &replacements, !viable)?;
-        self.projection(intent_id)
+        self.record_dependency_replan(thread_id, scope_id, dependencies, &replacements, !viable)?;
+        self.projection(thread_id)
     }
 
     fn spawn_dependency_replacement(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         failed_scope_id: &ScopeId,
         failed: &else_ledger::ScopeProjection,
     ) -> Result<ScopeId> {
         let parent = failed.parent.clone().ok_or_else(|| {
             ApiError::NotFound(format!("parent of failed scope {failed_scope_id}"))
         })?;
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let parent_scope = projection
             .scopes
             .get(&parent)
@@ -152,7 +152,7 @@ impl Runtime {
         let spec = failed
             .spec
             .clone()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let depends_on = failed
             .depends_on
             .iter()
@@ -161,14 +161,14 @@ impl Runtime {
             .collect();
         let replacement = ScopeId::new();
         let generation = self
-            .events(intent_id)?
+            .events(thread_id)?
             .iter()
             .map(|event| event.envelope.generation)
             .max()
             .unwrap_or(parent_scope.generation)
             .saturating_add(1);
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             parent,
             generation,
             spec.revision,
@@ -185,19 +185,19 @@ impl Runtime {
 
     fn record_dependency_replacement(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         dependent_id: &ScopeId,
         previous: &ScopeId,
         replacement: &ScopeId,
     ) -> Result<()> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let dependent = projection
             .scopes
             .get(dependent_id)
             .ok_or_else(|| ApiError::NotFound(format!("scope {dependent_id}")))?;
         let revision = projection.spec.as_ref().map_or(1, |spec| spec.revision);
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             dependent_id.clone(),
             dependent.generation,
             revision,
@@ -213,13 +213,13 @@ impl Runtime {
 
     fn record_dependency_replan(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         dependent_id: &ScopeId,
         dependencies: &[ScopeId],
         replacements: &BTreeMap<ScopeId, ScopeId>,
         superseded: bool,
     ) -> Result<()> {
-        let projection = self.projection(intent_id)?;
+        let projection = self.projection(thread_id)?;
         let Some(current) = projection.current_plan().cloned() else {
             return Ok(());
         };
@@ -290,9 +290,9 @@ impl Runtime {
                 }
             }
         }
-        let (root, generation, revision) = self.kernel_context(intent_id)?;
+        let (root, generation, revision) = self.kernel_context(thread_id)?;
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             root,
             generation,
             revision,

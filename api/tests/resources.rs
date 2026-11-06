@@ -17,7 +17,7 @@ fn admission_rejects_over_budget_run_before_lease_or_execution() {
         ..Default::default()
     };
     runtime.set_default_budget(budget);
-    let spec = runtime.create_intent("预算必须失败关闭", None).unwrap();
+    let spec = runtime.create_thread("预算必须失败关闭", None).unwrap();
 
     let error = runtime.run(&spec.id).unwrap_err();
     assert!(matches!(
@@ -39,7 +39,7 @@ fn admission_rejects_over_budget_run_before_lease_or_execution() {
     let projection = runtime.projection(&spec.id).unwrap();
     assert_eq!(
         projection.state,
-        Some(else_protocol::intent::IntentState::Failed)
+        Some(else_protocol::thread::ThreadState::Failed)
     );
     let root = projection.root_scope_id.as_ref().unwrap();
     assert_eq!(
@@ -60,7 +60,7 @@ fn admission_rejects_over_budget_run_before_lease_or_execution() {
 fn accounting_and_lease_closure_survive_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("资源账重放", None).unwrap();
+    let spec = runtime.create_thread("资源账重放", None).unwrap();
     runtime.run(&spec.id).unwrap();
 
     let report = runtime.resources(&spec.id).unwrap();
@@ -110,7 +110,7 @@ fn descendant_consumption_counts_against_root_admission() {
         max_tool_calls: 5,
         ..Default::default()
     });
-    let spec = runtime.create_intent("父子共享根预算", None).unwrap();
+    let spec = runtime.create_thread("父子共享根预算", None).unwrap();
     runtime.run(&spec.id).unwrap();
     let root = runtime
         .projection(&spec.id)
@@ -149,7 +149,7 @@ fn descendant_consumption_counts_against_root_admission() {
 fn abort_revokes_lease_left_by_crashed_run() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("崩溃租约回收", None).unwrap();
+    let spec = runtime.create_thread("崩溃租约回收", None).unwrap();
     runtime.crash_after_appends(4); // ContextCompiled → LeaseGranted → RunStarted → SandboxStarted。
     assert!(runtime.run(&spec.id).is_err());
     drop(runtime);
@@ -190,7 +190,7 @@ fn abort_revokes_lease_left_by_crashed_run() {
 fn crash_before_sandbox_start_uses_estimated_elapsed_time() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("启动前崩溃估算", None).unwrap();
+    let spec = runtime.create_thread("启动前崩溃估算", None).unwrap();
     runtime.crash_after_appends(2); // ContextCompiled → LeaseGranted，随后 kill。
     assert!(runtime.run(&spec.id).is_err());
     drop(runtime);
@@ -212,7 +212,7 @@ fn consumed_actual_seconds_are_checked_conservatively_on_the_next_run() {
         max_sandbox_seconds: 900,
         ..Default::default()
     });
-    let spec = runtime.create_intent("沙箱预算熔断", None).unwrap();
+    let spec = runtime.create_thread("沙箱预算熔断", None).unwrap();
     runtime.run(&spec.id).unwrap();
 
     let error = runtime.run(&spec.id).unwrap_err();

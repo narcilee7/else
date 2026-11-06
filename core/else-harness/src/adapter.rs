@@ -16,12 +16,12 @@ use else_protocol::effect::{EffectConclusion, SideEffectKind, ToolCall, ToolOutc
 use else_protocol::event::{Actor, EventPayload};
 use else_protocol::harness::{HarnessCapabilities, HarnessNetworkAccess};
 use else_protocol::ids::{ArtifactId, ToolCallId};
-use else_protocol::intent::CriterionVerification;
 use else_protocol::memory::ContextSnapshot;
 use else_protocol::plan::{
     Plan, PlanDraft, PlanEvidence, PlanEvidenceKind, PlanStep, PlanStepStatus,
 };
 use else_protocol::resource::ModelUsage;
+use else_protocol::thread::CriterionVerification;
 
 use crate::egress::EgressProxyEndpoint;
 
@@ -69,7 +69,7 @@ pub struct HarnessRequest<'a> {
     pub egress_proxy: Option<&'a EgressProxyEndpoint>,
     /// Runtime loopback Tool Gateway；启用时父 Harness Workspace 为只读。
     pub tool_gateway: Option<&'a ToolGatewayEndpoint>,
-    /// 子 Scope 执行：验收只结束自身 Scope，不直接把根 Intent 标记完成。
+    /// 子 Scope 执行：验收只结束自身 Scope，不直接把根 Thread 标记完成。
     pub subagent: bool,
 }
 
@@ -198,7 +198,7 @@ fn plan_from_draft(
         id: else_protocol::ids::PlanId::new(),
         revision: previous.map_or(1, |plan| plan.revision + 1),
         supersedes: previous.map(|plan| plan.id.clone()),
-        intent_revision: request.ctx.spec.revision,
+        thread_revision: request.ctx.spec.revision,
         summary: draft.summary,
         steps: draft
             .steps

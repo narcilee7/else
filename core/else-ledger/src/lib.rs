@@ -1,13 +1,13 @@
 //! else Event Ledger：SQLite 上的追加式事件存储与确定性重放。
 //!
 //! 事件只追加、不修改；`seq` 是全局单调的事件水位。
-//! 所有状态（Intent State、Decision Queue、UI）都是事件的投影：
+//! 所有状态（Thread State、Decision Queue、UI）都是事件的投影：
 //! 进程崩溃后重开数据库重放，投影必须一致——这是 M0 的永久回归测试。
 
 mod projection;
 
 pub use projection::{
-    AttentionRecordProjection, IntentProjection, ScopeProjection, TimerProjection,
+    AttentionRecordProjection, ScopeProjection, ThreadProjection, TimerProjection,
 };
 
 /// 注意力成本指标的定义在协议层：所有 surface 用同一份形状解释打断成本。
@@ -16,7 +16,7 @@ pub use else_protocol::attention::AttentionMetrics;
 use std::cell::Cell;
 
 use else_protocol::event::EventEnvelope;
-use else_protocol::ids::IntentId;
+use else_protocol::ids::ThreadId;
 use else_protocol::PROTOCOL_VERSION;
 use rusqlite::{params, Connection};
 use thiserror::Error;
@@ -26,16 +26,16 @@ CREATE TABLE IF NOT EXISTS events (
     seq              INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id         TEXT NOT NULL UNIQUE,
     protocol_version TEXT NOT NULL,
-    intent_id        TEXT NOT NULL,
+    thread_id        TEXT NOT NULL,
     scope_id         TEXT NOT NULL,
     generation       INTEGER NOT NULL,
-    intent_revision  INTEGER NOT NULL,
+    thread_revision  INTEGER NOT NULL,
     actor            TEXT NOT NULL,
     event_type       TEXT NOT NULL,
     occurred_at      TEXT NOT NULL,
     payload          TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_events_intent ON events(intent_id, seq);
+CREATE INDEX IF NOT EXISTS idx_events_thread ON events(thread_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_scope  ON events(scope_id, seq);
 "#;
 
@@ -87,11 +87,29 @@ impl Ledger {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         // 单写者多连接下（如 CLI 并行操作同一 Runtime 目录）等待而非立即失败。
         conn.pragma_update(None, "busy_timeout", 5_000)?;
+        Self::migrate_pre_thread_schema(&conn)?;
         conn.execute_batch(SCHEMA)?;
         Ok(Self {
             conn,
             crash_after_appends: Cell::new(None),
         })
+    }
+
+    /// 0.1.x 的账本用 `intent_*` 命名。改名不重写历史：老库打开时只换列名，
+    /// payload 里的旧字段由 serde alias 兼容，事件内容一条不动。
+    ///
+    /// 只在真正存在旧列时迁移，因此对新建库与已迁移库都是空操作。
+    fn migrate_pre_thread_schema(conn: &Connection) -> Result<()> {
+        let mut statement = conn.prepare("PRAGMA table_info(events)")?;
+        let columns: Vec<String> = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<_, _>>()?;
+        if columns.iter().any(|name| name == "intent_id") {
+            conn.execute_batch(
+                "ALTER TABLE events RENAME COLUMN intent_id TO thread_id;\n                 ALTER TABLE events RENAME COLUMN intent_revision TO thread_revision;\n                 DROP INDEX IF EXISTS idx_events_thread;",
+            )?;
+        }
+        Ok(())
     }
 
     /// 测试故障注入：再持久化 N 条事件后返回 CrashInjected。
@@ -108,16 +126,16 @@ impl Ledger {
         let actor = format!("{:?}", envelope.actor).to_lowercase();
         self.conn.execute(
             "INSERT INTO events
-             (event_id, protocol_version, intent_id, scope_id, generation,
-              intent_revision, actor, event_type, occurred_at, payload)
+             (event_id, protocol_version, thread_id, scope_id, generation,
+              thread_revision, actor, event_type, occurred_at, payload)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 envelope.event_id,
                 envelope.protocol_version,
-                envelope.intent_id.to_string(),
+                envelope.thread_id.to_string(),
                 envelope.scope_id.to_string(),
                 envelope.generation as i64,
-                envelope.intent_revision as i64,
+                envelope.thread_revision as i64,
                 actor,
                 event_type,
                 envelope.occurred_at.to_rfc3339(),
@@ -166,9 +184,9 @@ impl Ledger {
         self.read_where("1 = 1", &[])
     }
 
-    /// 按 seq 升序读取某个 Intent 的事件（局部重放）。
-    pub fn read_intent(&self, intent_id: &IntentId) -> Result<Vec<StoredEvent>> {
-        self.read_where("intent_id = ?1", &[&intent_id.to_string()])
+    /// 按 seq 升序读取某个 Thread 的事件（局部重放）。
+    pub fn read_thread(&self, thread_id: &ThreadId) -> Result<Vec<StoredEvent>> {
+        self.read_where("thread_id = ?1", &[&thread_id.to_string()])
     }
 
     /// 从检查点水位之后继续读取（增量重放）。
@@ -176,12 +194,12 @@ impl Ledger {
         self.read_where("seq > ?1", &[&(cursor as i64)])
     }
 
-    /// 用户显式永久删除某个 Intent 的全部事件。
+    /// 用户显式永久删除某个 Thread 的全部事件。
     /// 这是唯一允许破坏 append-only 的维护边界；AUTOINCREMENT 保证 seq 不复用。
-    pub fn delete_intent(&self, intent_id: &IntentId) -> Result<usize> {
+    pub fn delete_thread(&self, thread_id: &ThreadId) -> Result<usize> {
         Ok(self.conn.execute(
-            "DELETE FROM events WHERE intent_id = ?1",
-            params![intent_id.to_string()],
+            "DELETE FROM events WHERE thread_id = ?1",
+            params![thread_id.to_string()],
         )?)
     }
 
@@ -233,9 +251,9 @@ fn check_version(found: &str) -> Result<()> {
 fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str {
     use else_protocol::event::EventPayload as P;
     match payload {
-        P::IntentCreated { .. } => "intent_created",
-        P::IntentRevised { .. } => "intent_revised",
-        P::IntentStateChanged { .. } => "intent_state_changed",
+        P::ThreadCreated { .. } => "thread_created",
+        P::ThreadRevised { .. } => "thread_revised",
+        P::ThreadStateChanged { .. } => "thread_state_changed",
         P::PlanProposed { .. } => "plan_proposed",
         P::PlanReplaced { .. } => "plan_replaced",
         P::StructuredPlanProposed { .. } => "structured_plan_proposed",
@@ -263,8 +281,8 @@ fn event_type_name(payload: &else_protocol::event::EventPayload) -> &'static str
         P::WorldSignalIngested { .. } => "world_signal_ingested",
         P::WorldSignalStatusChanged { .. } => "world_signal_status_changed",
         P::SignalInterpreted { .. } => "signal_interpreted",
-        P::IntentCandidateProposed { .. } => "intent_candidate_proposed",
-        P::IntentCandidateStateChanged { .. } => "intent_candidate_state_changed",
+        P::ThreadCandidateProposed { .. } => "thread_candidate_proposed",
+        P::ThreadCandidateStateChanged { .. } => "thread_candidate_state_changed",
         P::RunStarted { .. } => "run_started",
         P::RunFinished { .. } => "run_finished",
         P::ScopeFailureRecorded { .. } => "scope_failure_recorded",

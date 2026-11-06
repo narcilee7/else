@@ -5,7 +5,7 @@ import Testing
 @Suite("HTTP runtime client", .serialized)
 struct HTTPRuntimeClientTests {
     @Test
-    func listsIntentsFromVersionedEndpoint() async throws {
+    func listsThreadsFromVersionedEndpoint() async throws {
         let session = makeSession()
         let client = HTTPRuntimeClient(
             baseURL: URL(string: "http://127.0.0.1:4180")!,
@@ -15,7 +15,7 @@ struct HTTPRuntimeClientTests {
 
         StubURLProtocol.handler = { request in
             #expect(request.httpMethod == "GET")
-            #expect(request.url?.path == "/v1/intents")
+            #expect(request.url?.path == "/v1/threads")
             return (
                 HTTPURLResponse(
                     url: try #require(request.url),
@@ -27,7 +27,7 @@ struct HTTPRuntimeClientTests {
             )
         }
 
-        let snapshots = try await client.listIntents()
+        let snapshots = try await client.listThreads()
         #expect(snapshots.isEmpty)
     }
 
@@ -57,11 +57,11 @@ struct HTTPRuntimeClientTests {
             )
         }
 
-        _ = try await client.listIntents()
+        _ = try await client.listThreads()
     }
 
     @Test
-    func createsIntentWithOptionalProject() async throws {
+    func createsThreadWithOptionalProject() async throws {
         let session = makeSession()
         let client = HTTPRuntimeClient(
             baseURL: URL(string: "http://127.0.0.1:4180")!,
@@ -71,7 +71,7 @@ struct HTTPRuntimeClientTests {
 
         StubURLProtocol.handler = { request in
             #expect(request.httpMethod == "POST")
-            #expect(request.url?.path == "/v1/intents")
+            #expect(request.url?.path == "/v1/threads")
             let body = try #require(requestBodyData(request))
             let payload = try JSONSerialization.jsonObject(with: body) as? [String: Any]
             #expect(payload?["outcome"] as? String == "整理反馈")
@@ -88,7 +88,7 @@ struct HTTPRuntimeClientTests {
             )
         }
 
-        let snapshot = try await client.createIntent(
+        let snapshot = try await client.createThread(
             outcome: "整理反馈",
             project: "research"
         )
@@ -117,7 +117,7 @@ struct HTTPRuntimeClientTests {
         }
 
         do {
-            _ = try await client.listIntents()
+            _ = try await client.listThreads()
             Issue.record("Expected HTTP error")
         } catch let RuntimeClientError.http(status, message) {
             #expect(status == 409)
@@ -155,7 +155,7 @@ struct HTTPRuntimeClientTests {
     }
 
     @Test
-    func listsIntentConnectorActions() async throws {
+    func listsThreadConnectorActions() async throws {
         let session = makeSession()
         let client = HTTPRuntimeClient(
             baseURL: URL(string: "http://127.0.0.1:4180")!,
@@ -165,7 +165,7 @@ struct HTTPRuntimeClientTests {
 
         StubURLProtocol.handler = { request in
             #expect(request.httpMethod == "GET")
-            #expect(request.url?.path == "/v1/intents/intent-1/actions")
+            #expect(request.url?.path == "/v1/threads/thread-1/actions")
             return (
                 HTTPURLResponse(
                     url: request.url!,
@@ -178,7 +178,7 @@ struct HTTPRuntimeClientTests {
         }
 
         let actions = try await client.connectorActions(
-            intentID: IntentID("intent-1")
+            threadID: ThreadID("thread-1")
         )
         #expect(actions.isEmpty)
     }
@@ -281,7 +281,7 @@ struct HTTPRuntimeClientTests {
 
         StubURLProtocol.handler = { request in
             #expect(request.httpMethod == "POST")
-            #expect(request.url?.path == "/v1/intents/intent-1/actions")
+            #expect(request.url?.path == "/v1/threads/thread-1/actions")
             let body = try #require(requestBodyData(request))
             let payload = try JSONSerialization.jsonObject(with: body) as? [String: Any]
             #expect(payload?["connector_id"] as? String == "connector-1")
@@ -298,7 +298,7 @@ struct HTTPRuntimeClientTests {
         }
 
         let action = try await client.proposeConnectorAction(
-            intentID: IntentID("intent-1"),
+            threadID: ThreadID("thread-1"),
             request: ProposeConnectorActionRequest(
                 connectorID: ConnectorID("connector-1"),
                 capability: "calendar.event.update",
@@ -317,14 +317,14 @@ struct HTTPRuntimeClientTests {
             session: session
         )
         defer { StubURLProtocol.handler = nil }
-        let intentID = IntentID("intent-1")
+        let threadID = ThreadID("thread-1")
         let connectorID = ConnectorID("connector-1")
 
         StubURLProtocol.handler = { request in
             #expect(request.httpMethod == "POST")
             #expect(
                 request.url?.path
-                    == "/v1/intents/intent-1/connectors/connector-1/actions/preview"
+                    == "/v1/threads/thread-1/connectors/connector-1/actions/preview"
             )
             let data = try #require(requestBodyData(request))
             let body = try JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -342,7 +342,7 @@ struct HTTPRuntimeClientTests {
         }
 
         let preview = try await client.previewConnectorAction(
-            intentID: intentID,
+            threadID: threadID,
             connectorID: connectorID,
             request: PreviewConnectorActionRequest(
                 capability: "calendar.event.update",
@@ -368,11 +368,11 @@ struct HTTPRuntimeClientTests {
             session: session
         )
         defer { StubURLProtocol.handler = nil }
-        let intentID = IntentID("intent-1")
+        let threadID = ThreadID("thread-1")
 
         StubURLProtocol.handler = { request in
             #expect(request.httpMethod == "GET")
-            #expect(request.url?.path == "/v1/intents/intent-1/capabilities")
+            #expect(request.url?.path == "/v1/threads/thread-1/capabilities")
             return (
                 HTTPURLResponse(
                     url: request.url!,
@@ -384,7 +384,7 @@ struct HTTPRuntimeClientTests {
             )
         }
 
-        let capabilities = try await client.capabilities(intentID: intentID)
+        let capabilities = try await client.capabilities(threadID: threadID)
         let capability = try #require(capabilities.first)
         #expect(
             capability.manifest.inputSchema.connectorActionSchema?.targetLabel
@@ -412,7 +412,7 @@ struct HTTPRuntimeClientTests {
                     headerFields: ["Content-Type": "application/json"]
                 )!,
                 Data(
-                    #"{"export_version":1,"protocol_version":"0.1.0","exported_at":"2026-10-31T08:00:00Z","intents":[]}"#
+                    #"{"export_version":1,"protocol_version":"0.1.0","exported_at":"2026-10-31T08:00:00Z","threads":[]}"#
                         .utf8
                 )
             )
@@ -424,14 +424,14 @@ struct HTTPRuntimeClientTests {
     }
 
     @Test
-    func deletesIntentWithIdempotencyAndRevision() async throws {
+    func deletesThreadWithIdempotencyAndRevision() async throws {
         let session = makeSession()
         let client = HTTPRuntimeClient(
             baseURL: URL(string: "http://127.0.0.1:4180")!,
             session: session
         )
         defer { StubURLProtocol.handler = nil }
-        let intentID = IntentID("C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
+        let threadID = ThreadID("C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
 
         StubURLProtocol.handler = { request in
             if request.httpMethod == "GET" {
@@ -461,9 +461,9 @@ struct HTTPRuntimeClientTests {
             )
         }
 
-        _ = try await client.intent(id: intentID)
-        let report = try await client.deleteIntent(id: intentID)
-        #expect(report.intentID == intentID)
+        _ = try await client.thread(id: threadID)
+        let report = try await client.deleteThread(id: threadID)
+        #expect(report.threadID == threadID)
         #expect(report.deletedEvents == 12)
         #expect(report.removedCredentials == 1)
         #expect(report.cleanupErrors.isEmpty)
@@ -550,7 +550,7 @@ struct HTTPRuntimeClientTests {
             session: session
         )
         defer { StubURLProtocol.handler = nil }
-        let intentID = IntentID("C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
+        let threadID = ThreadID("C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
         let connectorID = ConnectorID("connector-1")
 
         StubURLProtocol.handler = { request in
@@ -568,7 +568,7 @@ struct HTTPRuntimeClientTests {
             #expect(request.httpMethod == "POST")
             #expect(
                 request.url?.path
-                    == "/v1/intents/C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D/connectors/connector-1/repair"
+                    == "/v1/threads/C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D/connectors/connector-1/repair"
             )
             #expect(
                 request.value(forHTTPHeaderField: "Idempotency-Key") != nil
@@ -585,9 +585,9 @@ struct HTTPRuntimeClientTests {
             )
         }
 
-        _ = try await client.intent(id: intentID)
+        _ = try await client.thread(id: threadID)
         let report = try await client.repairConnector(
-            intentID: intentID,
+            threadID: threadID,
             connectorID: connectorID
         )
         #expect(report.connectorID == connectorID)
@@ -604,7 +604,7 @@ struct HTTPRuntimeClientTests {
             session: session
         )
         defer { StubURLProtocol.handler = nil }
-        let intentID = IntentID("C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
+        let threadID = ThreadID("C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
         let connectorID = ConnectorID("connector-1")
 
         StubURLProtocol.handler = { request in
@@ -621,7 +621,7 @@ struct HTTPRuntimeClientTests {
             }
             #expect(
                 request.url?.path
-                    == "/v1/intents/C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D/connectors/connector-1/credential"
+                    == "/v1/threads/C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D/connectors/connector-1/credential"
             )
             #expect(
                 request.value(forHTTPHeaderField: "Idempotency-Key") != nil
@@ -639,9 +639,9 @@ struct HTTPRuntimeClientTests {
             )
         }
 
-        _ = try await client.intent(id: intentID)
+        _ = try await client.thread(id: threadID)
         let attached = try await client.attachConnectorCredential(
-            intentID: intentID,
+            threadID: threadID,
             connectorID: connectorID,
             credential: ConnectorCredentialInput(
                 accessToken: "new-token",
@@ -650,7 +650,7 @@ struct HTTPRuntimeClientTests {
         )
         #expect(attached.revokedAt == nil)
         let revoked = try await client.revokeConnectorCredential(
-            intentID: intentID,
+            threadID: threadID,
             connectorID: connectorID
         )
         #expect(revoked.revokedAt != nil)
@@ -679,7 +679,7 @@ struct HTTPRuntimeClientTests {
                     headerFields: ["Content-Type": "application/json"]
                 )!,
                 Data(
-                    #"{"scanned_intents":2,"orphan_leases":1,"revoked_leases":1,"sandbox_finish_records":1,"skipped_active_leases":1}"#
+                    #"{"scanned_threads":2,"orphan_leases":1,"revoked_leases":1,"sandbox_finish_records":1,"skipped_active_leases":1}"#
                         .utf8
                 )
             )
@@ -692,14 +692,14 @@ struct HTTPRuntimeClientTests {
     }
 
     @Test
-    func retriesFailedIntentScopes() async throws {
+    func retriesFailedThreadScopes() async throws {
         let session = makeSession()
         let client = HTTPRuntimeClient(
             baseURL: URL(string: "http://127.0.0.1:4180")!,
             session: session
         )
         defer { StubURLProtocol.handler = nil }
-        let intentID = IntentID("C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
+        let threadID = ThreadID("C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D")
 
         StubURLProtocol.handler = { request in
             if request.httpMethod == "GET" {
@@ -716,7 +716,7 @@ struct HTTPRuntimeClientTests {
             #expect(request.httpMethod == "POST")
             #expect(
                 request.url?.path
-                    == "/v1/intents/C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D/repair/retry"
+                    == "/v1/threads/C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D/repair/retry"
             )
             #expect(request.value(forHTTPHeaderField: "If-Match") == "1")
             return (
@@ -730,9 +730,9 @@ struct HTTPRuntimeClientTests {
             )
         }
 
-        _ = try await client.intent(id: intentID)
-        let snapshot = try await client.retryFailedIntent(id: intentID)
-        #expect(snapshot.id == intentID)
+        _ = try await client.thread(id: threadID)
+        let snapshot = try await client.retryFailedThread(id: threadID)
+        #expect(snapshot.id == threadID)
         #expect(snapshot.state == .active)
     }
 
@@ -795,7 +795,7 @@ struct HTTPRuntimeClientTests {
 
     private static let deletionReportJSON = """
     {
-      "intent_id": "C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D",
+      "thread_id": "C1DA6F1D-1CE1-44C6-AC0C-14A78CFB6E8D",
       "deleted_events": 12,
       "removed_credentials": 1,
       "removed_workspace_paths": 2,
@@ -827,7 +827,7 @@ struct HTTPRuntimeClientTests {
     private static let retryResponseJSON = """
     {
       "retried_scopes": ["scope-1"],
-      "intent": \(minimalSnapshotJSON)
+      "thread": \(minimalSnapshotJSON)
     }
     """
 
@@ -846,7 +846,7 @@ struct HTTPRuntimeClientTests {
 
     private static let attentionWindowJSON = """
     [{
-      "intent_id": "intent-1",
+      "thread_id": "thread-1",
       "window": {
         "id": "window-1",
         "kind": "batch",

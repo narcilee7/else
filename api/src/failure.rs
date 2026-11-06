@@ -3,8 +3,8 @@
 use else_gateway::{ExecContext, GatewayError};
 use else_protocol::event::{Actor, EventEnvelope, EventPayload, ScopeState};
 use else_protocol::failure::{FailureClass, ScopeFailure};
-use else_protocol::ids::{IntentId, ScopeId};
-use else_protocol::intent::IntentState;
+use else_protocol::ids::{ScopeId, ThreadId};
+use else_protocol::thread::ThreadState;
 
 use crate::{ApiError, Result, Runtime};
 
@@ -13,13 +13,13 @@ const DEFAULT_MAX_SCOPE_RETRIES: u32 = 2;
 impl Runtime {
     pub fn retry_failed_scopes(
         &self,
-        intent_id: &IntentId,
-    ) -> Result<(Vec<ScopeId>, else_ledger::IntentProjection)> {
-        let projection = self.projection(intent_id)?;
+        thread_id: &ThreadId,
+    ) -> Result<(Vec<ScopeId>, else_ledger::ThreadProjection)> {
+        let projection = self.projection(thread_id)?;
         let revision = projection
             .spec
             .as_ref()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?
             .revision;
         let failed = projection
             .scopes
@@ -29,11 +29,11 @@ impl Runtime {
             .collect::<Vec<_>>();
         if failed.is_empty() {
             return Err(ApiError::Conflict(
-                "intent has no failed scopes to retry".into(),
+                "thread has no failed scopes to retry".into(),
             ));
         }
         let generation = self
-            .events(intent_id)?
+            .events(thread_id)?
             .iter()
             .map(|event| event.envelope.generation)
             .max()
@@ -41,7 +41,7 @@ impl Runtime {
             .saturating_add(1);
         for scope_id in &failed {
             self.ledger.append(&EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 scope_id.clone(),
                 generation,
                 revision,
@@ -55,18 +55,18 @@ impl Runtime {
             .is_some_and(|root| failed.contains(root))
         {
             self.ledger.append(&EventEnvelope::new(
-                intent_id.clone(),
+                thread_id.clone(),
                 projection.root_scope_id.clone().unwrap(),
                 generation,
                 revision,
                 Actor::User,
-                EventPayload::IntentStateChanged {
-                    state: IntentState::Active,
+                EventPayload::ThreadStateChanged {
+                    state: ThreadState::Active,
                 },
             ))?;
         }
-        let _ = self.drive(intent_id, None, 16)?;
-        let projection = self.projection(intent_id)?;
+        let _ = self.drive(thread_id, None, 16)?;
+        let projection = self.projection(thread_id)?;
         Ok((failed, projection))
     }
 
@@ -140,8 +140,8 @@ impl Runtime {
                 ctx.record(
                     &self.ledger,
                     Actor::System,
-                    EventPayload::IntentStateChanged {
-                        state: else_protocol::intent::IntentState::Failed,
+                    EventPayload::ThreadStateChanged {
+                        state: else_protocol::thread::ThreadState::Failed,
                     },
                 )?;
             }

@@ -4,15 +4,15 @@ use else_gateway::{ExecContext, GatewayError, MockProvider, ModelGateway, ToolGa
 use else_ledger::Ledger;
 use else_protocol::effect::{SideEffectKind, ToolCall};
 use else_protocol::event::{Actor, EventPayload};
-use else_protocol::ids::{IntentId, RunId, ScopeId, ToolCallId};
-use else_protocol::intent::{AttentionPolicy, Authority, IntentSpec};
+use else_protocol::ids::{RunId, ScopeId, ThreadId, ToolCallId};
 use else_protocol::resource::{ResourceBudget, ResourceClass, ResourceLease};
+use else_protocol::thread::{AttentionPolicy, Authority, ThreadSpec};
 use serde_json::json;
 
 fn ctx() -> ExecContext {
     ExecContext {
-        spec: IntentSpec {
-            id: IntentId::new(),
+        spec: ThreadSpec {
+            id: ThreadId::new(),
             revision: 1,
             outcome: "资源测试".into(),
             done_when: vec![],
@@ -25,7 +25,7 @@ fn ctx() -> ExecContext {
                 allow_interrupt: true,
                 batch_interval_minutes: 30,
             },
-            opaque_harness_policy: else_protocol::intent::OpaqueHarnessPolicy::default(),
+            opaque_harness_policy: else_protocol::thread::OpaqueHarnessPolicy::default(),
             deadline: None,
             assumptions: vec![],
             project: None,
@@ -132,7 +132,7 @@ fn model_estimate_over_budget_blocks_provider_call() {
         Err(GatewayError::ResourceExhausted { .. })
     ));
     assert!(!ledger
-        .read_intent(&ctx.spec.id)
+        .read_thread(&ctx.spec.id)
         .unwrap()
         .iter()
         .any(|event| matches!(event.envelope.payload, EventPayload::ModelCalled { .. })));
@@ -160,7 +160,7 @@ fn tool_budget_is_checked_before_tool_called_or_side_effect() {
     ));
     assert!(!dir.path().join("blocked.txt").exists());
     assert!(!ledger
-        .read_intent(&ctx.spec.id)
+        .read_thread(&ctx.spec.id)
         .unwrap()
         .iter()
         .any(|event| matches!(event.envelope.payload, EventPayload::ToolCalled { .. })));
@@ -204,7 +204,7 @@ fn actual_model_usage_is_rechecked_before_accounting() {
         model.complete(&ctx, "planning", "mock-model", "test"),
         Err(GatewayError::ResourceExhausted { .. })
     ));
-    let events = ledger.read_intent(&ctx.spec.id).unwrap();
+    let events = ledger.read_thread(&ctx.spec.id).unwrap();
     assert!(events
         .iter()
         .any(|event| matches!(event.envelope.payload, EventPayload::ModelCalled { .. })));

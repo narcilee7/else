@@ -4,14 +4,14 @@ use else_gateway::{ExecContext, GatewayError, MockProvider, ModelGateway, ToolGa
 use else_ledger::Ledger;
 use else_protocol::effect::{EffectConclusion, SideEffectKind, ToolCall, ToolOutcome, ToolStatus};
 use else_protocol::event::{Actor, EventPayload};
-use else_protocol::ids::{IntentId, RunId, ScopeId, ToolCallId};
-use else_protocol::intent::{AttentionPolicy, Authority, IntentSpec};
+use else_protocol::ids::{RunId, ScopeId, ThreadId, ToolCallId};
+use else_protocol::thread::{AttentionPolicy, Authority, ThreadSpec};
 use serde_json::json;
 
-fn ctx(intent_id: &IntentId, generation: u64) -> ExecContext {
+fn ctx(thread_id: &ThreadId, generation: u64) -> ExecContext {
     ExecContext {
-        spec: IntentSpec {
-            id: intent_id.clone(),
+        spec: ThreadSpec {
+            id: thread_id.clone(),
             revision: 1,
             outcome: "围栏测试".into(),
             done_when: vec![],
@@ -24,7 +24,7 @@ fn ctx(intent_id: &IntentId, generation: u64) -> ExecContext {
                 allow_interrupt: true,
                 batch_interval_minutes: 30,
             },
-            opaque_harness_policy: else_protocol::intent::OpaqueHarnessPolicy::default(),
+            opaque_harness_policy: else_protocol::thread::OpaqueHarnessPolicy::default(),
             deadline: None,
             assumptions: vec![],
             project: None,
@@ -54,7 +54,7 @@ fn aborted_generation_rejects_new_work_model_calls_and_late_callbacks() {
     let ledger = Ledger::open_in_memory().unwrap();
     let tools = ToolGateway::new(&ledger, dir.path().to_path_buf());
     let model = ModelGateway::new(&ledger, Box::new(MockProvider));
-    let ctx = ctx(&IntentId::new(), 1);
+    let ctx = ctx(&ThreadId::new(), 1);
     let pending = write_call();
 
     // 模拟一个已经发出、尚未完成的旧调用，随后 Abort。
@@ -96,7 +96,7 @@ fn aborted_generation_rejects_new_work_model_calls_and_late_callbacks() {
     ));
     assert!(!dir.path().join("forbidden.txt").exists());
 
-    let events = ledger.read_intent(&ctx.spec.id).unwrap();
+    let events = ledger.read_thread(&ctx.spec.id).unwrap();
     assert!(!events.iter().any(|event| matches!(
         event.envelope.payload,
         EventPayload::ToolCompleted { .. } | EventPayload::ModelCalled { .. }
@@ -108,9 +108,9 @@ fn newer_generation_fences_old_execution_without_an_abort_event() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::open_in_memory().unwrap();
     let tools = ToolGateway::new(&ledger, dir.path().to_path_buf());
-    let intent_id = IntentId::new();
-    let old = ctx(&intent_id, 1);
-    let new = ctx(&intent_id, 2);
+    let thread_id = ThreadId::new();
+    let old = ctx(&thread_id, 1);
+    let new = ctx(&thread_id, 2);
     new.record(
         &ledger,
         Actor::System,

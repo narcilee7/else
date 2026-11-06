@@ -4,7 +4,7 @@
 
 else-bot is a local-first personal agent runtime for work that spans more than one
 prompt, tool, or session. You define the outcome and its boundaries; else keeps
-the intent alive, decomposes it into scopes, dispatches execution, verifies the
+the thread alive, decomposes it into scopes, dispatches execution, verifies the
 result, and asks for your attention only when a decision belongs to you.
 
 > The product metric is simple: how much human attention does each completed
@@ -26,12 +26,12 @@ chats and notifications that you have to coordinate yourself:
 - every intermediate update competes for attention;
 - the final result is difficult to verify or audit.
 
-else-bot exists to make the **intent**, not the chat transcript or agent run, the
+else-bot exists to make the **thread**, not the chat transcript or agent run, the
 durable unit of work.
 
 ## What Else Does
 
-- **Keeps intent state durable.** Plans, scopes, and agent runs are disposable;
+- **Keeps thread state durable.** Plans, scopes, and agent runs are disposable;
   the outcome, constraints, decisions, and evidence survive.
 - **Coordinates execution.** Codex and Claude Code can run behind one harness
   contract, with local scheduling, isolated workspaces, budgets, and retries.
@@ -90,27 +90,27 @@ The first screen is a personal brief, not a chat window.
 
 ## Everyday Usage
 
-Create a durable intent:
+Create a durable thread:
 
 ```bash
-else-bot intent "Prepare the release and verify every platform artifact" --project release
+else-bot thread "Prepare the release and verify every platform artifact" --project release
 ```
 
 Inspect what needs attention:
 
 ```bash
 else-bot brief
-else-bot decisions <intent-id>
-else-bot world <intent-id>
+else-bot decisions <thread-id>
+else-bot world <thread-id>
 ```
 
 Drive work and inspect the evidence:
 
 ```bash
-else-bot advance <intent-id> --harness auto
-else-bot plan <intent-id>
-else-bot resources <intent-id>
-else-bot log <intent-id>
+else-bot advance <thread-id> --harness auto
+else-bot plan <thread-id>
+else-bot resources <thread-id>
+else-bot log <thread-id>
 ```
 
 Run the shared runtime explicitly:
@@ -125,7 +125,7 @@ TUI, and other clients observe the same state.
 ## How It Fits Together
 
 ```text
-Intent
+Thread
   -> Context and external signals
   -> Plan and execution scopes
   -> Harness or tool through the Gateway
@@ -133,7 +133,7 @@ Intent
   -> Outcome with evidence
 ```
 
-The runtime is event-sourced. Intent state, decisions, artifacts, side effects,
+The runtime is event-sourced. Thread state, decisions, artifacts, side effects,
 resource usage, retries, and verification are projections of an append-only
 ledger. Replaying a ledger should reconstruct the same state.
 
@@ -159,7 +159,7 @@ The terminal UI includes:
 - **Results**: finished outcomes, acceptance criteria, and produced artifacts;
 - **Settings**: connector health, credentials, and synchronization.
 
-Intent details keep scopes, resource accounting, and raw events behind an explicit
+Thread details keep scopes, resource accounting, and raw events behind an explicit
 debug toggle.
 
 The CLI accepts `--json` globally for automation and scripting. Successful commands
@@ -170,8 +170,8 @@ return their resulting domain object or a named object for composite results.
 `tool-call` is the exception: it preserves the Tool Gateway response body.
 
 ```bash
-else-bot intent "Prepare the release" --json
-else-bot decisions <intent-id> --json
+else-bot thread "Prepare the release" --json
+else-bot decisions <thread-id> --json
 else-bot --json  # non-interactive personal brief
 ```
 
@@ -245,7 +245,7 @@ Run CLI commands against the same development runtime:
 ```bash
 ./scripts/dev.sh cli list
 ./scripts/dev.sh cli brief --json
-./scripts/dev.sh cli decisions <intent-id>
+./scripts/dev.sh cli decisions <thread-id>
 ```
 
 After changing only the TUI, rebuild and reopen it; the daemon can stay running.

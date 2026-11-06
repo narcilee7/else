@@ -41,7 +41,7 @@ macro_rules! define_id {
     };
 }
 
-define_id!(IntentId, "用户目标。跨执行、跨重启持久。");
+define_id!(ThreadId, "用户目标。跨执行、跨重启持久。");
 define_id!(ScopeId, "执行 Scope：取消与权限传播的单位，树形组织。");
 define_id!(RunId, "一次 Agent Attempt。同一 Scope 可重试出多个 Run。");
 define_id!(ToolCallId, "一次工具调用，携带幂等键。");
@@ -72,7 +72,7 @@ define_id!(
     "可经 Tool Gateway 调用的 Tool / MCP Tool / Skill。"
 );
 define_id!(AgentId, "外部或本地 Agent 的稳定身份。");
-define_id!(AgentBindingId, "Agent 与一次 Intent/Scope/Run 的双向绑定。");
+define_id!(AgentBindingId, "Agent 与一次 Thread/Scope/Run 的双向绑定。");
 define_id!(McpServerId, "一个可重连的 MCP Server 注册。");
 define_id!(ConnectorId, "只读或受 Gateway 管控的外部世界连接器。");
 define_id!(
@@ -80,7 +80,7 @@ define_id!(
     "一次需要外部写回的动作提案与执行生命周期。"
 );
 define_id!(WorldSignalId, "外部世界的一条标准化、可去重事实。");
-define_id!(IntentCandidateId, "根据 World Signal 提出的 Intent 候选。");
+define_id!(ThreadCandidateId, "根据 World Signal 提出的 Thread 候选。");
 define_id!(WorldItemId, "跨 Signal 版本聚合出的 Personal World 条目。");
 define_id!(
     WorldCorrelationCorrectionId,

@@ -90,7 +90,7 @@ private final class BackgroundNotificationRuntime: NSObject, UNUserNotificationC
             forKey: ElsePreferenceKey.notificationsEnabled
         )
         let settings = await center.notificationSettings()
-        let decisions = (try? await client.listIntents())?.flatMap { snapshot in
+        let decisions = (try? await client.listThreads())?.flatMap { snapshot in
             snapshot.decisions.map { (snapshot: snapshot, request: $0) }
         } ?? []
         print("bundle: \(Bundle.main.bundleIdentifier ?? "none")")
@@ -103,7 +103,7 @@ private final class BackgroundNotificationRuntime: NSObject, UNUserNotificationC
     }
 
     private func poll() async {
-        guard let snapshots = try? await client.listIntents() else {
+        guard let snapshots = try? await client.listThreads() else {
             return
         }
         let decisions = snapshots.flatMap { snapshot in
@@ -132,7 +132,7 @@ private final class BackgroundNotificationRuntime: NSObject, UNUserNotificationC
     }
 
     private func post(
-        _ intentID: IntentID,
+        _ threadID: ThreadID,
         request: AttentionRequest
     ) async {
         let content = UNMutableNotificationContent()
@@ -141,7 +141,7 @@ private final class BackgroundNotificationRuntime: NSObject, UNUserNotificationC
         content.sound = .default
         content.categoryIdentifier = ElseNotificationContract.decisionCategory
         content.userInfo = [
-            ElseNotificationContract.intentIDKey: intentID.rawValue,
+            ElseNotificationContract.threadIDKey: threadID.rawValue,
         ]
         try? await center.add(
             UNNotificationRequest(
@@ -172,14 +172,14 @@ private final class BackgroundNotificationRuntime: NSObject, UNUserNotificationC
         didReceive response: UNNotificationResponse
     ) async {
         let userInfo = response.notification.request.content.userInfo
-        guard let rawIntentID = userInfo[ElseNotificationContract.intentIDKey] as? String
+        guard let rawThreadID = userInfo[ElseNotificationContract.threadIDKey] as? String
         else {
             return
         }
         await MainActor.run {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
-            configuration.arguments = ["--open-intent", rawIntentID]
+            configuration.arguments = ["--open-thread", rawThreadID]
             NSWorkspace.shared.openApplication(
                 at: Bundle.main.bundleURL,
                 configuration: configuration

@@ -6,29 +6,29 @@
 
 use std::path::PathBuf;
 
-use else_protocol::api::IntentSnapshot;
+use else_protocol::api::ThreadSnapshot;
 
 /// fixture 相对 `core/else-protocol` 的位置。
 const FIXTURE: &str =
-    "../../surfaces/apple/Tests/ElseClientCoreTests/Fixtures/intent_snapshot.json";
+    "../../surfaces/apple/Tests/ElseClientCoreTests/Fixtures/thread_snapshot.json";
 
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(FIXTURE)
 }
 
 #[test]
-fn intent_snapshot_fixture_round_trips_without_shape_drift() {
+fn thread_snapshot_fixture_round_trips_without_shape_drift() {
     let raw = std::fs::read_to_string(fixture_path()).expect("contract fixture is readable");
     let expected: serde_json::Value = serde_json::from_str(&raw).expect("fixture is valid JSON");
 
-    let snapshot: IntentSnapshot =
-        serde_json::from_value(expected.clone()).expect("fixture decodes into IntentSnapshot");
-    let actual = serde_json::to_value(&snapshot).expect("IntentSnapshot serializes");
+    let snapshot: ThreadSnapshot =
+        serde_json::from_value(expected.clone()).expect("fixture decodes into ThreadSnapshot");
+    let actual = serde_json::to_value(&snapshot).expect("ThreadSnapshot serializes");
 
     assert_is_subset(
         &expected,
         &actual,
-        "IntentSnapshot 的线上形状与共享 fixture 不一致；\
+        "ThreadSnapshot 的线上形状与共享 fixture 不一致；\
          契约只允许加字段，不允许改名或改语义",
     );
 }
@@ -67,10 +67,10 @@ fn assert_is_subset(expected: &serde_json::Value, actual: &serde_json::Value, co
 }
 
 #[test]
-fn intent_snapshot_fixture_keeps_its_meaning() {
+fn thread_snapshot_fixture_keeps_its_meaning() {
     let raw = std::fs::read_to_string(fixture_path()).expect("contract fixture is readable");
-    let snapshot: IntentSnapshot =
-        serde_json::from_str(&raw).expect("fixture decodes into IntentSnapshot");
+    let snapshot: ThreadSnapshot =
+        serde_json::from_str(&raw).expect("fixture decodes into ThreadSnapshot");
 
     assert_eq!(snapshot.spec.revision, 2);
     assert_eq!(snapshot.spec.outcome, "完成客户端基础设施");

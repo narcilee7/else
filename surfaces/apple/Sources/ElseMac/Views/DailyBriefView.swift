@@ -26,7 +26,7 @@ struct DailyBriefView: View {
                                 )
                             }
                         }
-                        activeIntents
+                        activeThreads
                     }
                 }
                 .background(ElseColor.surface)
@@ -71,13 +71,13 @@ struct DailyBriefView: View {
             }
 
             Button {
-                store.isCreatingIntent = true
+                store.isCreatingThread = true
             } label: {
                 Image(systemName: "plus")
             }
             .buttonStyle(.borderless)
             .foregroundStyle(ElseColor.textSecondary)
-            .help("新建 Intent")
+            .help("新建 Thread")
 
             Button {
                 Task { await store.refresh() }
@@ -106,14 +106,14 @@ struct DailyBriefView: View {
     }
 
     @ViewBuilder
-    private var activeIntents: some View {
+    private var activeThreads: some View {
         if !store.today.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
                 SectionHeader(title: "进行中", count: store.today.count)
 
                 ForEach(store.today) { snapshot in
                     Button {
-                        store.selectedIntentID = snapshot.id
+                        store.selectedThreadID = snapshot.id
                     } label: {
                         HStack(alignment: .top, spacing: ElseSpacing.x3) {
                             StatusRail(state: snapshot.state, height: 38)
@@ -140,7 +140,7 @@ struct DailyBriefView: View {
                     }
                     .buttonStyle(.plain)
                     .background(
-                        store.selectedIntentID == snapshot.id
+                        store.selectedThreadID == snapshot.id
                             ? ElseColor.selection
                             : Color.clear
                     )
@@ -237,7 +237,7 @@ private struct WorldItemRow: View {
                 .padding(.vertical, 2)
 
             Button {
-                store.selectedIntentID = record.intentID
+                store.selectedThreadID = record.threadID
             } label: {
                 VStack(alignment: .leading, spacing: ElseSpacing.x2) {
                     Text(record.item.title)
@@ -525,15 +525,15 @@ private struct FirstUseEmptyState: View {
                 .frame(width: 28, height: 1)
             Text(
                 store.snapshots.isEmpty
-                    ? "从第一个 Intent 开始"
+                    ? "从第一个 Thread 开始"
                     : "今天没有需要你处理的外部事项"
             )
             .font(ElseType.section)
             .foregroundStyle(ElseColor.textPrimary)
 
             HStack(spacing: ElseSpacing.x2) {
-                Button("新建 Intent") {
-                    store.isCreatingIntent = true
+                Button("新建 Thread") {
+                    store.isCreatingThread = true
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(ElseColor.action)

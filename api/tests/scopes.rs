@@ -4,12 +4,12 @@ use else_api::{ApiError, Runtime};
 use else_protocol::attention::DecisionChoice;
 use else_protocol::effect::SideEffectKind;
 use else_protocol::event::{EventPayload, ScopeState};
-use else_protocol::ids::{IntentId, ScopeId};
-use else_protocol::intent::IntentState;
+use else_protocol::ids::{ScopeId, ThreadId};
+use else_protocol::thread::ThreadState;
 
-fn root_scope(runtime: &Runtime, intent_id: &IntentId) -> ScopeId {
+fn root_scope(runtime: &Runtime, thread_id: &ThreadId) -> ScopeId {
     runtime
-        .projection(intent_id)
+        .projection(thread_id)
         .unwrap()
         .scopes
         .iter()
@@ -18,8 +18,8 @@ fn root_scope(runtime: &Runtime, intent_id: &IntentId) -> ScopeId {
         .unwrap()
 }
 
-fn setup_tree(runtime: &Runtime) -> (else_protocol::intent::IntentSpec, ScopeId, ScopeId, ScopeId) {
-    let spec = runtime.create_intent("验证委托树", None).unwrap();
+fn setup_tree(runtime: &Runtime) -> (else_protocol::thread::ThreadSpec, ScopeId, ScopeId, ScopeId) {
+    let spec = runtime.create_thread("验证委托树", None).unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(runtime, &spec.id);
     let child = runtime
@@ -34,13 +34,13 @@ fn setup_tree(runtime: &Runtime) -> (else_protocol::intent::IntentSpec, ScopeId,
 
 fn assert_tree_cancelled(
     runtime: &Runtime,
-    intent_id: &IntentId,
+    thread_id: &ThreadId,
     root: &ScopeId,
     child: &ScopeId,
     grandchild: &ScopeId,
 ) {
-    let projection = runtime.projection(intent_id).unwrap();
-    assert_eq!(projection.state, Some(IntentState::Cancelled));
+    let projection = runtime.projection(thread_id).unwrap();
+    assert_eq!(projection.state, Some(ThreadState::Cancelled));
     assert!(projection.open_requests.is_empty());
     for scope_id in [root, child, grandchild] {
         assert_eq!(
@@ -49,7 +49,7 @@ fn assert_tree_cancelled(
             "scope {scope_id} 未被取消"
         );
     }
-    let events = runtime.events(intent_id).unwrap();
+    let events = runtime.events(thread_id).unwrap();
     assert_eq!(
         events
             .iter()
@@ -77,7 +77,7 @@ fn assert_tree_cancelled(
 fn delegation_is_replayable_and_cannot_widen_authority() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("权限收窄", None).unwrap();
+    let spec = runtime.create_thread("权限收窄", None).unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
 
@@ -108,10 +108,10 @@ fn delegation_is_replayable_and_cannot_widen_authority() {
 }
 
 #[test]
-fn completing_subagent_does_not_complete_root_intent() {
+fn completing_subagent_does_not_complete_root_thread() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("父子终态隔离", None).unwrap();
+    let spec = runtime.create_thread("父子终态隔离", None).unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
     let child = runtime
@@ -140,7 +140,7 @@ fn completing_subagent_does_not_complete_root_intent() {
         .unwrap();
     assert_eq!(projection.scopes[&child].state, ScopeState::Completed);
     assert_eq!(projection.scopes[&root].state, ScopeState::Running);
-    assert_eq!(projection.state, Some(IntentState::Active));
+    assert_eq!(projection.state, Some(ThreadState::Active));
     assert_eq!(
         projection.artifacts.len(),
         2,

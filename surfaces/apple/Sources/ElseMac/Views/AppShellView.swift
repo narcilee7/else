@@ -19,12 +19,12 @@ struct AppShellView: View {
                 } else if store.section == .connectors {
                     ConnectorsView()
                 } else {
-                    IntentListView()
+                    ThreadListView()
                 }
             }
             .navigationSplitViewColumnWidth(min: 330, ideal: 390, max: 480)
         } detail: {
-            IntentDetailView(snapshot: store.selectedSnapshot)
+            ThreadDetailView(snapshot: store.selectedSnapshot)
         }
         .tint(ElseColor.action)
         .background(ElseColor.canvas)
@@ -32,12 +32,12 @@ struct AppShellView: View {
             await store.load()
         }
         .onReceive(
-            NotificationCenter.default.publisher(for: .elseOpenIntent)
+            NotificationCenter.default.publisher(for: .elseOpenThread)
         ) { notification in
-            guard let intentID = notification.object as? IntentID else {
+            guard let threadID = notification.object as? ThreadID else {
                 return
             }
-            store.selectedIntentID = intentID
+            store.selectedThreadID = threadID
             store.section = .decisions
         }
         .onReceive(
@@ -49,13 +49,13 @@ struct AppShellView: View {
             open(route)
         }
         .onReceive(
-            NotificationCenter.default.publisher(for: .elseQuickIntent)
+            NotificationCenter.default.publisher(for: .elseQuickThread)
         ) { notification in
             guard let outcome = notification.object as? String else {
                 return
             }
             Task {
-                await store.createIntent(outcome: outcome, project: nil)
+                await store.createThread(outcome: outcome, project: nil)
             }
         }
         .onOpenURL { url in
@@ -64,8 +64,8 @@ struct AppShellView: View {
             }
             open(route)
         }
-        .sheet(isPresented: $store.isCreatingIntent) {
-            NewIntentView()
+        .sheet(isPresented: $store.isCreatingThread) {
+            NewThreadView()
                 .environmentObject(store)
         }
         .alert(
@@ -173,7 +173,7 @@ private struct SidebarView: View {
         switch section {
         case .today: store.today.count
         case .world: store.projectWorlds.count + store.identityWorlds.count
-        case .connectors: store.connectorsByIntent.values.reduce(0) { $0 + $1.count }
+        case .connectors: store.connectorsByThread.values.reduce(0) { $0 + $1.count }
         case .decisions: store.decisionCount
         case .results: store.results.count
         }

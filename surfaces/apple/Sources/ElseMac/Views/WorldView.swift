@@ -209,7 +209,7 @@ private struct WorldGroupRow: View {
                             .fill(record.item.state.tint)
                             .frame(width: 2, height: 30)
                         Button {
-                            store.selectedIntentID = record.intentID
+                            store.selectedThreadID = record.threadID
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(record.item.title)
@@ -227,7 +227,7 @@ private struct WorldGroupRow: View {
                             Button {
                                 Task {
                                     await store.correctWorldCorrelation(
-                                        intentID: record.intentID,
+                                        threadID: record.threadID,
                                         correction: WorldCorrelationCorrection(
                                             kind: .split,
                                             correlationKind: group.kind,
@@ -351,7 +351,7 @@ private struct WorldCorrectionSheet: View {
 
     private func apply() async {
         let correction: WorldCorrelationCorrection
-        let intentID: IntentID
+        let threadID: ThreadID
         switch editor {
         case let .rename(group):
             correction = WorldCorrelationCorrection(
@@ -361,7 +361,7 @@ private struct WorldCorrectionSheet: View {
                 targetKey: group.key,
                 label: label.trimmingCharacters(in: .whitespacesAndNewlines)
             )
-            intentID = group.items.first!.intentID
+            threadID = group.items.first!.threadID
         case let .merge(source, _):
             correction = WorldCorrelationCorrection(
                 kind: .merge,
@@ -370,9 +370,9 @@ private struct WorldCorrectionSheet: View {
                 targetKey: targetKey,
                 label: label.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             )
-            intentID = source.items.first!.intentID
+            threadID = source.items.first!.threadID
         }
-        await store.correctWorldCorrelation(intentID: intentID, correction: correction)
+        await store.correctWorldCorrelation(threadID: threadID, correction: correction)
     }
 }
 

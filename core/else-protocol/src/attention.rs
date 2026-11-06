@@ -51,7 +51,7 @@ pub struct AttentionRequest {
     /// 为什么无法自行解决。
     pub blocked_reason: String,
     pub expected_loss: ExpectedLoss,
-    /// 是否阻塞整个 Intent。
+    /// 是否阻塞整个 Thread。
     pub blocking: bool,
     /// 等待是否可逆（拖久了是否还能补救）。
     pub reversible: bool,

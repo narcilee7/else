@@ -3,16 +3,16 @@ import SwiftUI
 
 struct ConnectorsView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var selectedIntentID: IntentID?
+    @State private var selectedThreadID: ThreadID?
     @State private var isRegistering = false
 
-    private var availableIntents: [IntentSnapshot] {
+    private var availableThreads: [ThreadSnapshot] {
         store.today.isEmpty ? store.snapshots : store.today
     }
 
     private var connectors: [ConnectorRegistration] {
-        guard let selectedIntentID else { return [] }
-        return store.connectorsByIntent[selectedIntentID] ?? []
+        guard let selectedThreadID else { return [] }
+        return store.connectorsByThread[selectedThreadID] ?? []
     }
 
     var body: some View {
@@ -20,10 +20,10 @@ struct ConnectorsView: View {
             header
             Divider()
 
-            if availableIntents.isEmpty {
+            if availableThreads.isEmpty {
                 QuietEmptyState(
-                    title: "先创建一个 Intent",
-                    description: "连接器属于一个 Intent 授权范围，创建目标后再接入外部来源。"
+                    title: "先创建一个 Thread",
+                    description: "连接器属于一个 Thread 授权范围，创建目标后再接入外部来源。"
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if connectors.isEmpty {
@@ -37,7 +37,7 @@ struct ConnectorsView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(connectors) { connector in
                             ConnectorRow(
-                                intentID: selectedIntentID,
+                                threadID: selectedThreadID,
                                 connector: connector,
                                 health: store.connectorHealth[connector.id]
                             )
@@ -48,13 +48,13 @@ struct ConnectorsView: View {
             }
         }
         .navigationTitle("连接")
-        .onAppear(perform: selectDefaultIntent)
-        .onChange(of: availableIntents.map(\.id)) {
-            selectDefaultIntent()
+        .onAppear(perform: selectDefaultThread)
+        .onChange(of: availableThreads.map(\.id)) {
+            selectDefaultThread()
         }
         .sheet(isPresented: $isRegistering) {
-            if let selectedIntentID {
-                RegisterConnectorSheet(intentID: selectedIntentID)
+            if let selectedThreadID {
+                RegisterConnectorSheet(threadID: selectedThreadID)
                     .environmentObject(store)
             }
         }
@@ -78,7 +78,7 @@ struct ConnectorsView: View {
                     Image(systemName: "plus")
                 }
                 .buttonStyle(.borderless)
-                .disabled(selectedIntentID == nil)
+                .disabled(selectedThreadID == nil)
                 .help("接入外部来源")
                 Button {
                     Task { await store.refresh() }
@@ -91,9 +91,9 @@ struct ConnectorsView: View {
                 .help("刷新")
             }
 
-            if availableIntents.count > 1 {
-                Picker("Intent", selection: $selectedIntentID) {
-                    ForEach(availableIntents) { snapshot in
+            if availableThreads.count > 1 {
+                Picker("Thread", selection: $selectedThreadID) {
+                    ForEach(availableThreads) { snapshot in
                         Text(snapshot.spec.outcome)
                             .lineLimit(1)
                             .tag(Optional(snapshot.id))
@@ -107,21 +107,21 @@ struct ConnectorsView: View {
         .padding(.vertical, ElseSpacing.x3)
     }
 
-    private func selectDefaultIntent() {
-        guard selectedIntentID == nil || !availableIntents.contains(where: {
-            $0.id == selectedIntentID
+    private func selectDefaultThread() {
+        guard selectedThreadID == nil || !availableThreads.contains(where: {
+            $0.id == selectedThreadID
         }) else {
             return
         }
-        selectedIntentID = store.selectedIntentID.flatMap { selected in
-            availableIntents.contains(where: { $0.id == selected }) ? selected : nil
-        } ?? availableIntents.first?.id
+        selectedThreadID = store.selectedThreadID.flatMap { selected in
+            availableThreads.contains(where: { $0.id == selected }) ? selected : nil
+        } ?? availableThreads.first?.id
     }
 }
 
 private struct ConnectorRow: View {
     @EnvironmentObject private var store: AppStore
-    let intentID: IntentID?
+    let threadID: ThreadID?
     let connector: ConnectorRegistration
     let health: ConnectorHealthReport?
     @State private var isReauthenticating = false
@@ -202,13 +202,13 @@ private struct ConnectorRow: View {
                 }
             }
 
-            if let intentID,
+            if let threadID,
                let health,
                health.health != .healthy {
                 Button {
                     Task {
                         await store.repairConnector(
-                            intentID: intentID,
+                            threadID: threadID,
                             connectorID: connector.id
                         )
                     }
@@ -220,11 +220,11 @@ private struct ConnectorRow: View {
                 .help("重建 Cursor 并重新同步")
             }
 
-            if let intentID {
+            if let threadID {
                 Button {
                     Task {
                         await store.syncConnector(
-                            intentID: intentID,
+                            threadID: threadID,
                             connectorID: connector.id
                         )
                     }
@@ -244,9 +244,9 @@ private struct ConnectorRow: View {
                 .frame(height: 1)
         }
         .sheet(isPresented: $isReauthenticating) {
-            if let intentID {
+            if let threadID {
                 ReauthenticateConnectorSheet(
-                    intentID: intentID,
+                    threadID: threadID,
                     connector: connector
                 )
                 .environmentObject(store)
@@ -257,11 +257,11 @@ private struct ConnectorRow: View {
             isPresented: $isConfirmingRevoke,
             titleVisibility: .visible
         ) {
-            if let intentID {
+            if let threadID {
                 Button("撤销凭据", role: .destructive) {
                     Task {
                         await store.revokeConnectorCredential(
-                            intentID: intentID,
+                            threadID: threadID,
                             connectorID: connector.id
                         )
                     }
@@ -277,7 +277,7 @@ private struct ConnectorRow: View {
 private struct ReauthenticateConnectorSheet: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    let intentID: IntentID
+    let threadID: ThreadID
     let connector: ConnectorRegistration
 
     @State private var accessToken = ""
@@ -347,7 +347,7 @@ private struct ReauthenticateConnectorSheet: View {
                 : nil
         )
         if await store.attachConnectorCredential(
-            intentID: intentID,
+            threadID: threadID,
             connectorID: connector.id,
             credential: credential
         ) {
@@ -359,7 +359,7 @@ private struct ReauthenticateConnectorSheet: View {
 private struct RegisterConnectorSheet: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    let intentID: IntentID
+    let threadID: ThreadID
 
     @State private var adapter = ""
     @State private var name = ""
@@ -470,7 +470,7 @@ private struct RegisterConnectorSheet: View {
                     : nil
             )
         let result = await store.registerConnector(
-            intentID: intentID,
+            threadID: threadID,
             request: RegisterConnectorRequest(
                 name: name.trimmingCharacters(in: .whitespacesAndNewlines),
                 source: source.trimmingCharacters(in: .whitespacesAndNewlines),

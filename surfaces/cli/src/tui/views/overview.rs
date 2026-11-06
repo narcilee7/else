@@ -1,13 +1,13 @@
 //! Today：需要本人注意的事、活跃工作与最近结果。
 
-use else_protocol::ids::IntentId;
-use else_protocol::intent::IntentState;
+use else_protocol::ids::ThreadId;
+use else_protocol::thread::ThreadState;
 use else_protocol::world::WorldItemRecord;
 
 use super::super::data::OverviewData;
 use super::super::row::{Pane, Row, RowAction};
 use super::super::theme;
-use super::{intent_state_label, intent_style};
+use super::{thread_state_label, thread_style};
 
 pub fn attention_pane(data: &OverviewData) -> Pane {
     let mut rows = Vec::new();
@@ -16,12 +16,12 @@ pub fn attention_pane(data: &OverviewData) -> Pane {
     if requests.is_empty() {
         rows.push(Row::muted("  No decisions waiting"));
     } else {
-        for (intent_id, request) in requests {
+        for (thread_id, request) in requests {
             rows.push(Row::action(
                 format!("  {}", request.summary),
                 theme::critical(),
                 RowAction::OpenDecision {
-                    intent_id,
+                    thread_id,
                     request_id: request.id.clone(),
                 },
             ));
@@ -47,40 +47,40 @@ pub fn world_pane(data: &OverviewData) -> Pane {
     let mut rows = Vec::new();
     rows.push(Row::heading("Active"));
     let active: Vec<_> = data
-        .intents
+        .threads
         .iter()
-        .filter(|intent| {
+        .filter(|thread| {
             !matches!(
-                intent.state,
-                IntentState::Completed | IntentState::Cancelled | IntentState::Failed
+                thread.state,
+                ThreadState::Completed | ThreadState::Cancelled | ThreadState::Failed
             )
         })
         .collect();
     if active.is_empty() {
-        rows.push(Row::muted("  No active intents · press n to create one"));
+        rows.push(Row::muted("  No active threads · press n to create one"));
     } else {
-        for intent in active {
-            rows.push(intent_row(intent));
+        for thread in active {
+            rows.push(thread_row(thread));
         }
     }
 
     let finished: Vec<_> = data
-        .intents
+        .threads
         .iter()
-        .filter(|intent| intent.state == IntentState::Completed)
+        .filter(|thread| thread.state == ThreadState::Completed)
         .take(3)
         .collect();
     if !finished.is_empty() {
         rows.push(Row::heading("Recently completed"));
-        for intent in finished {
+        for thread in finished {
             rows.push(Row::action(
-                format!("  ✓ {}", intent.spec.outcome),
+                format!("  ✓ {}", thread.spec.outcome),
                 theme::done(),
-                RowAction::OpenIntent(intent.spec.id.clone()),
+                RowAction::OpenThread(thread.spec.id.clone()),
             ));
             rows.push(Row::muted(format!(
                 "      {} artifact(s)",
-                intent.artifacts.len()
+                thread.artifacts.len()
             )));
         }
     }
@@ -129,8 +129,8 @@ pub fn world_pane(data: &OverviewData) -> Pane {
     }
 }
 
-fn intent_row(intent: &else_protocol::api::IntentSnapshot) -> Row {
-    let project = intent
+fn thread_row(thread: &else_protocol::api::ThreadSnapshot) -> Row {
+    let project = thread
         .spec
         .project
         .as_deref()
@@ -139,31 +139,31 @@ fn intent_row(intent: &else_protocol::api::IntentSnapshot) -> Row {
     Row::action(
         format!(
             "  {}  {}{}",
-            intent_state_label(intent.state),
-            intent.spec.outcome,
+            thread_state_label(thread.state),
+            thread.spec.outcome,
             project
         ),
-        intent_style(intent.state),
-        RowAction::OpenIntent(intent.spec.id.clone()),
+        thread_style(thread.state),
+        RowAction::OpenThread(thread.spec.id.clone()),
     )
 }
 
 fn decision_requests(
     data: &OverviewData,
-) -> Vec<(IntentId, else_protocol::attention::AttentionRequest)> {
+) -> Vec<(ThreadId, else_protocol::attention::AttentionRequest)> {
     let mut requests = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for window in &data.attention {
         for request in &window.requests {
             if seen.insert(request.id.clone()) {
-                requests.push((window.intent_id.clone(), request.clone()));
+                requests.push((window.thread_id.clone(), request.clone()));
             }
         }
     }
-    for intent in &data.intents {
-        for request in &intent.decisions {
+    for thread in &data.threads {
+        for request in &thread.decisions {
             if seen.insert(request.id.clone()) {
-                requests.push((intent.spec.id.clone(), request.clone()));
+                requests.push((thread.spec.id.clone(), request.clone()));
             }
         }
     }
@@ -184,7 +184,7 @@ fn push_section(rows: &mut Vec<Row>, title: &str, records: &[WorldItemRecord], o
                 theme::text()
             },
             RowAction::ResolveWorld {
-                intent_id: record.intent_id.clone(),
+                thread_id: record.thread_id.clone(),
                 item_id: record.item.id.clone(),
                 kind: else_protocol::world::WorldItemResolutionKind::Completed,
             },

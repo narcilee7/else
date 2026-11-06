@@ -14,11 +14,11 @@ pub mod event;
 pub mod failure;
 pub mod harness;
 pub mod ids;
-pub mod intent;
 pub mod memory;
 pub mod plan;
 pub mod resource;
 pub mod runtime;
+pub mod thread;
 pub mod world;
 
 /// 协议版本。事件写入时记录，重放时校验兼容性。

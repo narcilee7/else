@@ -7,9 +7,9 @@ use else_protocol::event::{EventPayload, ScopeState};
 use else_protocol::harness::{
     CancelSupport, HarnessCapabilities, ToolEffectVisibility, UsageSupport,
 };
-use else_protocol::ids::{IntentId, ScopeId};
-use else_protocol::intent::IntentState;
+use else_protocol::ids::{ScopeId, ThreadId};
 use else_protocol::memory::SnapshotAudience;
+use else_protocol::thread::ThreadState;
 
 struct JsonParser;
 
@@ -95,9 +95,9 @@ fn dependent_harness() -> ProcessHarness<JsonParser> {
 
 const DONE_SCRIPT: &str = "{\"type\":\"artifact\",\"locator\":\"result.md\",\"note\":\"子任务产物\"}\n{\"type\":\"completed\",\"summary\":\"子任务完成\"}\n";
 
-fn root_scope(runtime: &Runtime, intent_id: &IntentId) -> ScopeId {
+fn root_scope(runtime: &Runtime, thread_id: &ThreadId) -> ScopeId {
     runtime
-        .projection(intent_id)
+        .projection(thread_id)
         .unwrap()
         .scopes
         .iter()
@@ -111,7 +111,7 @@ fn dispatch_runs_scope_in_isolated_workspace_and_keeps_root_running() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
     let spec = runtime
-        .create_intent("编码任务：实现两个模块", None)
+        .create_thread("编码任务：实现两个模块", None)
         .unwrap();
     runtime.run(&spec.id).unwrap(); // 根： scripted 推进到 NeedsDecision，产生计划产物
     let root = root_scope(&runtime, &spec.id);
@@ -129,7 +129,7 @@ fn dispatch_runs_scope_in_isolated_workspace_and_keeps_root_running() {
         .unwrap();
     assert_eq!(projection.scopes[&child].state, ScopeState::Completed);
     assert_eq!(projection.scopes[&root].state, ScopeState::Running);
-    assert_eq!(projection.state, Some(IntentState::NeedsDecision));
+    assert_eq!(projection.state, Some(ThreadState::NeedsDecision));
 
     // 隔离 Workspace：scope 有自己的目录，不共享可写工作区
     assert!(dir
@@ -184,7 +184,7 @@ fn dispatch_runs_scope_in_isolated_workspace_and_keeps_root_running() {
 fn dispatch_terminal_scope_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("幂等派发", None).unwrap();
+    let spec = runtime.create_thread("幂等派发", None).unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
     let child = runtime
@@ -205,7 +205,7 @@ fn dispatch_terminal_scope_is_idempotent() {
 fn dependent_scope_receives_artifacts_from_its_dependency() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(dir.path()).unwrap();
-    let spec = runtime.create_intent("依赖工件交接", None).unwrap();
+    let spec = runtime.create_thread("依赖工件交接", None).unwrap();
     runtime.run(&spec.id).unwrap();
     let root = root_scope(&runtime, &spec.id);
     let producer = runtime

@@ -4,13 +4,13 @@
 //! 内部投影。CLI / TUI / App 读的是同一份数据，因此也应当对同一件事
 //! 给出同一个解释。
 
-use else_protocol::api::{AttentionView, AttentionWindowSnapshot, IntentSnapshot, PlanView};
+use else_protocol::api::{AttentionView, AttentionWindowSnapshot, PlanView, ThreadSnapshot};
 use else_protocol::attention::AttentionRequest;
-use else_protocol::connector::{ConnectorAction, IntentCandidate};
+use else_protocol::connector::{ConnectorAction, ThreadCandidate};
 use else_protocol::world::{WorldItem, WorldItemRecord};
 
-/// 打印一个 Intent 快照。
-pub fn print_snapshot(snapshot: &IntentSnapshot) {
+/// 打印一个 Thread 快照。
+pub fn print_snapshot(snapshot: &ThreadSnapshot) {
     println!("state: {:?}", snapshot.state);
     println!("artifacts: {}", snapshot.artifacts.len());
     print_decisions(&[], &snapshot.decisions);
@@ -112,8 +112,8 @@ pub fn print_plan(view: &PlanView) {
         return;
     };
     println!(
-        "plan {} revision={} intent_revision={} supersedes={:?}",
-        plan.id, plan.revision, plan.intent_revision, plan.supersedes
+        "plan {} revision={} thread_revision={} supersedes={:?}",
+        plan.id, plan.revision, plan.thread_revision, plan.supersedes
     );
     println!("summary: {}", plan.summary);
     for step in &plan.steps {
@@ -151,8 +151,8 @@ pub fn print_plan(view: &PlanView) {
     }
 }
 
-/// 打印一个 Intent 候选。
-pub fn print_candidate(candidate: &IntentCandidate) {
+/// 打印一个 Thread 候选。
+pub fn print_candidate(candidate: &ThreadCandidate) {
     println!(
         "{} {:?} {:?} confidence={} signals={} outcome={}",
         candidate.id,
@@ -169,8 +169,8 @@ pub fn print_world_section(name: &str, records: &[WorldItemRecord]) {
     println!("{name}: {}", records.len());
     for record in records {
         println!(
-            "  intent={} {} {:?} {:?} due={} {}",
-            record.intent_id,
+            "  thread={} {} {:?} {:?} due={} {}",
+            record.thread_id,
             record.item.id,
             record.item.kind,
             record.item.state,

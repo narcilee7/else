@@ -105,7 +105,7 @@ fn google_calendar_update_verify_and_compensate_cross_http_contract() {
 
     let dir = tempfile::tempdir().unwrap();
     let runtime = runtime_with_file_credentials(dir.path());
-    let spec = runtime.create_intent("更新日历事件", None).unwrap();
+    let spec = runtime.create_thread("更新日历事件", None).unwrap();
     let source = format!("http://{address}/events");
     let connector = runtime
         .register_connector_adapter_with_credential(

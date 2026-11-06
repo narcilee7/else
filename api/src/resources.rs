@@ -5,7 +5,7 @@ use else_gateway::{resource::ensure_capacity, ExecContext};
 use else_ledger::StoredEvent;
 use else_protocol::api::ResourceView;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
-use else_protocol::ids::IntentId;
+use else_protocol::ids::ThreadId;
 use else_protocol::resource::{
     ResourceBudget, ResourceClass, ResourceLease, ResourceUsage, SandboxTerminationReason,
     SandboxUsage, SandboxUsageBasis,
@@ -41,7 +41,7 @@ impl ResourceReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LeaseCleanupReport {
-    pub scanned_intents: usize,
+    pub scanned_threads: usize,
     pub orphan_leases: usize,
     pub revoked_leases: usize,
     pub sandbox_finish_records: usize,
@@ -49,13 +49,13 @@ pub struct LeaseCleanupReport {
 }
 
 impl Runtime {
-    /// 只影响之后创建的 Intent；既有 Intent 的预算已从事件持久化。
+    /// 只影响之后创建的 Thread；既有 Thread 的预算已从事件持久化。
     pub fn set_default_budget(&mut self, budget: ResourceBudget) {
         self.default_budget = budget;
     }
 
-    pub fn resources(&self, intent_id: &IntentId) -> Result<ResourceReport> {
-        let projection = self.projection(intent_id)?;
+    pub fn resources(&self, thread_id: &ThreadId) -> Result<ResourceReport> {
+        let projection = self.projection(thread_id)?;
         Ok(ResourceReport {
             budget: projection.resource_budget,
             usage: projection.resource_usage,
@@ -271,9 +271,9 @@ impl Runtime {
     }
 
     pub fn cleanup_orphan_leases(&self) -> Result<LeaseCleanupReport> {
-        let specs = self.list_intents()?;
+        let specs = self.list_threads()?;
         let mut report = LeaseCleanupReport {
-            scanned_intents: specs.len(),
+            scanned_threads: specs.len(),
             orphan_leases: 0,
             revoked_leases: 0,
             sandbox_finish_records: 0,
@@ -423,7 +423,7 @@ mod tests {
     fn orphan_lease_cleanup_skips_active_runs_and_revokes_finished_runs() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path()).unwrap();
-        let spec = runtime.create_intent("lease cleanup", None).unwrap();
+        let spec = runtime.create_thread("lease cleanup", None).unwrap();
         let projection = runtime.projection(&spec.id).unwrap();
         let scope_id = projection.root_scope_id.unwrap();
         let revision = projection.spec.unwrap().revision;

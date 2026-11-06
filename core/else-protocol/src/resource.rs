@@ -1,7 +1,7 @@
 //! 资源：统一 Admission + Lease + Accounting。
 //!
 //! 模型也是资源。CPU、Sandbox、API 限流、模型 Token/费用、
-//! 用户注意力都走同一套租约；所有后代消耗同时计入子节点和根 Intent。
+//! 用户注意力都走同一套租约；所有后代消耗同时计入子节点和根 Thread。
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ pub enum ResourceClass {
     HumanAttention,
 }
 
-/// 每个 Intent 的硬预算。预算随事件持久化，重启后 Admission 使用同一契约。
+/// 每个 Thread 的硬预算。预算随事件持久化，重启后 Admission 使用同一契约。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceBudget {
     pub max_model_tokens: u64,
@@ -48,7 +48,7 @@ impl Default for ResourceBudget {
     }
 }
 
-/// 从事件累计的资源账；后代事件自然计入根 Intent。
+/// 从事件累计的资源账；后代事件自然计入根 Thread。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceUsage {
     pub model_tokens: u64,
@@ -144,7 +144,7 @@ pub enum UsageBasis {
 }
 
 /// 一次模型调用的资源消耗（Accounting）。
-/// 所有后代消耗同时计入子节点和根 Intent。
+/// 所有后代消耗同时计入子节点和根 Thread。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelUsage {
     pub input_tokens: u64,

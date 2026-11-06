@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use else_client::RuntimeClient;
 use else_protocol::attention::DecisionChoice;
-use else_protocol::ids::{AttentionId, IntentId};
+use else_protocol::ids::{AttentionId, ThreadId};
 
 use error::{CliError, Result};
 use output::{
@@ -48,8 +48,9 @@ struct Cli {
 
 #[derive(Subcommand, Clone)]
 enum Command {
-    /// 提交一个抽象 Intent 并启动执行
-    Intent {
+    /// 开一个 Thread：说清楚要达成什么，它自己开始做
+    #[command(alias = "intent")]
+    Thread {
         outcome: String,
         /// 项目作用域：历史结论与纠正按项目召回，不泛化到全局
         #[arg(long)]
@@ -70,44 +71,44 @@ enum Command {
         #[arg(long, default_value = "read_only", value_parser = ["read_only", "reversible", "compensatable", "irreversible", "unknown"])]
         opaque_max_effect: String,
     },
-    /// 让 Kernel 从持久状态推导并执行下一步
+    /// 推进一步：按当前状态继续做
     Advance {
-        intent_id: String,
+        thread_id: String,
         /// 执行器偏好；auto 仍由 Kernel 按规则选择
         #[arg(long, default_value = "auto")]
         harness: String,
     },
-    /// 连续推进 Kernel，直到等待用户、Run、Timer 或空闲
+    /// 一直做，直到需要你或没有可做的事
     Drive {
-        intent_id: String,
+        thread_id: String,
         #[arg(long, default_value = "auto")]
         harness: String,
         #[arg(long, default_value_t = 8)]
         max_steps: u64,
     },
-    /// 记录一个外部事件并唤醒该 Intent
+    /// 记录一个外部事件并唤醒该 Thread
     Event {
-        intent_id: String,
+        thread_id: String,
         source: String,
         summary: String,
     },
-    /// 标记 Intent 正在等待外部事实，停止空转执行
+    /// 标记 Thread 正在等待外部事实，停止空转执行
     WaitExternal {
-        intent_id: String,
+        thread_id: String,
         #[arg(long, default_value = "waiting for external event")]
         reason: String,
     },
     /// 安排一个持久化 Kernel 唤醒 Timer
     Wake {
-        intent_id: String,
+        thread_id: String,
         /// 从现在起多少秒触发。
         seconds: i64,
         #[arg(long, default_value = "follow up")]
         reason: String,
     },
-    /// 对已有 Intent 再启动一次执行
+    /// 对已有 Thread 再启动一次执行
     Run {
-        intent_id: String,
+        thread_id: String,
         /// 执行器：scripted 或已注册的真实 Harness
         #[arg(long, default_value = "scripted")]
         harness: String,
@@ -123,9 +124,9 @@ enum Command {
     },
     /// 首次运行：准备 runtime 目录并注册后台服务
     Onboard,
-    /// 为已有 Intent 显式启用 Opaque Harness Profile
+    /// 为已有 Thread 显式启用 Opaque Harness Profile
     AllowOpaque {
-        intent_id: String,
+        thread_id: String,
         #[arg(long)]
         network: bool,
         #[arg(long)]
@@ -135,16 +136,16 @@ enum Command {
     },
     /// 取消执行并收敛在途副作用（可安全重复调用）
     Abort {
-        intent_id: String,
+        thread_id: String,
         reason: Option<String>,
     },
-    /// 列出全部 Intent
+    /// 列出全部 Thread
     List,
     /// 查看 Scope 委托树与生命周期
-    Scopes { intent_id: String },
+    Scopes { thread_id: String },
     /// 委托一个子 Scope（权限只能低于或等于父级）
     Delegate {
-        intent_id: String,
+        thread_id: String,
         parent_scope: String,
         task: String,
         /// 显式执行依赖；所有依赖 Scope Completed 后才会调度
@@ -155,43 +156,43 @@ enum Command {
     },
     /// 启动或续跑指定 Scope；--harness auto 按规则选择执行器（MVP-3 Dispatch）
     RunScope {
-        intent_id: String,
+        thread_id: String,
         scope_id: String,
         /// 执行器：scripted（默认）/ auto / codex / claude-code
         #[arg(long, default_value = "scripted")]
         harness: String,
     },
-    /// 查看等待本人的 Decision
-    Decisions { intent_id: String },
+    /// 查看等你拍板的事
+    Decisions { thread_id: String },
     /// 查看 Attention Window、批量率与误打断指标
-    Attention { intent_id: String },
+    Attention { thread_id: String },
     /// 查看结构化 Plan 版本、步骤与外部事实影响
-    Plan { intent_id: String },
+    Plan { thread_id: String },
     /// 回答一个 Decision（选项 id 或自由文本）
     Decide {
-        intent_id: String,
+        thread_id: String,
         request_id: String,
         choice: String,
     },
     /// 查看事件流（调试视图）
-    Log { intent_id: String },
+    Log { thread_id: String },
     /// 查看模型、工具与环境资源预算及实际消耗
-    Resources { intent_id: String },
+    Resources { thread_id: String },
     /// 创建检查点（事件水位 + 工作区快照 + 在途副作用结论）
-    Checkpoint { intent_id: String },
+    Checkpoint { thread_id: String },
     /// 从检查点派生分支并重跑（--alternative 走替代路径）
     Rerun {
-        intent_id: String,
+        thread_id: String,
         checkpoint_id: String,
         #[arg(long)]
         alternative: bool,
     },
     /// 按 Generation 比较各执行分支（Outcome/副作用/产物）
-    Compare { intent_id: String },
-    /// 修订 Intent 目标（revision +1）；运行中的子分支默认取消，
+    Compare { thread_id: String },
+    /// 修订 Thread 目标（revision +1）；运行中的子分支默认取消，
     /// 用 --unaffected-scope 声明不受影响的分支
     Revise {
-        intent_id: String,
+        thread_id: String,
         #[arg(long)]
         outcome: Option<String>,
         #[arg(long = "constraint")]
@@ -228,7 +229,7 @@ enum Command {
     },
     /// 注册并同步只读日历连接器
     Calendar {
-        intent_id: String,
+        thread_id: String,
         /// 本地 ICS 文件或 HTTPS URL
         source: String,
         #[arg(long, default_value = "calendar")]
@@ -236,7 +237,7 @@ enum Command {
     },
     /// 注册真实 Google Calendar API Connector，并支持事件更新/核验/补偿
     GoogleCalendar {
-        intent_id: String,
+        thread_id: String,
         #[arg(long, default_value = "primary")]
         calendar_id: String,
         #[arg(long, conflicts_with = "token_keychain_service")]
@@ -260,7 +261,7 @@ enum Command {
     },
     /// 注册并同步只读 Linear Connector
     Linear {
-        intent_id: String,
+        thread_id: String,
         /// 本地 JSON/GraphQL 响应或 HTTPS URL
         source: String,
         /// 从环境变量读取 API Token；秘密不进入命令行历史
@@ -287,7 +288,7 @@ enum Command {
     },
     /// 注册真实 Notion Search / Database Connector 并执行首次 Backfill
     Notion {
-        intent_id: String,
+        thread_id: String,
         /// 可选 Database ID 或 Database URL；省略时同步所有授权页面/数据库
         #[arg(long)]
         database: Option<String>,
@@ -305,7 +306,7 @@ enum Command {
     },
     /// 通过 Adapter Registry 注册并同步任意 Connector
     Connector {
-        intent_id: String,
+        thread_id: String,
         /// Adapter ID，例如 notion.api / linear.graphql / calendar.ics
         adapter: String,
         /// 本地文件或 HTTPS URL
@@ -331,7 +332,7 @@ enum Command {
     },
     /// 配置 Connector 候选的低风险自动接受边界
     ConnectorPolicy {
-        intent_id: String,
+        thread_id: String,
         #[arg(long)]
         auto_accept: bool,
         #[arg(long = "allow-origin")]
@@ -342,10 +343,10 @@ enum Command {
         max_effect: String,
     },
     /// 查看已注册连接器
-    Connectors { intent_id: String },
+    Connectors { thread_id: String },
     /// 提案一次受 Gateway 管控的外部写动作
     ConnectorActionPropose {
-        intent_id: String,
+        thread_id: String,
         connector_id: String,
         capability: String,
         target: String,
@@ -356,29 +357,29 @@ enum Command {
     },
     /// 执行外部写动作；超出授权时返回 Decision Request
     ConnectorActionExecute {
-        intent_id: String,
+        thread_id: String,
         action_id: String,
     },
     /// 回源核验 Executing / Unknown / Applied 动作
     ConnectorActionVerify {
-        intent_id: String,
+        thread_id: String,
         action_id: String,
     },
     /// 通过 Gateway 与 Decision 补偿已应用动作
     ConnectorActionCompensate {
-        intent_id: String,
+        thread_id: String,
         action_id: String,
     },
     /// 查看外部写动作状态与最终结论
-    ConnectorActions { intent_id: String },
+    ConnectorActions { thread_id: String },
     /// 撤销 Connector 私有凭据；后续同步失败关闭
     ConnectorCredentialRevoke {
-        intent_id: String,
+        thread_id: String,
         connector_id: String,
     },
     /// 更新 Connector 私有凭据，不重复注册 Connector
     ConnectorCredentialSet {
-        intent_id: String,
+        thread_id: String,
         connector_id: String,
         #[arg(long, conflicts_with = "token_keychain_service")]
         token_env: Option<String>,
@@ -388,39 +389,39 @@ enum Command {
     /// 列出 Runtime 已注册的 Connector Adapter 与能力
     ConnectorAdapters,
     /// 查看标准化 World Signal 及失效状态
-    Signals { intent_id: String },
+    Signals { thread_id: String },
     /// 查看承诺、等待外部、行动项与风险聚合出的 Personal World
     World {
-        intent_id: String,
+        thread_id: String,
         #[arg(long)]
         include_resolved: bool,
     },
     /// 将 Personal World 条目标记完成或忽略
     WorldResolve {
-        intent_id: String,
+        thread_id: String,
         item_id: String,
         #[arg(value_parser = ["completed", "dismissed"])]
         state: String,
         #[arg(long)]
         note: Option<String>,
     },
-    /// 跨 Intent 生成 Personal Brief
+    /// 今天需要你管的事（跨所有 Thread）
     Brief,
     /// 按规范化 Project Key 查看跨 Provider World
     Projects {
-        intent_id: Option<String>,
+        thread_id: Option<String>,
         #[arg(long)]
         include_resolved: bool,
     },
     /// 按 Contact / Customer / Thread / Milestone 查看跨 Provider 关系
     Identities {
-        intent_id: Option<String>,
+        thread_id: Option<String>,
         #[arg(long)]
         include_resolved: bool,
     },
     /// 人工纠正 Project / Identity：merge / split / rename
     CorrelateCorrect {
-        intent_id: String,
+        thread_id: String,
         #[arg(value_parser = ["merge", "split", "rename"])]
         action: String,
         #[arg(value_parser = ["project", "contact", "customer", "thread", "milestone"])]
@@ -434,7 +435,7 @@ enum Command {
         #[arg(long)]
         item_id: Option<String>,
     },
-    /// 跨 Intent 按事件水位读取 Signal
+    /// 跨 Thread 按事件水位读取 Signal
     SignalFeed {
         #[arg(long, default_value_t = 0)]
         cursor: u64,
@@ -443,18 +444,18 @@ enum Command {
         #[arg(long)]
         entity: Option<String>,
     },
-    /// 跨 Intent 按事件水位读取 Intent Candidate
+    /// 跨 Thread 按事件水位读取 Thread Candidate
     CandidateFeed {
         #[arg(long, default_value_t = 0)]
         cursor: u64,
     },
-    /// 运行确定性 Resolver，根据 Signal 提出 Intent Candidate
-    ResolveSignals { intent_id: String },
-    /// 查看 Intent Candidate
-    Candidates { intent_id: String },
-    /// 手工提出 Intent Candidate；只提案，不自动创建 Intent
+    /// 运行确定性 Resolver，根据 Signal 提出 Thread Candidate
+    ResolveSignals { thread_id: String },
+    /// 查看 Thread Candidate
+    Candidates { thread_id: String },
+    /// 手工提出 Thread Candidate；只提案，不自动创建 Thread
     CandidatePropose {
-        intent_id: String,
+        thread_id: String,
         outcome: String,
         #[arg(long, default_value = "inferred_need", value_parser = ["user_direct", "external_request", "commitment", "inferred_need", "agent_proposal", "system_recovery"])]
         origin: String,
@@ -473,14 +474,14 @@ enum Command {
         #[arg(long)]
         dedupe_key: Option<String>,
     },
-    /// 接受 Candidate，创建带完整来源血缘的 Intent
+    /// 接受 Candidate，创建带完整来源血缘的 Thread
     CandidateAccept {
-        intent_id: String,
+        thread_id: String,
         candidate_id: String,
     },
-    /// 拒绝 Candidate，不创建 Intent
+    /// 拒绝 Candidate，不创建 Thread
     CandidateReject {
-        intent_id: String,
+        thread_id: String,
         candidate_id: String,
     },
 }
@@ -499,7 +500,7 @@ enum DaemonCommand {
 enum MemoryCommand {
     /// 列出记忆（默认行为）
     List,
-    /// 用户确认晋升候选到指定作用域（global / project:P / intent:ID）
+    /// 用户确认晋升候选到指定作用域（global / project:P / thread:ID）
     Promote {
         candidate_id: String,
         #[arg(long)]
@@ -622,7 +623,7 @@ fn dispatch(cli: Cli) -> Result<()> {
     let client = session.client();
 
     match command.clone() {
-        Command::Intent {
+        Command::Thread {
             outcome,
             project,
             harness,
@@ -631,12 +632,12 @@ fn dispatch(cli: Cli) -> Result<()> {
             tool_gateway,
             opaque_max_effect,
         } => {
-            let snapshot = client.create_intent(&outcome, project.as_deref())?;
-            let intent_id = snapshot.spec.id.clone();
+            let snapshot = client.create_thread(&outcome, project.as_deref())?;
+            let thread_id = snapshot.spec.id.clone();
             if allow_opaque {
                 client.configure_opaque_harness(
-                    &intent_id,
-                    else_protocol::intent::OpaqueHarnessPolicy {
+                    &thread_id,
+                    else_protocol::thread::OpaqueHarnessPolicy {
                         enabled: true,
                         allow_native_provider_network: opaque_network,
                         use_tool_gateway: tool_gateway,
@@ -644,22 +645,22 @@ fn dispatch(cli: Cli) -> Result<()> {
                     },
                 )?;
             }
-            let advanced = client.advance(&intent_id, Some(&harness))?;
+            let advanced = client.advance(&thread_id, Some(&harness))?;
             emit_or(cli.json, &advanced, |snapshot| {
-                println!("intent: {intent_id}");
+                println!("thread: {thread_id}");
                 print_snapshot(snapshot);
             })?;
         }
-        Command::Advance { intent_id, harness } => {
-            let advanced = client.advance(&IntentId::from(intent_id), Some(&harness))?;
+        Command::Advance { thread_id, harness } => {
+            let advanced = client.advance(&ThreadId::from(thread_id), Some(&harness))?;
             emit_or(cli.json, &advanced, print_snapshot)?;
         }
         Command::Drive {
-            intent_id,
+            thread_id,
             harness,
             max_steps,
         } => {
-            let driven = client.drive(&IntentId::from(intent_id), Some(&harness), max_steps)?;
+            let driven = client.drive(&ThreadId::from(thread_id), Some(&harness), max_steps)?;
             emit_or(cli.json, &driven, |driven| {
                 println!("stopped: {}", driven.stopped);
                 println!("steps: {}", driven.steps);
@@ -667,31 +668,31 @@ fn dispatch(cli: Cli) -> Result<()> {
             })?;
         }
         Command::Event {
-            intent_id,
+            thread_id,
             source,
             summary,
         } => {
             let projection =
-                client.record_external_event(&IntentId::from(intent_id), &source, &summary)?;
+                client.record_external_event(&ThreadId::from(thread_id), &source, &summary)?;
             emit_or(cli.json, &projection, print_snapshot)?;
         }
-        Command::WaitExternal { intent_id, reason } => {
-            let projection = client.wait_for_external(&IntentId::from(intent_id), &reason)?;
+        Command::WaitExternal { thread_id, reason } => {
+            let projection = client.wait_for_external(&ThreadId::from(thread_id), &reason)?;
             emit_or(cli.json, &projection, print_snapshot)?;
         }
         Command::Wake {
-            intent_id,
+            thread_id,
             seconds,
             reason,
         } => {
-            let timer_id = client.schedule_timer(&IntentId::from(intent_id), seconds, &reason)?;
+            let timer_id = client.schedule_timer(&ThreadId::from(thread_id), seconds, &reason)?;
             let output = serde_json::json!({ "timer_id": timer_id });
             emit_or(cli.json, &output, |output| {
                 println!("timer: {}", output["timer_id"].as_str().unwrap_or_default());
             })?;
         }
-        Command::Run { intent_id, harness } => {
-            let intent_id = IntentId::from(intent_id);
+        Command::Run { thread_id, harness } => {
+            let thread_id = ThreadId::from(thread_id);
             let available = client.harnesses()?;
             if harness != else_harness::SCRIPTED
                 && !available.iter().any(|item| item.name == harness)
@@ -710,7 +711,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                     }
                 )));
             }
-            let projection = client.run(&intent_id, Some(&harness))?;
+            let projection = client.run(&thread_id, Some(&harness))?;
             emit_or(cli.json, &projection, print_snapshot)?;
         }
         Command::Doctor => {
@@ -792,14 +793,14 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
         }
         Command::AllowOpaque {
-            intent_id,
+            thread_id,
             network,
             tool_gateway,
             max_effect,
         } => {
             let spec = client.configure_opaque_harness(
-                &IntentId::from(intent_id),
-                else_protocol::intent::OpaqueHarnessPolicy {
+                &ThreadId::from(thread_id),
+                else_protocol::thread::OpaqueHarnessPolicy {
                     enabled: true,
                     allow_native_provider_network: network,
                     use_tool_gateway: tool_gateway,
@@ -815,25 +816,25 @@ fn dispatch(cli: Cli) -> Result<()> {
                 );
             })?;
         }
-        Command::Abort { intent_id, reason } => {
+        Command::Abort { thread_id, reason } => {
             let projection = client.abort(
-                &IntentId::from(intent_id),
+                &ThreadId::from(thread_id),
                 reason.as_deref().unwrap_or("用户取消"),
             )?;
             emit_or(cli.json, &projection, print_snapshot)?;
         }
         Command::List => {
-            let intents = client.list_intents()?;
+            let threads = client.list_threads()?;
             if cli.json {
-                emit_json(&intents)?;
+                emit_json(&threads)?;
                 return Ok(());
             }
-            for snapshot in intents {
+            for snapshot in threads {
                 println!("{}  {}", snapshot.spec.id, snapshot.spec.outcome);
             }
         }
-        Command::Scopes { intent_id } => {
-            let scopes = client.scopes(&IntentId::from(intent_id))?;
+        Command::Scopes { thread_id } => {
+            let scopes = client.scopes(&ThreadId::from(thread_id))?;
             if cli.json {
                 emit_json(&scopes)?;
                 return Ok(());
@@ -857,7 +858,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
         }
         Command::Delegate {
-            intent_id,
+            thread_id,
             parent_scope,
             task,
             depends_on,
@@ -877,7 +878,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 .collect();
             let parent = else_protocol::ids::ScopeId::from(parent_scope);
             let child = client.delegate(
-                &IntentId::from(intent_id),
+                &ThreadId::from(thread_id),
                 Some(&parent),
                 &task,
                 &depends_on,
@@ -892,38 +893,38 @@ fn dispatch(cli: Cli) -> Result<()> {
             })?;
         }
         Command::RunScope {
-            intent_id,
+            thread_id,
             scope_id,
             harness,
         } => {
             let projection = client.run_scope(
-                &IntentId::from(intent_id),
+                &ThreadId::from(thread_id),
                 &else_protocol::ids::ScopeId::from(scope_id),
                 Some(&harness),
             )?;
             emit_or(cli.json, &projection, print_snapshot)?;
         }
-        Command::Decisions { intent_id } => {
-            let intent_id = IntentId::from(intent_id);
+        Command::Decisions { thread_id } => {
+            let thread_id = ThreadId::from(thread_id);
             let windows: Vec<_> = client
                 .attention_windows()?
                 .into_iter()
-                .filter(|window| window.intent_id == intent_id)
+                .filter(|window| window.thread_id == thread_id)
                 .collect();
-            let requests = client.intent(&intent_id)?.decisions;
+            let requests = client.thread(&thread_id)?.decisions;
             let output = serde_json::json!({ "windows": &windows, "requests": &requests });
             emit_or(cli.json, &output, |_| print_decisions(&windows, &requests))?;
         }
-        Command::Attention { intent_id } => {
-            let view = client.attention(&IntentId::from(intent_id))?;
+        Command::Attention { thread_id } => {
+            let view = client.attention(&ThreadId::from(thread_id))?;
             if cli.json {
                 emit_json(&view)?;
                 return Ok(());
             }
             print_attention(&view);
         }
-        Command::Plan { intent_id } => {
-            let plan = client.plan(&IntentId::from(intent_id))?;
+        Command::Plan { thread_id } => {
+            let plan = client.plan(&ThreadId::from(thread_id))?;
             if cli.json {
                 emit_json(&plan)?;
                 return Ok(());
@@ -931,7 +932,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             print_plan(&plan);
         }
         Command::Decide {
-            intent_id,
+            thread_id,
             request_id,
             choice,
         } => {
@@ -940,14 +941,14 @@ fn dispatch(cli: Cli) -> Result<()> {
                 other => DecisionChoice::FreeText(other.to_string()),
             };
             let projection = client.decide(
-                &IntentId::from(intent_id),
+                &ThreadId::from(thread_id),
                 &AttentionId::from(request_id),
                 choice,
             )?;
             emit_or(cli.json, &projection, print_snapshot)?;
         }
-        Command::Log { intent_id } => {
-            let events = client.events(&IntentId::from(intent_id))?;
+        Command::Log { thread_id } => {
+            let events = client.events(&ThreadId::from(thread_id))?;
             if cli.json {
                 emit_json(&events)?;
                 return Ok(());
@@ -961,8 +962,8 @@ fn dispatch(cli: Cli) -> Result<()> {
                 );
             }
         }
-        Command::Resources { intent_id } => {
-            let report = client.resources(&IntentId::from(intent_id))?;
+        Command::Resources { thread_id } => {
+            let report = client.resources(&ThreadId::from(thread_id))?;
             if cli.json {
                 emit_json(&report)?;
                 return Ok(());
@@ -1011,8 +1012,8 @@ fn dispatch(cli: Cli) -> Result<()> {
                 );
             }
         }
-        Command::Checkpoint { intent_id } => {
-            let checkpoint = client.checkpoint(&IntentId::from(intent_id))?;
+        Command::Checkpoint { thread_id } => {
+            let checkpoint = client.checkpoint(&ThreadId::from(thread_id))?;
             if cli.json {
                 emit_json(&checkpoint)?;
                 return Ok(());
@@ -1022,13 +1023,13 @@ fn dispatch(cli: Cli) -> Result<()> {
             println!("inflight_effects: {}", checkpoint.inflight.len());
         }
         Command::Rerun {
-            intent_id,
+            thread_id,
             checkpoint_id,
             alternative,
         } => {
-            let intent_id = IntentId::from(intent_id);
-            let (scope_id, generation) = client.rerun(&intent_id, &checkpoint_id, alternative)?;
-            let snapshot = client.intent(&intent_id)?;
+            let thread_id = ThreadId::from(thread_id);
+            let (scope_id, generation) = client.rerun(&thread_id, &checkpoint_id, alternative)?;
+            let snapshot = client.thread(&thread_id)?;
             let output = serde_json::json!({
                 "scope_id": scope_id,
                 "generation": generation,
@@ -1043,22 +1044,22 @@ fn dispatch(cli: Cli) -> Result<()> {
                 print_snapshot(&snapshot);
             })?;
         }
-        Command::Compare { intent_id } => {
-            let comparison = client.compare(&IntentId::from(intent_id))?;
+        Command::Compare { thread_id } => {
+            let comparison = client.compare(&ThreadId::from(thread_id))?;
             let output = serde_json::json!({ "comparison": comparison });
             emit_or(cli.json, &output, |output| {
                 print!("{}", output["comparison"].as_str().unwrap_or_default());
             })?;
         }
         Command::Revise {
-            intent_id,
+            thread_id,
             outcome,
             constraints,
             reason,
             unaffected_scopes: _,
         } => {
-            let spec = client.revise_intent(
-                &IntentId::from(intent_id),
+            let spec = client.revise_thread(
+                &ThreadId::from(thread_id),
                 outcome.as_deref(),
                 &constraints,
                 &reason,
@@ -1075,11 +1076,11 @@ fn dispatch(cli: Cli) -> Result<()> {
                     Ok(MemoryScope::Global)
                 } else if let Some(name) = raw.strip_prefix("project:") {
                     Ok(MemoryScope::Project(name.to_string()))
-                } else if let Some(id) = raw.strip_prefix("intent:") {
-                    Ok(MemoryScope::Intent(IntentId::from(id)))
+                } else if let Some(id) = raw.strip_prefix("thread:") {
+                    Ok(MemoryScope::Thread(ThreadId::from(id)))
                 } else {
                     Err(format!(
-                        "unknown scope {raw} (global / project:P / intent:ID)"
+                        "unknown scope {raw} (global / project:P / thread:ID)"
                     ))
                 }
             };
@@ -1175,14 +1176,14 @@ fn dispatch(cli: Cli) -> Result<()> {
         Command::ToolCall { .. } => unreachable!("handled before the session opens"),
         Command::Serve { .. } => unreachable!("handled before the session opens"),
         Command::Calendar {
-            intent_id,
+            thread_id,
             source,
             name,
         } => {
-            let intent_id = IntentId::from(intent_id);
+            let thread_id = ThreadId::from(thread_id);
             let connector =
-                client.register_connector(&intent_id, &name, &source, "calendar.ics", None, 300)?;
-            let result = client.sync_connector(&intent_id, &connector.id)?;
+                client.register_connector(&thread_id, &name, &source, "calendar.ics", None, 300)?;
+            let result = client.sync_connector(&thread_id, &connector.id)?;
             if cli.json {
                 emit_json(&serde_json::json!({ "connector": connector, "sync": result }))?;
                 return Ok(());
@@ -1201,7 +1202,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             );
         }
         Command::GoogleCalendar {
-            intent_id,
+            thread_id,
             calendar_id,
             token_env,
             token_keychain_service,
@@ -1213,7 +1214,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             sync_interval,
             name,
         } => {
-            let intent_id = IntentId::from(intent_id);
+            let thread_id = ThreadId::from(thread_id);
             let source = google_calendar_source_url(&calendar_id)?;
             let credential = if let Some(service) = token_keychain_service {
                 Some(connector_credential_from_access_token(
@@ -1235,14 +1236,14 @@ fn dispatch(cli: Cli) -> Result<()> {
                 )?
             };
             let connector = client.register_connector(
-                &intent_id,
+                &thread_id,
                 &name,
                 &source,
                 "calendar.google",
                 credential.as_ref(),
                 sync_interval,
             )?;
-            let result = client.sync_connector(&intent_id, &connector.id)?;
+            let result = client.sync_connector(&thread_id, &connector.id)?;
             if cli.json {
                 emit_json(&serde_json::json!({ "connector": connector, "sync": result }))?;
                 return Ok(());
@@ -1261,7 +1262,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             );
         }
         Command::Linear {
-            intent_id,
+            thread_id,
             source,
             token_env,
             refresh_token_env,
@@ -1273,7 +1274,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             sync_interval,
             name,
         } => {
-            let intent_id = IntentId::from(intent_id);
+            let thread_id = ThreadId::from(thread_id);
             let credential = build_connector_credential(
                 client,
                 "linear.graphql",
@@ -1286,14 +1287,14 @@ fn dispatch(cli: Cli) -> Result<()> {
                 credential_scopes,
             )?;
             let connector = client.register_connector(
-                &intent_id,
+                &thread_id,
                 &name,
                 &source,
                 "linear.graphql",
                 credential.as_ref(),
                 sync_interval,
             )?;
-            let result = client.sync_connector(&intent_id, &connector.id)?;
+            let result = client.sync_connector(&thread_id, &connector.id)?;
             if cli.json {
                 emit_json(&serde_json::json!({ "connector": connector, "sync": result }))?;
                 return Ok(());
@@ -1314,14 +1315,14 @@ fn dispatch(cli: Cli) -> Result<()> {
             );
         }
         Command::Notion {
-            intent_id,
+            thread_id,
             database,
             token_env,
             token_keychain_service,
             sync_interval,
             name,
         } => {
-            let intent_id = IntentId::from(intent_id);
+            let thread_id = ThreadId::from(thread_id);
             let source = notion_source_url(database.as_deref())?;
             let access_token = if let Some(service) = token_keychain_service {
                 read_keychain_secret(&service)?
@@ -1331,14 +1332,14 @@ fn dispatch(cli: Cli) -> Result<()> {
             let credential =
                 connector_credential_from_access_token(client, "notion.api", access_token)?;
             let connector = client.register_connector(
-                &intent_id,
+                &thread_id,
                 &name,
                 &source,
                 "notion.api",
                 Some(&credential),
                 sync_interval,
             )?;
-            let result = client.sync_connector(&intent_id, &connector.id)?;
+            let result = client.sync_connector(&thread_id, &connector.id)?;
             if cli.json {
                 emit_json(&serde_json::json!({ "connector": connector, "sync": result }))?;
                 return Ok(());
@@ -1358,7 +1359,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             );
         }
         Command::Connector {
-            intent_id,
+            thread_id,
             adapter,
             source,
             token_env,
@@ -1371,7 +1372,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             sync_interval,
             name,
         } => {
-            let intent_id = IntentId::from(intent_id);
+            let thread_id = ThreadId::from(thread_id);
             let credential = build_connector_credential(
                 client,
                 &adapter,
@@ -1384,14 +1385,14 @@ fn dispatch(cli: Cli) -> Result<()> {
                 credential_scopes,
             )?;
             let connector = client.register_connector(
-                &intent_id,
+                &thread_id,
                 &name,
                 &source,
                 &adapter,
                 credential.as_ref(),
                 sync_interval,
             )?;
-            let result = client.sync_connector(&intent_id, &connector.id)?;
+            let result = client.sync_connector(&thread_id, &connector.id)?;
             if cli.json {
                 emit_json(&serde_json::json!({ "connector": connector, "sync": result }))?;
                 return Ok(());
@@ -1412,7 +1413,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             );
         }
         Command::ConnectorPolicy {
-            intent_id,
+            thread_id,
             auto_accept,
             allowed_origins,
             min_confidence,
@@ -1426,13 +1427,13 @@ fn dispatch(cli: Cli) -> Result<()> {
                 } else {
                     allowed_origins
                         .iter()
-                        .map(|origin| parse_intent_origin(origin))
+                        .map(|origin| parse_thread_origin(origin))
                         .collect()
                 },
                 min_confidence,
                 max_autonomous_effect: parse_effect(&max_effect),
             };
-            let spec = client.configure_connector_policy(&IntentId::from(intent_id), policy)?;
+            let spec = client.configure_connector_policy(&ThreadId::from(thread_id), policy)?;
             emit_or(cli.json, &spec, |spec| {
                 println!(
                     "connector policy: auto_accept={} min_confidence={} max_effect={:?} revision={}",
@@ -1443,20 +1444,20 @@ fn dispatch(cli: Cli) -> Result<()> {
                 );
             })?;
         }
-        Command::Connectors { intent_id } => {
-            let intent_id = IntentId::from(intent_id);
-            let connectors = client.connectors(&intent_id)?;
+        Command::Connectors { thread_id } => {
+            let thread_id = ThreadId::from(thread_id);
+            let connectors = client.connectors(&thread_id)?;
             if cli.json {
                 let mut rows = Vec::with_capacity(connectors.len());
                 for connector in connectors {
-                    let health = client.connector_health(&intent_id, &connector.id)?;
+                    let health = client.connector_health(&thread_id, &connector.id)?;
                     rows.push(serde_json::json!({ "connector": connector, "health": health }));
                 }
                 emit_json(&rows)?;
                 return Ok(());
             }
             for connector in connectors {
-                let health = client.connector_health(&intent_id, &connector.id)?;
+                let health = client.connector_health(&thread_id, &connector.id)?;
                 println!(
                     "{} {:?} enabled={} health={:?} failures={} last_success={} next_sync={} pages={} backfill={} credential={} scopes={:?} provider={} sync={:?} read={:?} write={:?} source={}",
                     connector.id,
@@ -1491,7 +1492,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
         }
         Command::ConnectorActionPropose {
-            intent_id,
+            thread_id,
             connector_id,
             capability,
             target,
@@ -1502,7 +1503,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 CliError::usage(format!("action --input must be JSON: {error}"))
             })?;
             let action = client.propose_connector_action(
-                &IntentId::from(intent_id),
+                &ThreadId::from(thread_id),
                 &else_protocol::ids::ConnectorId::from(connector_id),
                 &capability,
                 &target,
@@ -1512,40 +1513,40 @@ fn dispatch(cli: Cli) -> Result<()> {
             emit_or(cli.json, &action, print_connector_action)?;
         }
         Command::ConnectorActionExecute {
-            intent_id,
+            thread_id,
             action_id,
         } => {
             let action = client.connector_action(
-                &IntentId::from(intent_id),
+                &ThreadId::from(thread_id),
                 &else_protocol::ids::ConnectorActionId::from(action_id),
                 "execute",
             )?;
             emit_or(cli.json, &action, print_connector_action)?;
         }
         Command::ConnectorActionVerify {
-            intent_id,
+            thread_id,
             action_id,
         } => {
             let action = client.connector_action(
-                &IntentId::from(intent_id),
+                &ThreadId::from(thread_id),
                 &else_protocol::ids::ConnectorActionId::from(action_id),
                 "verify",
             )?;
             emit_or(cli.json, &action, print_connector_action)?;
         }
         Command::ConnectorActionCompensate {
-            intent_id,
+            thread_id,
             action_id,
         } => {
             let action = client.connector_action(
-                &IntentId::from(intent_id),
+                &ThreadId::from(thread_id),
                 &else_protocol::ids::ConnectorActionId::from(action_id),
                 "compensate",
             )?;
             emit_or(cli.json, &action, print_connector_action)?;
         }
-        Command::ConnectorActions { intent_id } => {
-            let actions = client.connector_actions(&IntentId::from(intent_id))?;
+        Command::ConnectorActions { thread_id } => {
+            let actions = client.connector_actions(&ThreadId::from(thread_id))?;
             emit_or(cli.json, &actions, |actions| {
                 for action in actions {
                     print_connector_action(action);
@@ -1553,11 +1554,11 @@ fn dispatch(cli: Cli) -> Result<()> {
             })?;
         }
         Command::ConnectorCredentialRevoke {
-            intent_id,
+            thread_id,
             connector_id,
         } => {
             let credential = client.revoke_connector_credential(
-                &IntentId::from(intent_id),
+                &ThreadId::from(thread_id),
                 &else_protocol::ids::ConnectorId::from(connector_id),
             )?;
             emit_or(cli.json, &credential, |credential| {
@@ -1573,15 +1574,15 @@ fn dispatch(cli: Cli) -> Result<()> {
             })?;
         }
         Command::ConnectorCredentialSet {
-            intent_id,
+            thread_id,
             connector_id,
             token_env,
             token_keychain_service,
         } => {
-            let intent_id = IntentId::from(intent_id);
+            let thread_id = ThreadId::from(thread_id);
             let connector_id = else_protocol::ids::ConnectorId::from(connector_id);
             let connector = client
-                .connectors(&intent_id)?
+                .connectors(&thread_id)?
                 .into_iter()
                 .find(|connector| connector.id == connector_id)
                 .ok_or_else(|| CliError::usage(format!("connector {connector_id}")))?;
@@ -1593,7 +1594,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             let credential =
                 connector_credential_from_access_token(client, &connector.adapter, access_token)?;
             let metadata =
-                client.attach_connector_credential(&intent_id, &connector_id, credential)?;
+                client.attach_connector_credential(&thread_id, &connector_id, credential)?;
             emit_or(cli.json, &metadata, |metadata| {
                 println!(
                     "credential updated: {} auth={:?} scopes={:?} expires_at={}",
@@ -1626,8 +1627,8 @@ fn dispatch(cli: Cli) -> Result<()> {
                 );
             }
         }
-        Command::Signals { intent_id } => {
-            let signals = client.world_signals_of(&IntentId::from(intent_id))?;
+        Command::Signals { thread_id } => {
+            let signals = client.world_signals_of(&ThreadId::from(thread_id))?;
             if cli.json {
                 emit_json(&signals)?;
                 return Ok(());
@@ -1650,10 +1651,10 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
         }
         Command::World {
-            intent_id,
+            thread_id,
             include_resolved,
         } => {
-            let items = client.world_items(&IntentId::from(intent_id), include_resolved)?;
+            let items = client.world_items(&ThreadId::from(thread_id), include_resolved)?;
             if cli.json {
                 emit_json(&items)?;
                 return Ok(());
@@ -1663,7 +1664,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
         }
         Command::WorldResolve {
-            intent_id,
+            thread_id,
             item_id,
             state,
             note,
@@ -1673,7 +1674,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 _ => else_protocol::world::WorldItemResolutionKind::Completed,
             };
             let item = client.resolve_world_item(
-                &IntentId::from(intent_id),
+                &ThreadId::from(thread_id),
                 &else_protocol::ids::WorldItemId::from(item_id),
                 kind,
                 note.as_deref(),
@@ -1695,18 +1696,18 @@ fn dispatch(cli: Cli) -> Result<()> {
             print_world_section("risks", &brief.risks);
         }
         Command::Projects {
-            intent_id,
+            thread_id,
             include_resolved,
         } => {
-            let intent_id = intent_id.map(IntentId::from);
-            let projects = client.project_worlds(intent_id.as_ref(), include_resolved)?;
+            let thread_id = thread_id.map(ThreadId::from);
+            let projects = client.project_worlds(thread_id.as_ref(), include_resolved)?;
             if cli.json {
                 emit_json(&projects)?;
                 return Ok(());
             }
             for project in projects {
                 println!(
-                    "{} {} open={} waiting={} overdue={} next_due={} intents={} connectors={}",
+                    "{} {} open={} waiting={} overdue={} next_due={} threads={} connectors={}",
                     project.key,
                     project.title,
                     project.open_items,
@@ -1716,30 +1717,30 @@ fn dispatch(cli: Cli) -> Result<()> {
                         .next_deadline
                         .map(|value| value.to_rfc3339())
                         .unwrap_or_else(|| "none".into()),
-                    project.intent_ids.len(),
+                    project.thread_ids.len(),
                     project.connector_ids.len()
                 );
                 for record in &project.items {
                     println!(
-                        "  intent={} {:?} {:?} {}",
-                        record.intent_id, record.item.kind, record.item.state, record.item.title
+                        "  thread={} {:?} {:?} {}",
+                        record.thread_id, record.item.kind, record.item.state, record.item.title
                     );
                 }
             }
         }
         Command::Identities {
-            intent_id,
+            thread_id,
             include_resolved,
         } => {
-            let intent_id = intent_id.map(IntentId::from);
-            let identities = client.identity_worlds(intent_id.as_ref(), include_resolved)?;
+            let thread_id = thread_id.map(ThreadId::from);
+            let identities = client.identity_worlds(thread_id.as_ref(), include_resolved)?;
             if cli.json {
                 emit_json(&identities)?;
                 return Ok(());
             }
             for identity in identities {
                 println!(
-                    "{:?} {} {} open={} overdue={} next_due={} intents={} connectors={}",
+                    "{:?} {} {} open={} overdue={} next_due={} threads={} connectors={}",
                     identity.kind,
                     identity.key,
                     identity.title,
@@ -1749,19 +1750,19 @@ fn dispatch(cli: Cli) -> Result<()> {
                         .next_deadline
                         .map(|value| value.to_rfc3339())
                         .unwrap_or_else(|| "none".into()),
-                    identity.intent_ids.len(),
+                    identity.thread_ids.len(),
                     identity.connector_ids.len()
                 );
                 for record in &identity.items {
                     println!(
-                        "  intent={} {:?} {:?} {}",
-                        record.intent_id, record.item.kind, record.item.state, record.item.title
+                        "  thread={} {:?} {:?} {}",
+                        record.thread_id, record.item.kind, record.item.state, record.item.title
                     );
                 }
             }
         }
         Command::CorrelateCorrect {
-            intent_id,
+            thread_id,
             action,
             kind,
             sources,
@@ -1787,7 +1788,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 _ => unreachable!("clap validates correction action"),
             };
             let correction = client.correct_world_correlation(
-                &IntentId::from(intent_id),
+                &ThreadId::from(thread_id),
                 WorldCorrelationCorrection {
                     id: else_protocol::ids::WorldCorrelationCorrectionId::new(),
                     kind: action,
@@ -1822,9 +1823,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
             for record in records {
                 println!(
-                    "#{} intent={} {} {:?} {:?} {:?} {}",
+                    "#{} thread={} {} {:?} {:?} {:?} {}",
                     record.seq,
-                    record.intent_id,
+                    record.thread_id,
                     record.signal.id,
                     record.signal.object_kind,
                     record.signal.change,
@@ -1834,16 +1835,16 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
         }
         Command::CandidateFeed { cursor } => {
-            let records = client.intent_candidates(cursor)?;
+            let records = client.thread_candidates(cursor)?;
             if cli.json {
                 emit_json(&records)?;
                 return Ok(());
             }
             for record in records {
                 println!(
-                    "#{} intent={} {} {:?} {:?} {}",
+                    "#{} thread={} {} {:?} {:?} {}",
                     record.seq,
-                    record.intent_id,
+                    record.thread_id,
                     record.candidate.id,
                     record.candidate.origin,
                     record.candidate.state,
@@ -1851,8 +1852,8 @@ fn dispatch(cli: Cli) -> Result<()> {
                 );
             }
         }
-        Command::ResolveSignals { intent_id } => {
-            let candidates = client.resolve_signals(&IntentId::from(intent_id))?;
+        Command::ResolveSignals { thread_id } => {
+            let candidates = client.resolve_signals(&ThreadId::from(thread_id))?;
             if cli.json {
                 emit_json(&candidates)?;
                 return Ok(());
@@ -1864,8 +1865,8 @@ fn dispatch(cli: Cli) -> Result<()> {
                 print_candidate(&candidate);
             }
         }
-        Command::Candidates { intent_id } => {
-            let records = client.intent_candidates_of(&IntentId::from(intent_id))?;
+        Command::Candidates { thread_id } => {
+            let records = client.thread_candidates_of(&ThreadId::from(thread_id))?;
             if cli.json {
                 emit_json(&records)?;
                 return Ok(());
@@ -1878,7 +1879,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             }
         }
         Command::CandidatePropose {
-            intent_id,
+            thread_id,
             outcome,
             origin,
             signals,
@@ -1889,21 +1890,21 @@ fn dispatch(cli: Cli) -> Result<()> {
             deadline,
             dedupe_key,
         } => {
-            use else_protocol::connector::{IntentCandidate, IntentCandidateState};
-            let intent_id = IntentId::from(intent_id);
-            let origin = parse_intent_origin(&origin);
+            use else_protocol::connector::{ThreadCandidate, ThreadCandidateState};
+            let thread_id = ThreadId::from(thread_id);
+            let origin = parse_thread_origin(&origin);
             let related_signal_ids = signals
                 .into_iter()
                 .map(else_protocol::ids::WorldSignalId::from)
                 .collect::<Vec<_>>();
             let done_when = if done_when.is_empty() {
-                vec![else_protocol::intent::Criterion::manual(format!(
+                vec![else_protocol::thread::Criterion::manual(format!(
                     "确认完成：{outcome}"
                 ))]
             } else {
                 done_when
                     .into_iter()
-                    .map(else_protocol::intent::Criterion::manual)
+                    .map(else_protocol::thread::Criterion::manual)
                     .collect()
             };
             let deadline = deadline
@@ -1923,47 +1924,47 @@ fn dispatch(cli: Cli) -> Result<()> {
                     .join(",");
                 format!("manual-candidate:{:016x}", stable_hash(&outcome, &signals))
             });
-            let candidate = client.propose_intent_candidate(
-                &intent_id,
-                IntentCandidate {
-                    id: else_protocol::ids::IntentCandidateId::new(),
+            let candidate = client.propose_thread_candidate(
+                &thread_id,
+                ThreadCandidate {
+                    id: else_protocol::ids::ThreadCandidateId::new(),
                     origin,
                     proposed_outcome: outcome,
                     done_when,
                     constraints,
-                    authority: else_protocol::intent::Authority {
+                    authority: else_protocol::thread::Authority {
                         max_autonomous_effect: parse_effect(&max_effect),
                         forbidden: vec![],
                     },
-                    attention_policy: else_protocol::intent::AttentionPolicy {
+                    attention_policy: else_protocol::thread::AttentionPolicy {
                         allow_interrupt: false,
                         batch_interval_minutes: 60,
                     },
                     deadline,
                     related_signal_ids,
-                    related_intent_id: Some(intent_id.clone()),
+                    related_thread_id: Some(thread_id.clone()),
                     confidence,
                     dedupe_key,
-                    state: IntentCandidateState::Proposed,
-                    accepted_intent_id: None,
+                    state: ThreadCandidateState::Proposed,
+                    accepted_thread_id: None,
                     accepted_by: None,
                 },
             )?;
             emit_or(cli.json, &candidate, print_candidate)?;
         }
         Command::CandidateAccept {
-            intent_id,
+            thread_id,
             candidate_id,
         } => {
-            let (_, intent) = client.resolve_intent_candidate(
-                &IntentId::from(intent_id),
-                &else_protocol::ids::IntentCandidateId::from(candidate_id),
+            let (_, thread) = client.resolve_thread_candidate(
+                &ThreadId::from(thread_id),
+                &else_protocol::ids::ThreadCandidateId::from(candidate_id),
                 true,
             )?;
             let spec =
-                intent.ok_or_else(|| CliError::usage("candidate acceptance produced no intent"))?;
+                thread.ok_or_else(|| CliError::usage("candidate acceptance produced no thread"))?;
             emit_or(cli.json, &spec, |spec| {
-                println!("intent: {}", spec.id);
+                println!("thread: {}", spec.id);
                 println!("outcome: {}", spec.outcome);
                 if let Some(origin) = &spec.origin {
                     println!(
@@ -1977,12 +1978,12 @@ fn dispatch(cli: Cli) -> Result<()> {
             })?;
         }
         Command::CandidateReject {
-            intent_id,
+            thread_id,
             candidate_id,
         } => {
-            let (record, _) = client.resolve_intent_candidate(
-                &IntentId::from(intent_id),
-                &else_protocol::ids::IntentCandidateId::from(candidate_id),
+            let (record, _) = client.resolve_thread_candidate(
+                &ThreadId::from(thread_id),
+                &else_protocol::ids::ThreadCandidateId::from(candidate_id),
                 false,
             )?;
             emit_or(cli.json, &record, |_| println!("rejected"))?;
@@ -2009,15 +2010,15 @@ fn emit_or<T: serde::Serialize>(json: bool, value: &T, human: impl FnOnce(&T)) -
     }
 }
 
-fn parse_intent_origin(origin: &str) -> else_protocol::connector::IntentOriginKind {
-    use else_protocol::connector::IntentOriginKind;
+fn parse_thread_origin(origin: &str) -> else_protocol::connector::ThreadOriginKind {
+    use else_protocol::connector::ThreadOriginKind;
     match origin {
-        "user_direct" => IntentOriginKind::UserDirect,
-        "external_request" => IntentOriginKind::ExternalRequest,
-        "commitment" => IntentOriginKind::Commitment,
-        "agent_proposal" => IntentOriginKind::AgentProposal,
-        "system_recovery" => IntentOriginKind::SystemRecovery,
-        _ => IntentOriginKind::InferredNeed,
+        "user_direct" => ThreadOriginKind::UserDirect,
+        "external_request" => ThreadOriginKind::ExternalRequest,
+        "commitment" => ThreadOriginKind::Commitment,
+        "agent_proposal" => ThreadOriginKind::AgentProposal,
+        "system_recovery" => ThreadOriginKind::SystemRecovery,
+        _ => ThreadOriginKind::InferredNeed,
     }
 }
 

@@ -3,7 +3,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use else_protocol::artifact::OutcomeEvidence;
-use else_protocol::intent::{Criterion, CriterionVerification};
+use else_protocol::thread::{Criterion, CriterionVerification};
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -21,7 +21,7 @@ pub enum OutcomeVerification {
 /// 会返回待人工确认，不会为未检查的标准生成通过证据。
 pub fn evaluate_outcome(workspace: &Path, criteria: &[Criterion]) -> Result<OutcomeVerification> {
     if criteria.is_empty() {
-        return Err("intent has no DoneWhen criteria".into());
+        return Err("thread has no DoneWhen criteria".into());
     }
     let workspace = workspace
         .canonicalize()
@@ -61,7 +61,7 @@ pub fn confirm_manual_outcome(
     criteria: &[Criterion],
 ) -> Result<Vec<OutcomeEvidence>> {
     if criteria.is_empty() {
-        return Err("intent has no DoneWhen criteria".into());
+        return Err("thread has no DoneWhen criteria".into());
     }
     let workspace = workspace
         .canonicalize()

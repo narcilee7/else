@@ -6,24 +6,24 @@ use else_harness::egress::EgressProxy;
 use else_protocol::event::{Actor, EventEnvelope, EventPayload};
 use else_protocol::harness::{HarnessNetworkAccess, ToolEffectVisibility};
 use else_protocol::ids::CapabilityId;
-use else_protocol::ids::IntentId;
-use else_protocol::intent::{IntentSpec, OpaqueHarnessPolicy};
+use else_protocol::ids::ThreadId;
+use else_protocol::thread::{OpaqueHarnessPolicy, ThreadSpec};
 
 use crate::tool_gateway::ToolGatewayServer;
 use crate::{ApiError, Result, Runtime};
 
 impl Runtime {
-    /// 用户显式启用 Opaque Profile。该操作提高 Intent Revision，但不扩大
+    /// 用户显式启用 Opaque Profile。该操作提高 Thread Revision，但不扩大
     /// `Authority`；只允许观察上限，不等于给 Harness 签发工具权限。
     pub fn configure_opaque_harness(
         &self,
-        intent_id: &IntentId,
+        thread_id: &ThreadId,
         policy: OpaqueHarnessPolicy,
-    ) -> Result<IntentSpec> {
-        let projection = self.projection(intent_id)?;
+    ) -> Result<ThreadSpec> {
+        let projection = self.projection(thread_id)?;
         for (scope_id, scope) in &projection.scopes {
             if matches!(scope.state, else_protocol::event::ScopeState::Running)
-                && self.active_run_id(intent_id, scope_id)?.is_some()
+                && self.active_run_id(thread_id, scope_id)?.is_some()
             {
                 return Err(ApiError::Conflict(
                     "cannot change Opaque Profile while a Run is active".into(),
@@ -33,24 +33,24 @@ impl Runtime {
         let mut spec = projection
             .spec
             .clone()
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         spec.revision = spec.revision.saturating_add(1);
         spec.opaque_harness_policy = policy;
         let root = projection
             .root_scope_id
-            .ok_or_else(|| ApiError::IntentNotFound(intent_id.clone()))?;
+            .ok_or_else(|| ApiError::ThreadNotFound(thread_id.clone()))?;
         let generation = projection
             .scopes
             .get(&root)
             .map(|scope| scope.generation)
             .unwrap_or(1);
         self.ledger.append(&EventEnvelope::new(
-            intent_id.clone(),
+            thread_id.clone(),
             root,
             generation,
             spec.revision,
             Actor::User,
-            EventPayload::IntentRevised {
+            EventPayload::ThreadRevised {
                 spec: spec.clone(),
                 reason: "用户配置 Opaque Harness Profile".into(),
             },
@@ -60,7 +60,7 @@ impl Runtime {
 
     pub(crate) fn ensure_harness_allowed(
         &self,
-        spec: &IntentSpec,
+        spec: &ThreadSpec,
         adapter: &dyn HarnessAdapter,
     ) -> Result<()> {
         let capabilities = adapter.capabilities();
@@ -80,7 +80,7 @@ impl Runtime {
         }
         if network != HarnessNetworkAccess::Deny && !policy.allow_native_provider_network {
             return Err(GatewayError::OpaqueHarnessDenied(format!(
-                "{} requests native provider network but the Intent did not approve it",
+                "{} requests native provider network but the Thread did not approve it",
                 adapter.name()
             ))
             .into());
@@ -88,7 +88,7 @@ impl Runtime {
         Ok(())
     }
 
-    pub(crate) fn harness_allowed(&self, spec: &IntentSpec, adapter: &dyn HarnessAdapter) -> bool {
+    pub(crate) fn harness_allowed(&self, spec: &ThreadSpec, adapter: &dyn HarnessAdapter) -> bool {
         self.ensure_harness_allowed(spec, adapter).is_ok()
     }
 
@@ -133,7 +133,7 @@ impl Runtime {
 
     pub(crate) fn start_tool_gateway(
         &self,
-        spec: &IntentSpec,
+        spec: &ThreadSpec,
         ctx: &else_gateway::ExecContext,
         workspace: &std::path::Path,
         allowed_capabilities: Option<Vec<CapabilityId>>,
