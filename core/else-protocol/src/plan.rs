@@ -63,7 +63,6 @@ pub struct Plan {
     pub id: PlanId,
     pub revision: u64,
     pub supersedes: Option<PlanId>,
-    #[serde(alias = "intent_revision")]
     pub thread_revision: u64,
     pub summary: String,
     pub steps: Vec<PlanStep>,

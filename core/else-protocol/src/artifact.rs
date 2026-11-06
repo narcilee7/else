@@ -58,7 +58,6 @@ pub struct Checkpoint {
     pub id: CheckpointId,
     pub scope_id: ScopeId,
     pub generation: u64,
-    #[serde(alias = "intent_revision")]
     pub thread_revision: u64,
     /// 事件水位：重放到此序号为止。
     pub event_cursor: u64,

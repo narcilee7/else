@@ -62,7 +62,6 @@ pub struct WorldItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorldItemRecord {
-    #[serde(alias = "intent_id")]
     pub thread_id: ThreadId,
     pub item: WorldItem,
 }
@@ -72,7 +71,6 @@ pub struct ProjectWorld {
     pub key: String,
     pub title: String,
     pub items: Vec<WorldItemRecord>,
-    #[serde(alias = "intent_ids")]
     pub thread_ids: Vec<ThreadId>,
     pub connector_ids: Vec<ConnectorId>,
     pub open_items: u64,
@@ -87,7 +85,6 @@ pub struct IdentityWorld {
     pub key: String,
     pub title: String,
     pub items: Vec<WorldItemRecord>,
-    #[serde(alias = "intent_ids")]
     pub thread_ids: Vec<ThreadId>,
     pub connector_ids: Vec<ConnectorId>,
     pub open_items: u64,

@@ -64,7 +64,6 @@ pub enum ScopeState {
 pub struct EventEnvelope {
     pub event_id: String,
     pub protocol_version: String,
-    #[serde(alias = "intent_id")]
     pub thread_id: ThreadId,
     pub scope_id: ScopeId,
     pub run_id: Option<RunId>,
@@ -72,7 +71,6 @@ pub struct EventEnvelope {
     /// Abort 后递增，旧 Generation 的工具调用一律被 Gateway 拒绝。
     pub generation: u64,
     /// Thread Revision：目标语义版本。与 Generation 永不混用。
-    #[serde(alias = "intent_revision")]
     pub thread_revision: u64,
     /// 本事件基于哪个 Context Snapshot。
     pub snapshot_id: Option<SnapshotId>,
@@ -119,17 +117,14 @@ impl EventEnvelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum EventPayload {
-    #[serde(alias = "intent_created")]
     ThreadCreated {
         spec: ThreadSpec,
     },
     /// 只有用户或其明确授权的决策能产生此事件。
-    #[serde(alias = "intent_revised")]
     ThreadRevised {
         spec: ThreadSpec,
         reason: String,
     },
-    #[serde(alias = "intent_state_changed")]
     ThreadStateChanged {
         state: ThreadState,
     },
@@ -222,15 +217,12 @@ pub enum EventPayload {
     SignalInterpreted {
         interpretation: SignalInterpretation,
     },
-    #[serde(alias = "intent_candidate_proposed")]
     ThreadCandidateProposed {
         candidate: ThreadCandidate,
     },
-    #[serde(alias = "intent_candidate_state_changed")]
     ThreadCandidateStateChanged {
         candidate_id: ThreadCandidateId,
         state: ThreadCandidateState,
-        #[serde(alias = "intent_id")]
         thread_id: Option<ThreadId>,
         #[serde(default)]
         accepted_by: Option<ThreadAcceptedBy>,
@@ -591,39 +583,6 @@ mod tests {
             }
             other => panic!("unexpected payload: {other:?}"),
         }
-    }
-
-    /// 0.1.x 写进账本的是 `intent_*`：列名与 payload 里的字段都已迁移，
-    /// 但历史事件只能是只读的——重放必须照旧能读懂。
-    #[test]
-    fn legacy_thread_events_still_decode() {
-        let thread_id = ThreadId::new();
-        let scope_id = ScopeId::new();
-        let mut legacy = serde_json::to_value(EventEnvelope::new(
-            thread_id.clone(),
-            scope_id.clone(),
-            1,
-            1,
-            Actor::User,
-            EventPayload::ThreadCreated { spec: spec() },
-        ))
-        .unwrap();
-        let object = legacy.as_object_mut().unwrap();
-        let raw_thread_id = object.remove("thread_id").unwrap();
-        object.insert("intent_id".into(), raw_thread_id);
-        let raw_revision = object.remove("thread_revision").unwrap();
-        object.insert("intent_revision".into(), raw_revision);
-        let payload = object.get_mut("payload").unwrap();
-        payload["type"] = "intent_created".into();
-
-        let decoded: EventEnvelope = serde_json::from_value(legacy).unwrap();
-        assert_eq!(decoded.thread_id, thread_id);
-        assert_eq!(decoded.scope_id, scope_id);
-        assert_eq!(decoded.thread_revision, 1);
-        assert!(matches!(
-            decoded.payload,
-            EventPayload::ThreadCreated { .. }
-        ));
     }
 
     #[test]

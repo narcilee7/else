@@ -55,7 +55,6 @@ pub struct ThreadSnapshot {
 /// 而不是逐条打扰用户。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttentionWindowSnapshot {
-    #[serde(alias = "intent_id")]
     pub thread_id: ThreadId,
     pub window: AttentionWindow,
     pub requests: Vec<AttentionRequest>,
@@ -79,12 +78,10 @@ pub struct AttentionView {
 pub struct EventResponse {
     pub seq: u64,
     pub event_id: String,
-    #[serde(alias = "intent_id")]
     pub thread_id: String,
     pub scope_id: String,
     pub run_id: Option<String>,
     pub generation: u64,
-    #[serde(alias = "intent_revision")]
     pub thread_revision: u64,
     pub occurred_at: String,
     pub payload: Value,

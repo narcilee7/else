@@ -100,10 +100,8 @@ pub enum SnapshotAudience {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextSnapshot {
     pub id: SnapshotId,
-    #[serde(alias = "intent_id")]
     pub thread_id: ThreadId,
     /// 快照基于的 Thread Revision；Verifier 永远按此 revision 的 spec 验收。
-    #[serde(alias = "intent_revision")]
     pub thread_revision: u64,
     /// 快照基于的事件水位。
     pub event_cursor: u64,

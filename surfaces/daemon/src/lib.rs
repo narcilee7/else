@@ -242,16 +242,7 @@ fn handle_http(mut request: Request, state: &AppState) {
         respond_json(request, 400, &json!({ "error": "invalid body" }));
         return;
     }
-    let path_segments: Vec<_> = path
-        .trim_matches('/')
-        .split('/')
-        // 0.1.x 的客户端（旧版 CLI、旧版 App）还在打 `/v1/intents`。
-        // 只在段落边界上映射旧名，其余路径与 query 原样透传。
-        .map(|segment| match segment {
-            "intents" => "threads",
-            other => other,
-        })
-        .collect();
+    let path_segments: Vec<_> = path.trim_matches('/').split('/').collect();
     if path_segments.len() == 7
         && path_segments[0] == "v1"
         && path_segments[1] == "threads"

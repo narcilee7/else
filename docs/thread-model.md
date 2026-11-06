@@ -94,15 +94,18 @@ Agent ──request_permission──▶ Gateway ──NeedsApproval──▶ Att
 - 事件是权威，视图是投影：TUI/CLI/App 读同一份事件，不各自造状态。
 - `else-bot log <thread>` 必须能用（现在 404）。
 
-## 7. 兼容与迁移
+## 7. 兼容与迁移：不兼容
 
-改名不重写历史：
+这是破坏性变更，不做双轨：
 
-- 老账本（0.1.x）打开时把列 `intent_id`/`intent_revision` 原地改名，事件内容一条不动。
-- payload 里的旧字段与旧事件名（`intent_created` 等）由 serde alias 兼容。
-- daemon 同时接受 `/v1/intents` 与 `/v1/threads`，旧客户端不会立刻坏。
-- CLI 保留 `else-bot intent` 作为 `thread` 的隐藏别名（肌肉记忆）。
-- deep link 改用 `else://thread/{id}`；旧 `else://intent/{id}` 不再接受（0.x 可接受）。
+- 旧账本不迁移。打开 0.1.x 的库会在启动时就报
+  `this runtime predates the Thread rename`，不会留一个脏的"no such column"。
+- 不保留 serde alias、不接受 `/v1/intents`、不保留 `else-bot intent` 别名、
+  不接受 `else://intent/{id}`。
+- 理由：两套名字同时存在，每个新人都要先学会"其实它叫另一个名字"，
+  而它换来的只是让一个还没有用户的版本少做一次重置。
+
+代价说清楚：升级前需要换一个新的 runtime 目录（或删掉旧的）。
 
 ## 8. 分阶段
 

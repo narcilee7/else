@@ -517,7 +517,6 @@ pub struct SyncCursor {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorldSignalRecord {
     pub seq: u64,
-    #[serde(alias = "intent_id")]
     pub thread_id: ThreadId,
     pub signal: WorldSignal,
 }
@@ -525,7 +524,6 @@ pub struct WorldSignalRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThreadCandidateRecord {
     pub seq: u64,
-    #[serde(alias = "intent_id")]
     pub thread_id: ThreadId,
     pub candidate: ThreadCandidate,
 }

@@ -47,6 +47,13 @@ pub enum LedgerError {
     Codec(#[from] serde_json::Error),
     #[error("unsupported protocol version: {found}, expected {expected}")]
     UnsupportedVersion { found: String, expected: String },
+    /// 0.1.x 的库用 `intent_*` 列名。Thread 改名是破坏性变更，不做就地迁移：
+    /// 旧库在这里停住并说清楚该怎么办，而不是留一个“no such column”给用户猜。
+    #[error(
+        "this runtime predates the Thread rename (found `intent_id`); \
+         start a fresh runtime instead of reusing this one"
+    )]
+    LegacySchema,
     /// 故障注入：事件已持久化，随后模拟进程崩溃。
     #[error("crash injected after durable event append")]
     CrashInjected,
@@ -87,7 +94,7 @@ impl Ledger {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         // 单写者多连接下（如 CLI 并行操作同一 Runtime 目录）等待而非立即失败。
         conn.pragma_update(None, "busy_timeout", 5_000)?;
-        Self::migrate_pre_thread_schema(&conn)?;
+        Self::reject_pre_thread_schema(&conn)?;
         conn.execute_batch(SCHEMA)?;
         Ok(Self {
             conn,
@@ -95,19 +102,16 @@ impl Ledger {
         })
     }
 
-    /// 0.1.x 的账本用 `intent_*` 命名。改名不重写历史：老库打开时只换列名，
-    /// payload 里的旧字段由 serde alias 兼容，事件内容一条不动。
-    ///
-    /// 只在真正存在旧列时迁移，因此对新建库与已迁移库都是空操作。
-    fn migrate_pre_thread_schema(conn: &Connection) -> Result<()> {
+    /// Thread 改名是破坏性变更：不迁移、不兼容。
+    /// 但也不会假装没事：旧库在这里直接停住，而不是等到第一次写入时
+    /// 报一个 `no such column: thread_id`。
+    fn reject_pre_thread_schema(conn: &Connection) -> Result<()> {
         let mut statement = conn.prepare("PRAGMA table_info(events)")?;
         let columns: Vec<String> = statement
             .query_map([], |row| row.get::<_, String>(1))?
             .collect::<std::result::Result<_, _>>()?;
         if columns.iter().any(|name| name == "intent_id") {
-            conn.execute_batch(
-                "ALTER TABLE events RENAME COLUMN intent_id TO thread_id;\n                 ALTER TABLE events RENAME COLUMN intent_revision TO thread_revision;\n                 DROP INDEX IF EXISTS idx_events_thread;",
-            )?;
+            return Err(LedgerError::LegacySchema);
         }
         Ok(())
     }

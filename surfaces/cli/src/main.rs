@@ -49,7 +49,6 @@ struct Cli {
 #[derive(Subcommand, Clone)]
 enum Command {
     /// 开一个 Thread：说清楚要达成什么，它自己开始做
-    #[command(alias = "intent")]
     Thread {
         outcome: String,
         /// 项目作用域：历史结论与纠正按项目召回，不泛化到全局
