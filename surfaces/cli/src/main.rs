@@ -667,6 +667,15 @@ fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Advance { thread_id, harness } => {
             let thread_id = ThreadId::from(thread_id);
+            let before = client.thread(&thread_id)?;
+            if output::is_terminal(before.state) {
+                // 静默返回"什么都没变"是最糟的回答：用户会以为推进过了。
+                return Err(crate::error::CliError::usage(format!(
+                    "thread {thread_id} already ended ({}); nothing to advance. \
+                     Use `else-bot revise` to reopen the goal, or `else-bot rerun` from a checkpoint.",
+                    output::thread_state_label(before.state)
+                )));
+            }
             let advanced = client.advance(&thread_id, Some(&harness))?;
             warn_harness_fallback(client, &thread_id, &harness, &advanced);
             emit_or(cli.json, &advanced, print_snapshot)?;
@@ -843,6 +852,10 @@ fn dispatch(cli: Cli) -> Result<()> {
             let threads = client.list_threads()?;
             if cli.json {
                 emit_json(&threads)?;
+                return Ok(());
+            }
+            if threads.is_empty() {
+                println!("no threads yet — run `else-bot thread \"<what you want done>\"`");
                 return Ok(());
             }
             for snapshot in threads {

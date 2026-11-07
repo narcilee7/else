@@ -78,6 +78,8 @@ pub enum ApiError {
     PermissionEscalation(String),
     #[error("invalid thread mode: {0}")]
     InvalidThreadMode(String),
+    #[error("invalid goal: {0}")]
+    InvalidGoal(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -223,6 +225,7 @@ impl Runtime {
 
     pub(crate) fn create_thread_from_parts(&self, draft: ThreadDraft) -> Result<ThreadSpec> {
         Self::validate_thread_mode(&draft.mode)?;
+        Self::validate_goal(&draft.outcome)?;
         let root_scope_id = ScopeId::new();
         let spec = ThreadSpec {
             id: ThreadId::new(),
@@ -496,7 +499,11 @@ impl Runtime {
     ) -> Result<ThreadProjection> {
         let projection = self.projection(thread_id)?;
         if !projection.open_requests.contains_key(request_id) {
-            return Err(ApiError::ThreadNotFound(thread_id.clone()));
+            // 线程是存在的，只是这条请求已经不需要你回答了 ——
+            // 报 "thread not found" 会把人引到完全错误的方向。
+            return Err(ApiError::Conflict(format!(
+                "attention {request_id} is no longer waiting for a decision"
+            )));
         }
         let request_event = self
             .ledger

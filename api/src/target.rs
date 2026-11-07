@@ -54,6 +54,23 @@ impl Runtime {
             ThreadMode::Directory { path } => resolve_directory(path).map(|_| ()),
         }
     }
+
+    /// 目标是这条 Thread 唯一的承诺。空字符串不是承诺，而它是后面所有
+    /// 计划、验收与"这件事怎么样了"的标题 —— 放进去只会变成一行空白。
+    pub(crate) fn validate_goal(outcome: &str) -> Result<()> {
+        let trimmed = outcome.trim();
+        if trimmed.is_empty() {
+            return Err(ApiError::InvalidGoal(
+                "the goal is empty; say what should be different when this is done".into(),
+            ));
+        }
+        if trimmed.chars().count() > 2000 {
+            return Err(ApiError::InvalidGoal(
+                "the goal is longer than 2000 characters; shorten it".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn resolve_directory(path: &str) -> Result<PathBuf> {

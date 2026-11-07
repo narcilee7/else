@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use else_client::RuntimeClient;
+use else_client::{RuntimeClient, RuntimeVersion};
 use serde::Serialize;
 
 use crate::service;
@@ -61,6 +61,10 @@ impl DoctorReport {
 }
 
 /// 跑一遍诊断。
+///
+/// 顺序是有讲究的：先弄清"在这个端口应答的到底是谁"，再谈它的健康。
+/// 端口被别人的进程占着时，后面每一项都会报出误导性的结论 ——
+/// 这也是最常发生的一种。
 pub fn run(client: &RuntimeClient, runtime_dir: &Path) -> DoctorReport {
     let mut checks = Vec::new();
 
@@ -70,60 +74,239 @@ pub fn run(client: &RuntimeClient, runtime_dir: &Path) -> DoctorReport {
     // 2) 后台服务。
     checks.push(check_service(runtime_dir));
 
-    // 3) 当前会话接的到底是常驻 Runtime 还是临时起的一个。
-    checks.push(check_resident(client, runtime_dir));
+    // 3) 在这个端口应答的是谁。
+    let identity = check_identity(client, runtime_dir);
+    let ours = identity.as_ref().is_some_and(|identity| identity.ours);
+    checks.push(identity_check(identity.as_ref(), client));
 
-    // 4) Runtime 可达性与契约版本。
-    match client.version() {
-        Ok(version) => checks.push(Check {
-            name: "runtime".into(),
-            ok: true,
-            detail: format!(
-                "reachable at {} (contract {}, protocol {})",
-                client.base_url(),
-                version.contract_version,
-                version.protocol_version
-            ),
-            hint: None,
-        }),
-        Err(error) => checks.push(Check {
-            name: "runtime".into(),
-            ok: false,
-            detail: format!("cannot reach the runtime: {error}"),
-            hint: Some(
-                "运行 `else-bot daemon install` 让 Runtime 常驻，或用 `else-bot serve` 前台启动。"
-                    .into(),
-            ),
-        }),
-    }
+    // 4) 当前会话接的到底是常驻 Runtime 还是临时起的一个。
+    checks.push(check_resident(client, runtime_dir, identity.as_ref()));
 
-    // 4) 令牌有效性 —— 与「可达」是两件事。
-    match client.probe() {
-        Ok(()) => checks.push(Check {
-            name: "token".into(),
-            ok: true,
-            detail: "the token belongs to this runtime".into(),
-            hint: None,
-        }),
-        Err(error) => checks.push(Check {
-            name: "token".into(),
-            ok: false,
-            detail: format!("the token was rejected: {error}"),
-            hint: Some("删除 runtime 目录里的 daemon-token 后重启 Runtime。".into()),
-        }),
-    }
+    // 5) 令牌有效性 —— 与「可达」是两件事。
+    let token_ok = match client.probe() {
+        Ok(()) => {
+            checks.push(Check {
+                name: "token".into(),
+                ok: true,
+                detail: "the token belongs to this runtime".into(),
+                hint: None,
+            });
+            true
+        }
+        Err(error) => {
+            checks.push(Check {
+                name: "token".into(),
+                ok: false,
+                detail: format!("the token was rejected: {error}"),
+                hint: Some("删除 runtime 目录里的 daemon-token 后重启 Runtime。".into()),
+            });
+            false
+        }
+    };
 
-    // 5) Ledger 可写。
+    // 6) 它到底实现了哪些路由。旧构建会自称同一个契约版本，
+    //    然后在真正的调用上返回 404。
+    let routes_ok = if ours && token_ok {
+        let (check, all_present) = check_routes(client);
+        checks.push(check);
+        all_present
+    } else {
+        checks.push(skipped(
+            "routes",
+            "skipped: the runtime answering this port is not the one this command manages",
+        ));
+        false
+    };
+
+    // 7) Ledger 可写。
     checks.push(check_ledger_writable(runtime_dir));
 
-    // 6) Connector 健康。
-    checks.push(check_connectors(client));
+    // 8) Connector 健康。
+    checks.push(if routes_ok {
+        check_connectors(client)
+    } else {
+        skipped(
+            "connectors",
+            "skipped: the runtime did not answer every route this build needs",
+        )
+    });
 
     DoctorReport {
         runtime_dir: runtime_dir.to_path_buf(),
         runtime_url: client.base_url().to_string(),
         checks,
     }
+}
+
+fn skipped(name: &str, detail: &str) -> Check {
+    Check {
+        name: name.into(),
+        ok: false,
+        detail: detail.into(),
+        hint: None,
+    }
+}
+
+/// 在这个端口应答的 Runtime 是谁。
+struct Identity {
+    version: RuntimeVersion,
+    /// 它替的就是这个命令所管的那个目录，并且 pid 与登记一致。
+    ours: bool,
+    /// 与登记不一致的具体原因（`ours` 为真时是 None）。
+    mismatch: Option<String>,
+}
+
+fn check_identity(client: &RuntimeClient, runtime_dir: &Path) -> Option<Identity> {
+    let version = client.version().ok()?;
+    let recorded = recorded_pid(runtime_dir);
+
+    // 旧版 Runtime 不报 pid 与目录：能确认的只有契约版本。
+    let served_dir = version.runtime_dir.clone();
+    let Some(served_dir) = served_dir else {
+        return Some(Identity {
+            version,
+            ours: false,
+            mismatch: Some("它不报自己替哪个目录服务（这个 Runtime 比当前命令旧）".to_string()),
+        });
+    };
+    if Path::new(&served_dir) != runtime_dir {
+        return Some(Identity {
+            version,
+            ours: false,
+            mismatch: Some(format!(
+                "它替 {served_dir} 服务，而这条命令管的是 {}",
+                runtime_dir.display()
+            )),
+        });
+    }
+    if let (Some(answered), Some(recorded)) = (version.pid, recorded) {
+        if answered != recorded {
+            return Some(Identity {
+                version,
+                ours: false,
+                mismatch: Some(format!(
+                    "端口由进程 {answered} 应答，但 daemon.pid 里登记的是 {recorded}"
+                )),
+            });
+        }
+    }
+    Some(Identity {
+        version,
+        ours: true,
+        mismatch: None,
+    })
+}
+
+fn identity_check(identity: Option<&Identity>, client: &RuntimeClient) -> Check {
+    let Some(identity) = identity else {
+        return Check {
+            name: "runtime".into(),
+            ok: false,
+            detail: format!("cannot reach the runtime at {}", client.base_url()),
+            hint: Some(
+                "运行 `else-bot daemon install` 让 Runtime 常驻，或用 `else-bot serve` 前台启动。"
+                    .into(),
+            ),
+        };
+    };
+    let version = &identity.version;
+    let contract = format!(
+        "contract {}, protocol {}",
+        version.contract_version, version.protocol_version
+    );
+    match &identity.mismatch {
+        None => Check {
+            name: "runtime".into(),
+            ok: true,
+            detail: match version.pid {
+                Some(pid) => format!(
+                    "reachable at {} · pid {pid} · {contract}",
+                    client.base_url()
+                ),
+                None => format!("reachable at {} · {contract}", client.base_url()),
+            },
+            hint: None,
+        },
+        Some(reason) => Check {
+            name: "runtime".into(),
+            ok: false,
+            detail: format!(
+                "{} 上应答的不是这条命令的 Runtime：{reason}",
+                client.base_url()
+            ),
+            hint: Some(match version.pid {
+                Some(pid) => format!(
+                    "先停掉那个进程（pid {pid}），再 `else-bot daemon install` —— 端口被占时它装不上。"
+                ),
+                None => "先找出占用该端口的进程并停掉，再 `else-bot daemon install`。".into(),
+            }),
+        },
+    }
+}
+
+/// `daemon.pid` 里登记的 pid（常驻 Runtime 才会写）。
+fn recorded_pid(runtime_dir: &Path) -> Option<u32> {
+    let body = std::fs::read_to_string(runtime_dir.join("daemon.pid")).ok()?;
+    body.lines().next()?.trim().parse().ok()
+}
+
+/// 它到底实现了哪些路由。
+///
+/// 契约版本只能证明"协议对得上"，证明不了"路由都在"。这里逐个真调用一次
+/// 不需要参数的接口，再把有线程时才能探的那条也探一次 —— 缺哪条就报哪条。
+fn check_routes(client: &RuntimeClient) -> (Check, bool) {
+    let mut probes: Vec<(&str, bool)> = vec![
+        ("threads", client.list_threads().is_ok()),
+        ("world/brief", client.brief().is_ok()),
+        ("attention", client.attention_windows().is_ok()),
+        ("harnesses", client.harnesses().is_ok()),
+        ("projects", client.project_worlds(None, false).is_ok()),
+        ("identities", client.identity_worlds(None, false).is_ok()),
+        ("diagnostics", client.diagnostics().is_ok()),
+        ("settings", client.settings().is_ok()),
+    ];
+
+    let threads = client.list_threads().unwrap_or_default();
+    if let Some(thread) = threads.first() {
+        probes.push((
+            "thread connectors",
+            client.connectors(&thread.spec.id).is_ok(),
+        ));
+    }
+
+    let missing: Vec<&str> = probes
+        .iter()
+        .filter(|(_, ok)| !ok)
+        .map(|(name, _)| *name)
+        .collect();
+    let total = probes.len();
+    if missing.is_empty() {
+        return (
+            Check {
+                name: "routes".into(),
+                ok: true,
+                detail: format!("all {total} probed routes answer"),
+                hint: None,
+            },
+            true,
+        );
+    }
+    (
+        Check {
+            name: "routes".into(),
+            ok: false,
+            detail: format!(
+                "这个 Runtime 缺少 {} 条路由：{}",
+                missing.len(),
+                missing.join(", ")
+            ),
+            hint: Some(
+                "它比当前 else-bot 旧（或根本不是这个构建）。停掉它，再 `else-bot daemon install`。"
+                    .into(),
+            ),
+        },
+        false,
+    )
 }
 
 /// Runtime 目录检查。
@@ -184,7 +367,9 @@ fn check_service(runtime_dir: &Path) -> Check {
         return Check {
             name: "background service".into(),
             ok: true,
-            detail: status.detail,
+            // 服务注册在另一个安装路径上时，一切都像是正常的 —— 端口上跑的
+            // 其实是另一个程序。这句话就是那种情况唯一的线索。
+            detail: with_program_note(status.detail, status.unit_program.as_deref()),
             hint: None,
         };
     }
@@ -198,21 +383,51 @@ fn check_service(runtime_dir: &Path) -> Check {
     }
 }
 
+/// 服务启动的程序与这条命令是不是同一个。
+fn with_program_note(detail: String, program: Option<&Path>) -> String {
+    let Some(program) = program else {
+        return detail;
+    };
+    let Ok(current) = std::env::current_exe() else {
+        return detail;
+    };
+    if current == program {
+        return detail;
+    }
+    format!(
+        "{detail}；服务启动的是 {}，这条命令是 {}",
+        program.display(),
+        current.display()
+    )
+}
+
 /// 当前会话接的是常驻 Runtime 还是命令自己起的临时 Runtime。
 ///
 /// 常驻 daemon 启动时会写 `daemon.pid`（pid + 监听地址）。没有它，或者地址
 /// 不匹配，就说明这条命令连的是一个用完即弃的替身 —— 连接器同步、定时器与
 /// 通知都不会发生，而用户看到的仍是"一切正常"。
-fn check_resident(client: &RuntimeClient, runtime_dir: &Path) -> Check {
+fn check_resident(
+    client: &RuntimeClient,
+    runtime_dir: &Path,
+    identity: Option<&Identity>,
+) -> Check {
     let path = runtime_dir.join("daemon.pid");
     let Ok(body) = std::fs::read_to_string(&path) else {
-        return Check {
-            name: "resident runtime".into(),
-            ok: false,
-            detail: format!(
+        // 没有登记。如果在这个端口应答的就是这个目录的进程，那说明它
+        // 是个常驻 Runtime 但登记丢了；否则就是命令自己起的临时替身。
+        let detail = match identity.and_then(|identity| identity.version.pid) {
+            Some(pid) if identity.is_some_and(|identity| identity.ours) => {
+                format!("进程 {pid} 正在服务这个目录，但没有 daemon.pid 登记；它可能是前台启动的")
+            }
+            _ => format!(
                 "没有常驻 Runtime；这条命令用的是临时 Runtime（{}）",
                 client.base_url()
             ),
+        };
+        return Check {
+            name: "resident runtime".into(),
+            ok: false,
+            detail,
             hint: Some("运行 `else-bot daemon install`，否则后台不会真的替你做事。".into()),
         };
     };

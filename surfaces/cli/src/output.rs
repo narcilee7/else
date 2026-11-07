@@ -7,11 +7,37 @@
 use else_protocol::api::{AttentionView, AttentionWindowSnapshot, PlanView, ThreadSnapshot};
 use else_protocol::attention::AttentionRequest;
 use else_protocol::connector::{ConnectorAction, ThreadCandidate};
+use else_protocol::thread::ThreadState;
 use else_protocol::world::{WorldItem, WorldItemRecord};
+
+/// Thread 状态的人话说法。
+///
+/// CLI 和 TUI 说的是同一件事，就该用同一个词 —— 否则 `state: NeedsDecision`
+/// 和界面上的 `needs you` 会让人以为是两个状态。
+pub fn thread_state_label(state: ThreadState) -> &'static str {
+    match state {
+        ThreadState::Active => "running",
+        ThreadState::WaitingExternal => "waiting",
+        ThreadState::NeedsDecision => "needs you",
+        ThreadState::Paused => "paused",
+        ThreadState::Completed => "done",
+        ThreadState::Cancelled => "cancelled",
+        ThreadState::Failed => "failed",
+    }
+}
+
+/// 已经收尾、不会自己再动的状态。
+pub fn is_terminal(state: ThreadState) -> bool {
+    matches!(
+        state,
+        ThreadState::Completed | ThreadState::Cancelled | ThreadState::Failed
+    )
+}
 
 /// 打印一个 Thread 快照。
 pub fn print_snapshot(snapshot: &ThreadSnapshot) {
-    println!("state: {:?}", snapshot.state);
+    println!("goal: {}", snapshot.spec.outcome);
+    println!("state: {}", thread_state_label(snapshot.state));
     println!("artifacts: {}", snapshot.artifacts.len());
     print_decisions(&[], &snapshot.decisions);
 }

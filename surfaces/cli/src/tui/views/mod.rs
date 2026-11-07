@@ -60,18 +60,8 @@ pub fn flat_rows(app: &App) -> Vec<Row> {
     rows(app)
 }
 
-pub fn thread_state_label(state: else_protocol::thread::ThreadState) -> &'static str {
-    use else_protocol::thread::ThreadState;
-    match state {
-        ThreadState::Active => "running",
-        ThreadState::WaitingExternal => "waiting",
-        ThreadState::NeedsDecision => "needs you",
-        ThreadState::Paused => "paused",
-        ThreadState::Completed => "done",
-        ThreadState::Cancelled => "cancelled",
-        ThreadState::Failed => "failed",
-    }
-}
+/// 状态的说法只有一份，在 `output` 里 —— CLI 与终端界面不该各说一套。
+pub use crate::output::thread_state_label;
 
 pub fn thread_style(state: else_protocol::thread::ThreadState) -> Style {
     use else_protocol::thread::ThreadState;

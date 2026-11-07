@@ -213,8 +213,10 @@ impl Runtime {
             projection.state,
             Some(ThreadState::Completed | ThreadState::Failed | ThreadState::Cancelled)
         ) {
-            return Err(ApiError::NotFound(format!(
-                "active thread {thread_id} (terminal state)"
+            // 线程在，只是已经收尾了。报 "not found" 会让人以为 id 写错了。
+            return Err(ApiError::Conflict(format!(
+                "thread {thread_id} already ended ({:?}); it cannot be revised",
+                projection.state.unwrap_or(ThreadState::Completed)
             )));
         }
         let spec = projection
@@ -224,6 +226,7 @@ impl Runtime {
         let mut new_spec = spec.clone();
         new_spec.revision += 1;
         if let Some(outcome) = &update.outcome {
+            Self::validate_goal(outcome)?;
             new_spec.outcome = outcome.clone();
         }
         new_spec

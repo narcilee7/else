@@ -45,6 +45,15 @@ pub struct RuntimeVersion {
     pub contract_version: String,
     /// 事件协议版本。
     pub protocol_version: String,
+    /// 应答进程的 pid。旧版 Runtime 不报，所以是可选的。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// 应答进程正在服务的 runtime 目录。
+    ///
+    /// 端口可能被另一个进程（甚至另一个构建）占着；光比版本号不够，
+    /// 要比"它替哪个目录应答"。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_dir: Option<String>,
 }
 
 /// 一次异步操作的状态。

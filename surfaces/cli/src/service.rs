@@ -42,6 +42,11 @@ pub struct ServiceStatus {
     pub running: bool,
     /// 服务定义实际指向的 runtime 目录（从 unit 文件读出来，不是猜的）。
     pub unit_runtime_dir: Option<PathBuf>,
+    /// 服务定义实际启动的程序。
+    ///
+    /// 端口上跑的是不是"你以为的那个程序"，只能从这里看出来 ——
+    /// 服务注册在一个旧安装路径上时，一切都像是正常的。
+    pub unit_program: Option<PathBuf>,
     /// 一句人话说明。
     pub detail: String,
 }
@@ -108,6 +113,7 @@ fn unsupported_status() -> ServiceStatus {
         loaded: false,
         running: false,
         unit_runtime_dir: None,
+        unit_program: None,
         detail: "这个平台还没有后台服务支持；可以用 `else-bot serve` 前台运行。".into(),
     }
 }
@@ -149,10 +155,13 @@ fn macos_status(runtime_dir: &Path) -> ServiceStatus {
     let loaded = job.is_some();
     let running = job.as_ref().is_some_and(|job| job.running);
     // 读 unit 文件里真实的 `--dir`，而不是把手上的目录拼到描述里。
-    let unit_runtime_dir = unit_path
+    let unit_body = unit_path
         .as_ref()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|body| plist_argument(&body, "--dir"));
+        .and_then(|path| std::fs::read_to_string(path).ok());
+    let unit_runtime_dir = unit_body
+        .as_deref()
+        .and_then(|body| plist_argument(body, "--dir"));
+    let unit_program = unit_body.as_deref().and_then(plist_first_program_argument);
     let detail = if running {
         format!("LaunchAgent {LAUNCH_AGENT_LABEL} 正在运行")
     } else if let Some(job) = job.filter(|job| !job.running) {
@@ -173,6 +182,7 @@ fn macos_status(runtime_dir: &Path) -> ServiceStatus {
         loaded,
         running,
         unit_runtime_dir,
+        unit_program,
         detail,
     }
     .with_runtime(runtime_dir)
@@ -214,6 +224,17 @@ fn plist_argument(body: &str, flag: &str) -> Option<PathBuf> {
         previous = Some(value.trim());
     }
     None
+}
+
+/// plist `ProgramArguments` 的第一个元素就是真正被启动的程序。
+#[cfg(target_os = "macos")]
+fn plist_first_program_argument(body: &str) -> Option<PathBuf> {
+    let start = body.find("<key>ProgramArguments</key>")?;
+    let rest = &body[start..];
+    let array = rest.find("<array>")?;
+    let value = rest[array..].split("<string>").nth(1)?;
+    let program = value.split("</string>").next()?.trim();
+    (!program.is_empty() && !program.starts_with('-')).then(|| PathBuf::from(program))
 }
 
 /// macOS 后台服务的日志文件。

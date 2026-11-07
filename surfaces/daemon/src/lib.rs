@@ -110,6 +110,7 @@ impl Daemon {
 
         let state = Arc::new(AppState {
             token: token.clone(),
+            dir: config.dir.clone(),
             handle: handle.clone(),
             operations: Arc::new(Mutex::new(HashMap::new())),
             idempotency: Arc::new(Mutex::new(HashMap::new())),
@@ -156,6 +157,9 @@ impl Drop for Daemon {
 
 struct AppState {
     token: String,
+    /// 这个进程正在服务的 runtime 目录。`/v1/version` 会报出去，
+    /// 用来区分"这条命令管的那份 Runtime"和"占着同一个端口的别人"。
+    dir: PathBuf,
     handle: RuntimeHandle,
     operations: Arc<Mutex<HashMap<String, Operation>>>,
     idempotency: Arc<Mutex<HashMap<String, CachedResponse>>>,
@@ -362,7 +366,9 @@ fn handle_http(mut request: Request, state: &AppState) {
                 DaemonError::Api(ApiError::Conflict(_))
                 | DaemonError::Api(ApiError::Gateway(_)) => 409,
                 DaemonError::Api(ApiError::Unauthorized(_)) => 403,
-                DaemonError::InvalidRequest(_) => 400,
+                DaemonError::Api(ApiError::InvalidGoal(_))
+                | DaemonError::Api(ApiError::InvalidThreadMode(_))
+                | DaemonError::InvalidRequest(_) => 400,
                 _ => 500,
             };
             respond_json(request, status, &json!({ "error": error.to_string() }));
@@ -383,6 +389,10 @@ fn route(
             json_string(&json!({
                 "contract_version": else_protocol::api::CONTRACT_VERSION,
                 "protocol_version": else_protocol::PROTOCOL_VERSION,
+                // 谁在应答、替哪个目录应答。端口可能被另一个进程占着，
+                // 光看版本号分不出来。
+                "pid": std::process::id(),
+                "runtime_dir": state.dir.display().to_string(),
             }))?,
         ));
     }
@@ -2623,6 +2633,100 @@ mod tests {
             version["protocol_version"].as_str(),
             Some(else_protocol::PROTOCOL_VERSION)
         );
+        // 光有版本号分不清"谁在应答"：端口可能被另一个进程占着。
+        assert_eq!(
+            version["pid"].as_u64(),
+            Some(std::process::id() as u64),
+            "the runtime must say which process answers"
+        );
+        assert_eq!(
+            version["runtime_dir"].as_str(),
+            Some(dir.path().to_string_lossy().as_ref()),
+            "the runtime must say which directory it serves"
+        );
+
+        daemon.shutdown();
+    }
+
+    #[test]
+    fn an_empty_goal_is_rejected_instead_of_starting_a_nameless_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = Daemon::start(DaemonConfig {
+            dir: dir.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            token: Some("test-token".into()),
+        })
+        .unwrap();
+
+        let (status, body) = request(
+            &daemon,
+            "POST",
+            "/v1/threads",
+            r#"{"outcome":"   "}"#,
+            Some("empty-goal"),
+            None,
+        );
+        assert_eq!(status, 400, "{body}");
+        assert!(body.contains("the goal is empty"), "{body}");
+
+        daemon.shutdown();
+    }
+
+    #[test]
+    fn deciding_a_request_that_is_no_longer_open_is_a_conflict_not_a_missing_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = Daemon::start(DaemonConfig {
+            dir: dir.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            token: Some("test-token".into()),
+        })
+        .unwrap();
+
+        let (status, body) = request(
+            &daemon,
+            "POST",
+            "/v1/threads",
+            r#"{"outcome":"Audit the decision path"}"#,
+            Some("create-for-decide"),
+            None,
+        );
+        assert_eq!(status, 200, "{body}");
+        let thread: Value = serde_json::from_str(&body).unwrap();
+        let thread_id = thread["spec"]["id"].as_str().unwrap().to_string();
+        let revision = thread["spec"]["revision"].as_u64().unwrap();
+
+        // 决策是异步操作：202 之后，承诺与失败都在 operation 里。
+        let (status, body) = request(
+            &daemon,
+            "POST",
+            &format!(
+                "/v1/threads/{thread_id}/decisions/00000000-0000-0000-0000-000000000000/resolve"
+            ),
+            r#"{"choice":{"kind":"option","value":"approve"}}"#,
+            Some("decide-unknown-request"),
+            Some(revision),
+        );
+        assert_eq!(status, 202, "{body}");
+        let operation_id = serde_json::from_str::<Value>(&body).unwrap()["operation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let operation_path = format!("/v1/operations/{operation_id}");
+        let mut operation = Value::Null;
+        for _ in 0..50 {
+            let (status, body) = request(&daemon, "GET", &operation_path, "", None, None);
+            assert_eq!(status, 200);
+            operation = serde_json::from_str(&body).unwrap();
+            if operation["status"] != "running" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(operation["status"], "failed", "{operation}");
+        let error = operation["error"].as_str().unwrap_or_default();
+        // 线程一直都在；说的是"这条请求不再等你"，不是"线程不存在"。
+        assert!(error.contains("no longer waiting"), "{error}");
+        assert!(!error.contains("thread not found"), "{error}");
 
         daemon.shutdown();
     }
