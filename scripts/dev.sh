@@ -121,6 +121,13 @@ case "$command_name" in
         [[ $# -eq 0 ]] || die "check takes no arguments"
         cd "$ROOT"
         cargo fmt --all --check
+        # 工作流 YAML 写坏了，GitHub 不会报错 —— 它只是把触发器丢掉，
+        # 工作流出现在列表里但永远派发不动。所以在本地就解析一遍。
+        if command -v ruby >/dev/null 2>&1; then
+            for workflow in .github/workflows/*.yml; do
+                ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$workflow"
+            done
+        fi
         cargo clippy --workspace --all-targets -- -D warnings
         cargo test --workspace
         ;;

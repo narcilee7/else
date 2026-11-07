@@ -29,6 +29,8 @@ on:
 
 permissions:
   contents: write
+  # 打完标签要自己把构建工作流派发起来，见最后一步。
+  actions: write
 
 concurrency:
   group: cut-release
@@ -113,11 +115,20 @@ jobs:
           git tag -a "v${VERSION}" -m "else-bot ${VERSION}"
           git push origin "v${VERSION}"
 
-      - name: Where to watch the rest
+      # 用 GITHUB_TOKEN 推的标签**不会**触发别的 push/tag 工作流（GitHub 的
+      # 递归保护）。workflow_dispatch 是这条规则的例外，所以这里显式派发，
+      # 否则标签推上去了、制品永远不出来。
+      - name: Start the release build
         if: ${{ !inputs.dry_run }}
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
           REPO: ${{ github.repository }}
         run: |
-          echo "Tagged v${VERSION}. The release build continues in the Release CLI workflow:"
+          set -euo pipefail
+          gh workflow run release-cli.yml \
+            --ref "v${VERSION}" \
+            -f version="${VERSION}" \
+            -f publish=true
+          echo "Release build dispatched for v${VERSION}:"
           echo "  https://github.com/${REPO}/actions/workflows/release-cli.yml"
