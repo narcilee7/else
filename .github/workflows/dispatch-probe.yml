@@ -1,9 +1,24 @@
 name: Dispatch Probe
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: How far to move the version
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - none
+        default: patch
+      dry_run:
+        description: Print the plan without committing or tagging
+        type: boolean
+        default: false
 
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - run: echo probe ok
+      - run: echo "bump=${{ inputs.bump }} dry=${{ inputs.dry_run }}"
