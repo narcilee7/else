@@ -1,11 +1,17 @@
 name: Dispatch Probe
 
+# 发布只有这一个入口：改版本号、提交、打标签、推。
+# 标签推上去之后由 release-cli.yml 负责构建四平台制品、发布 Release、
+# 更新 Homebrew formula —— 中间不需要有人在本机做任何事。
 on:
   workflow_dispatch:
     inputs:
       bump:
         description: How far to move the version (ignored when a version is given)
         type: choice
+        # 块状写法是必须的：行内 `options: [a, b]` 会让 GitHub 解析这个
+        # choice 输入失败，并且**静默丢掉整个 workflow_dispatch 触发器**
+        # —— 工作流出现在列表里，但永远派发不动（HTTP 422）。
         options:
           - patch
           - minor
@@ -21,8 +27,18 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: write
+
+concurrency:
+  group: cut-release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "bump=${{ inputs.bump }} version=${{ inputs.version }} dry=${{ inputs.dry_run }}"
+      - run: echo probe ok
