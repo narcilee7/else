@@ -9,7 +9,14 @@ on:
       bump:
         description: How far to move the version (ignored when a version is given)
         type: choice
-        options: [patch, minor, major, none]
+        # 块状写法是必须的：行内 `options: [a, b]` 会让 GitHub 解析这个
+        # choice 输入失败，并且**静默丢掉整个 workflow_dispatch 触发器**
+        # —— 工作流出现在列表里，但永远派发不动（HTTP 422）。
+        options:
+          - patch
+          - minor
+          - major
+          - none
         default: patch
       version:
         description: Exact version to release, e.g. 0.2.0 or 0.2.0-beta.1. Empty = use bump
