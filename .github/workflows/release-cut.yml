@@ -92,7 +92,7 @@ jobs:
           git --no-pager diff --stat
 
       - name: Stop here on a dry run
-        if: inputs.dry_run
+        if: ${{ inputs.dry_run }}
         run: echo "dry run: nothing committed, nothing tagged"
 
       - name: Commit the version and tag it
