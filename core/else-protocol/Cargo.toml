@@ -1,6 +1,6 @@
 [package]
 name = "else-protocol"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 description = "else core protocols: Intent / Event / AttentionRequest / Decision / Checkpoint / Artifact / Lease"
 license = "MIT"

@@ -1,6 +1,6 @@
 [package]
 name = "else-context"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 description = "else context plane: intent resolution, tiered memory, context compiler"
 license = "MIT"
@@ -12,6 +12,6 @@ categories = ["development-tools::cargo-plugins"]
 exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [dependencies]
-else-protocol = { path = "../else-protocol", version = "0.1.2" }
-else-ledger = { path = "../else-ledger", version = "0.1.2" }
+else-protocol = { path = "../else-protocol", version = "0.1.3" }
+else-ledger = { path = "../else-ledger", version = "0.1.3" }
 chrono.workspace = true

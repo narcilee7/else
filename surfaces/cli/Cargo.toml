@@ -1,6 +1,6 @@
 [package]
 name = "else-bot"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 description = "else-bot: terminal client for the else Intent Runtime"
 license = "MIT"
@@ -16,13 +16,13 @@ name = "else-bot"
 path = "src/main.rs"
 
 [dependencies]
-else-api = { path = "../../api", version = "0.1.2" }
-else-client = { path = "../../core/else-client", version = "0.1.2" }
-else-harness = { path = "../../core/else-harness", version = "0.1.2" }
-else-protocol = { path = "../../core/else-protocol", version = "0.1.2" }
-else-ledger = { path = "../../core/else-ledger", version = "0.1.2" }
-else-context = { path = "../../core/else-context", version = "0.1.2" }
-else-daemon = { path = "../daemon", version = "0.1.2" }
+else-api = { path = "../../api", version = "0.1.3" }
+else-client = { path = "../../core/else-client", version = "0.1.3" }
+else-harness = { path = "../../core/else-harness", version = "0.1.3" }
+else-protocol = { path = "../../core/else-protocol", version = "0.1.3" }
+else-ledger = { path = "../../core/else-ledger", version = "0.1.3" }
+else-context = { path = "../../core/else-context", version = "0.1.3" }
+else-daemon = { path = "../daemon", version = "0.1.3" }
 clap = { version = "4", features = ["derive"] }
 ratatui.workspace = true
 unicode-width.workspace = true

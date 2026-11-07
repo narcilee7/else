@@ -1,6 +1,6 @@
 [package]
 name = "else-attention"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 description = "else Attention Kernel: deterministic attention rulings"
 license = "MIT"
@@ -12,5 +12,5 @@ categories = ["development-tools::cargo-plugins"]
 exclude = ["tests/", ".github/", "surfaces/apple/", "**/*.rs.bk"]
 
 [dependencies]
-else-protocol = { path = "../else-protocol", version = "0.1.2" }
+else-protocol = { path = "../else-protocol", version = "0.1.3" }
 chrono.workspace = true
