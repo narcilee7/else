@@ -20,6 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, ComposerMode, Screen};
 use super::data::Data;
+use super::loader::ActionRequest;
 use super::row::Row;
 use super::theme;
 
@@ -121,8 +122,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     if app.show_help {
         draw_help(frame, frame.area());
     }
-    if app.confirmation.is_some() {
-        draw_confirmation(frame, frame.area());
+    if app.palette.is_some() {
+        draw_palette(frame, frame.area(), app);
+    }
+    if let Some(action) = app.confirmation.as_ref() {
+        draw_confirmation(frame, frame.area(), action);
     }
 }
 
@@ -254,17 +258,9 @@ fn counts(app: &App) -> (usize, usize) {
     )
 }
 
-/// 有多少件事正在等人裁决。窗口标题和首屏用的是同一个数。
+/// 有多少件事正在等人裁决。窗口标题、状态条和首屏用的是同一个数。
 pub fn waiting_count(data: &super::data::OverviewData) -> usize {
-    data.threads
-        .iter()
-        .map(|thread| thread.decisions.len())
-        .sum::<usize>()
-        + data
-            .attention
-            .iter()
-            .map(|window| window.requests.len())
-            .sum::<usize>()
+    overview::waiting_requests(data).len()
 }
 
 /// 内容区：一列行，没有边框。
@@ -414,18 +410,24 @@ fn footer_context(app: &App, rows: &[Row]) -> Option<Line<'static>> {
 }
 
 fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.palette.is_some() {
+        // 面板自己带着提示，页脚这时不该再喊别的键。
+        return Vec::new();
+    }
     let mut hints: Vec<(&'static str, &'static str)> = match app.screen {
         Screen::Overview => vec![("⏎", "open"), ("d", "decisions"), ("n", "new")],
         Screen::Decisions => vec![("⏎", "review"), ("n", "new"), ("Esc", "back")],
         Screen::DecisionDetail => vec![("⏎", "choose"), ("e", "answer"), ("x", "dismiss")],
         Screen::Results => vec![("⏎", "inspect"), ("Esc", "back")],
-        Screen::ThreadDetail => vec![
-            ("⏎", "open"),
-            ("a", "advance"),
-            ("e", "answer"),
-            ("d", "debug"),
-            ("Esc", "back"),
-        ],
+        Screen::ThreadDetail => {
+            let mut hints = vec![("⏎", "open"), ("a", "advance"), ("e", "answer")];
+            // 只在真的能停的时候才介绍这个键。
+            if app.can_abort() {
+                hints.push(("x", "stop"));
+            }
+            hints.push(("Esc", "back"));
+            hints
+        }
         Screen::Connectors => vec![("⏎", "sync"), ("Esc", "back")],
         Screen::Composer => vec![("⏎", "create"), ("Esc", "cancel")],
     };
@@ -473,11 +475,116 @@ fn draw_composer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
+/// 命令面板：输入一行就能筛，列出来的都是此刻真能跑的命令。
+fn draw_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some(palette) = app.palette.as_ref() else {
+        return;
+    };
+    let commands = palette.filtered(app);
+    // 高度跟着结果走：两条结果就是一个小窗，不占满屏。
+    let body_lines = commands.len().max(1) as u16;
+    let height = (body_lines + 5).min(area.height);
+    let popup = centered_rect(area, 66, height);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(" / ", theme::heading()));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    if inner.height < 3 {
+        return;
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("> ", theme::hint_key()),
+            Span::styled(palette.query.clone(), theme::text()),
+            Span::styled(" ", theme::selected()),
+        ])),
+        Rect { height: 1, ..inner },
+    );
+
+    let list_y = inner.y + 2;
+    let list_height = inner.height.saturating_sub(3);
+    for (index, command) in commands.iter().take(list_height as usize).enumerate() {
+        let selected =
+            index == palette.cursor.min(commands.len().saturating_sub(1)) && !commands.is_empty();
+        let key = command.key();
+        let row = Rect {
+            x: inner.x,
+            y: list_y + index as u16,
+            width: inner.width,
+            height: 1,
+        };
+        if selected {
+            let text = format!("{:<width$}", command.title(), width = inner.width as usize);
+            frame.render_widget(Paragraph::new(Span::styled(text, theme::selected())), row);
+        } else {
+            // 右边一列是"下次直接按的键"，贴着窗口右边，方便扫。
+            let key_width = 4.min(inner.width as usize);
+            let title_width = inner.width as usize - key_width;
+            let title = format!(
+                "{:<width$}",
+                truncate(command.title(), title_width),
+                width = title_width
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(title, theme::text()),
+                    Span::styled(format!("{key:>width$}", width = key_width), theme::muted()),
+                ])),
+                row,
+            );
+        }
+    }
+
+    if commands.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled("nothing matches", theme::muted()))),
+            Rect {
+                x: inner.x,
+                y: list_y,
+                width: inner.width,
+                height: 1,
+            },
+        );
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("↑↓", theme::hint_key()),
+            Span::styled(" move  ", theme::hint()),
+            Span::styled("⏎", theme::hint_key()),
+            Span::styled(" run  ", theme::hint()),
+            Span::styled("Esc", theme::hint_key()),
+            Span::styled(" cancel", theme::hint()),
+        ])),
+        Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(1),
+            width: inner.width,
+            height: 1,
+        },
+    );
+}
+
 fn draw_help(frame: &mut Frame<'_>, area: Rect) {
-    let popup = centered_rect(area, 72, 22);
+    let lines = help::lines();
+    // 高度跟着内容走，必要时占满整屏：写死的高度迟早会把最后一行裁掉，
+    // 而被裁掉的那一行往往正好是"怎么退出"。
+    let height = (lines.len() as u16 + 2).min(area.height);
+    // 终端可能比 20 列还窄：先按内容封顶，再收进可用宽度。
+    let wanted = area.width.saturating_sub(4).clamp(20, 72);
+    let width = wanted.min(area.width).max(1);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(help::lines())
+        Paragraph::new(lines)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -488,27 +595,45 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
-fn draw_confirmation(frame: &mut Frame<'_>, area: Rect) {
-    let popup = centered_rect(area, 64, 9);
+/// 确认框只问一句：你确定要让它发生吗。问的内容取决于要做的事。
+fn draw_confirmation(frame: &mut Frame<'_>, area: Rect, action: &ActionRequest) {
+    let (title, body, confirm) = match action {
+        ActionRequest::AbortThread { .. } => (
+            " Stop this run ",
+            vec![
+                "Execution stops now. In-flight effects are settled, and".to_string(),
+                "what was already produced stays where it is.".to_string(),
+                String::new(),
+                "The thread ends up cancelled; `revise` starts a new goal.".to_string(),
+            ],
+            "stop the run",
+        ),
+        _ => (
+            " Confirm approval ",
+            vec![
+                "This approval has a high-impact external effect.".to_string(),
+                String::new(),
+                "Review the command and its consequences before continuing.".to_string(),
+            ],
+            "confirm approval",
+        ),
+    };
+    let popup = centered_rect(area, 66, 10);
     frame.render_widget(Clear, popup);
-    let lines = vec![
-        Line::from("This approval has a high-impact external effect."),
-        Line::from(""),
-        Line::from("Review the command and its consequences before continuing."),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Enter", theme::hint_key()),
-            Span::styled(" confirm approval   ", theme::text()),
-            Span::styled("Esc", theme::hint_key()),
-            Span::styled(" cancel", theme::text()),
-        ]),
-    ];
+    let mut lines: Vec<Line<'_>> = body.into_iter().map(Line::from).collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Enter", theme::hint_key()),
+        Span::styled(format!(" {confirm}   "), theme::text()),
+        Span::styled("Esc", theme::hint_key()),
+        Span::styled(" cancel", theme::text()),
+    ]));
     frame.render_widget(
         Paragraph::new(lines)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(Span::styled(" Confirm approval ", theme::critical())),
+                    .title(Span::styled(title, theme::critical())),
             )
             .wrap(Wrap { trim: false }),
         popup,
@@ -871,6 +996,25 @@ mod tests {
                 "{width}x{height}:
 {content}"
             );
+        }
+    }
+
+    #[test]
+    fn the_help_overlay_shows_every_line_it_has() {
+        for (width, height) in [(120, 40), (80, 30), (60, 24)] {
+            let mut app = app();
+            app.show_help = true;
+            let content = render_text(&app, width, height);
+            // 最后一行和第一条都在，才叫"全都看得到"。
+            assert!(
+                content.contains("press any key to close"),
+                "closing line clipped at {width}x{height}"
+            );
+            assert!(
+                content.contains("Moving"),
+                "first section at {width}x{height}"
+            );
+            assert!(content.contains("search every command"));
         }
     }
 

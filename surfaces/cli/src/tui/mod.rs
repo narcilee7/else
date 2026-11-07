@@ -1,13 +1,14 @@
 //! 终端界面。
 //!
 //! 组件不直接访问后端；输入、加载、动作与 Runtime 事件都由顶层 `App`
-//! 统一协调。首屏是 Today，而不是聊天窗口或调试控制台。
+//! 统一协调。首屏回答的是「现在什么在等我」，不是聊天窗口或调试控制台。
 
 pub mod app;
 pub mod app_event;
 pub mod composer;
 pub mod data;
 pub mod loader;
+pub mod palette;
 pub mod row;
 pub mod terminal;
 pub mod theme;

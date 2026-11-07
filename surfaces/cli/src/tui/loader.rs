@@ -57,6 +57,11 @@ pub enum ActionRequest {
     AdvanceThread {
         thread_id: ThreadId,
     },
+    /// 停掉正在跑的执行并收敛在途副作用。终端里唯一"会改变现实"的否定操作。
+    AbortThread {
+        thread_id: ThreadId,
+        reason: String,
+    },
     Decide {
         thread_id: ThreadId,
         request_id: AttentionId,
@@ -78,6 +83,7 @@ impl ActionRequest {
         match self {
             Self::CreateThread { .. } => "Creating thread…",
             Self::AdvanceThread { .. } => "Advancing thread…",
+            Self::AbortThread { .. } => "Stopping the run…",
             Self::Decide { .. } => "Saving decision…",
             Self::ResolveWorld { .. } => "Updating item…",
             Self::SyncConnector { .. } => "Syncing connector…",
@@ -246,6 +252,18 @@ fn perform(client: &RuntimeClient, action: &ActionRequest) -> AppEvent {
                     Some(snapshot.spec.id),
                 )
             }),
+        ActionRequest::AbortThread { thread_id, reason } => {
+            client.abort(thread_id, reason).map(|snapshot| {
+                (
+                    "Run stopped".to_string(),
+                    format!(
+                        "thread is {}",
+                        crate::output::thread_state_label(snapshot.state)
+                    ),
+                    Some(thread_id.clone()),
+                )
+            })
+        }
         ActionRequest::AdvanceThread { thread_id } => {
             client.advance(thread_id, Some("auto")).map(|snapshot| {
                 (

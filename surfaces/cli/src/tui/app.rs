@@ -11,6 +11,7 @@ use super::app_event::AppEvent;
 use super::composer::Composer;
 use super::data::Data;
 use super::loader::{ActionRequest, LoadRequest};
+use super::palette::{Command, Palette};
 use super::row::{Row, RowAction};
 use super::terminal::Tui;
 use super::views;
@@ -68,6 +69,12 @@ pub struct App {
     waiting: usize,
     /// 刚提交的是"开一件事"：做完就带我去看它，不要把我丢回列表。
     open_after_create: bool,
+    /// 已经见过的待决请求 id。只对**新来的**发通知，不重复打扰。
+    known_requests: std::collections::BTreeSet<String>,
+    /// 排队中的系统通知。App 不碰终端 IO，由 `run` 取走。
+    pub notification: Option<String>,
+    /// `/` 打开的命令面板。
+    pub palette: Option<Palette>,
     pub show_help: bool,
     pub focused_thread: Option<ThreadId>,
     pub focused_decision: Option<DecisionFocus>,
@@ -97,6 +104,9 @@ impl App {
             runtime_note: None,
             waiting: 0,
             open_after_create: false,
+            known_requests: std::collections::BTreeSet::new(),
+            notification: None,
+            palette: None,
             show_help: false,
             focused_thread: None,
             focused_decision: None,
@@ -241,6 +251,7 @@ impl App {
                     // 首屏之外的行没有总账；把"有多少事在等人"记在 App 上，
                     // 切到 Thread 时窗口标题仍然说实话。
                     self.waiting = views::waiting_count(overview);
+                    self.track_new_requests(overview);
                 }
                 self.data = data;
                 if let Some(selected) = selected {
@@ -348,6 +359,10 @@ impl App {
             self.dirty = true;
             return;
         }
+        if self.palette.is_some() {
+            self.handle_palette_key(key);
+            return;
+        }
         if self.screen == Screen::Composer {
             self.handle_composer_key(key);
             return;
@@ -359,6 +374,11 @@ impl App {
             }
             KeyCode::Char('?') => {
                 self.show_help = true;
+                self.dirty = true;
+                return;
+            }
+            KeyCode::Char('/') => {
+                self.palette = Some(Palette::default());
                 self.dirty = true;
                 return;
             }
@@ -428,6 +448,20 @@ impl App {
                         self.goto(Screen::Composer);
                     }
                 }
+                // 跑飞了必须能就地停住；收尾之后这个键不存在。
+                KeyCode::Char('x') if self.can_abort() => {
+                    if let Some(thread_id) = self.focused_thread.clone() {
+                        let action = ActionRequest::AbortThread {
+                            thread_id,
+                            reason: "stopped from the terminal".into(),
+                        };
+                        if self.requires_confirmation(&action) {
+                            self.confirmation = Some(action);
+                        } else {
+                            self.dispatch(action);
+                        }
+                    }
+                }
                 KeyCode::Char('d') => self.debug_detail = !self.debug_detail,
                 _ => {}
             },
@@ -445,6 +479,87 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn handle_palette_key(&mut self, key: KeyEvent) {
+        // 先把面板取出来：匹配要读整个 App（当前屏幕决定了能做什么），
+        // 而它在 self 里。
+        let Some(mut palette) = self.palette.take() else {
+            return;
+        };
+        self.dirty = true;
+        match key.code {
+            KeyCode::Esc => return,
+            KeyCode::Enter => {
+                if let Some(command) = palette.filtered(self).get(palette.cursor).copied() {
+                    self.run_command(command);
+                }
+                return;
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                let count = palette.filtered(self).len();
+                palette.cursor = next_index(palette.cursor, count, 1);
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                let count = palette.filtered(self).len();
+                palette.cursor = next_index(palette.cursor, count, -1);
+            }
+            KeyCode::Backspace => {
+                palette.query.pop();
+                palette.cursor = 0;
+            }
+            KeyCode::Char(character) => {
+                palette.query.push(character);
+                palette.cursor = 0;
+            }
+            _ => {}
+        }
+        palette.cursor = palette
+            .cursor
+            .min(palette.filtered(self).len().saturating_sub(1));
+        self.palette = Some(palette);
+    }
+
+    /// 执行一条面板命令。每一条都走和快捷键相同的那条路。
+    fn run_command(&mut self, command: Command) {
+        match command {
+            Command::NewThread => {
+                self.composer.clear();
+                self.composer_mode = ComposerMode::Thread;
+                self.goto(Screen::Composer);
+            }
+            Command::OpenDecisions => self.goto(Screen::Decisions),
+            Command::OpenAllThreads => self.goto(Screen::Results),
+            Command::OpenConnections => self.goto(Screen::Connectors),
+            Command::Advance => {
+                if let Some(thread_id) = self.focused_thread.clone() {
+                    self.dispatch(ActionRequest::AdvanceThread { thread_id });
+                }
+            }
+            Command::Answer => {
+                if let Some((thread_id, request_id)) = self.pending_decision() {
+                    self.composer.clear();
+                    self.composer_mode = ComposerMode::Decision {
+                        thread_id,
+                        request_id,
+                    };
+                    self.goto(Screen::Composer);
+                }
+            }
+            Command::Stop => {
+                if let Some(thread_id) = self.focused_thread.clone() {
+                    self.confirmation = Some(ActionRequest::AbortThread {
+                        thread_id,
+                        reason: "stopped from the command palette".into(),
+                    });
+                }
+            }
+            Command::ToggleDebug => self.debug_detail = !self.debug_detail,
+            Command::Refresh => self.request_load(),
+            Command::Help => self.show_help = true,
+            Command::Quit => self.should_quit = true,
+        }
+        self.dirty = true;
     }
 
     fn handle_composer_key(&mut self, key: KeyEvent) {
@@ -584,6 +699,10 @@ impl App {
     }
 
     fn requires_confirmation(&self, action: &ActionRequest) -> bool {
+        // 停止执行会收敛在途副作用，不是一次无害的刷新。
+        if matches!(action, ActionRequest::AbortThread { .. }) {
+            return true;
+        }
         let ActionRequest::Decide {
             request_id,
             choice: DecisionChoice::Option(option),
@@ -597,6 +716,37 @@ impl App {
         }
         views::decisions::find_request(&self.data, request_id)
             .is_some_and(|request| request.expected_loss >= ExpectedLoss::High)
+    }
+
+    /// 有新的事开始等你时排一条通知。
+    ///
+    /// 第一次加载不通知：那是数据，不是打扰 —— 你正看着屏幕。
+    fn track_new_requests(&mut self, overview: &crate::tui::data::OverviewData) {
+        let current: std::collections::BTreeSet<String> =
+            views::overview::waiting_requests(overview)
+                .into_iter()
+                .map(|(_, request)| request.id.to_string())
+                .collect();
+        let fresh: Vec<String> = current.difference(&self.known_requests).cloned().collect();
+        let first_run = self.known_requests.is_empty();
+        self.known_requests = current;
+        if first_run || fresh.is_empty() {
+            return;
+        }
+        let summary = views::overview::waiting_requests(overview)
+            .into_iter()
+            .find(|(_, request)| fresh.contains(&request.id.to_string()))
+            .map(|(_, request)| request.summary)
+            .unwrap_or_else(|| "the runtime needs a decision".into());
+        self.notification = Some(summary);
+    }
+
+    /// 这条 Thread 现在还能不能被停住。收尾之后就没有"停"这回事了。
+    pub fn can_abort(&self) -> bool {
+        let Data::ThreadDetail(detail) = &self.data else {
+            return false;
+        };
+        !crate::output::is_terminal(detail.thread.state)
     }
 
     /// 当前 Thread 上还挂着的第一条请求。
@@ -673,6 +823,21 @@ impl App {
     }
 }
 
+/// 上下移动一格，首尾相接。
+fn next_index(current: usize, count: usize, delta: isize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    let next = current as isize + delta;
+    if next < 0 {
+        count - 1
+    } else if next as usize >= count {
+        0
+    } else {
+        next as usize
+    }
+}
+
 pub fn run(mut app: App, events: Receiver<AppEvent>, tui: &mut Tui) -> std::io::Result<()> {
     app.request_load();
     let mut title = String::new();
@@ -703,6 +868,9 @@ pub fn run(mut app: App, events: Receiver<AppEvent>, tui: &mut Tui) -> std::io::
             tui.set_title(&wanted)?;
             title = wanted;
         }
+        if let Some(body) = app.notification.take() {
+            tui.notify("else", &body)?;
+        }
     }
     Ok(())
 }
@@ -713,6 +881,7 @@ mod tests {
     use crate::tui::data::{Data, DecisionsData};
     use else_protocol::attention::{AttentionKind, AttentionRequest};
     use else_protocol::ids::{AttentionId, ThreadId};
+    use else_protocol::thread::ThreadState;
 
     fn app() -> (App, Receiver<LoadRequest>, Receiver<ActionRequest>) {
         let (loads, load_rx) = std::sync::mpsc::channel();
@@ -738,6 +907,67 @@ mod tests {
             default_option: Some("approve".into()),
             related_call_key: Some("call-1".into()),
         }
+    }
+
+    fn running_thread(
+        state: else_protocol::thread::ThreadState,
+    ) -> else_protocol::api::ThreadSnapshot {
+        else_protocol::api::ThreadSnapshot {
+            spec: else_protocol::thread::ThreadSpec {
+                id: ThreadId::from("thread-1"),
+                revision: 1,
+                outcome: "Prepare the launch deck".into(),
+                done_when: Vec::new(),
+                constraints: Vec::new(),
+                authority: else_protocol::thread::Authority {
+                    max_autonomous_effect: else_protocol::effect::SideEffectKind::ReadOnly,
+                    forbidden: Vec::new(),
+                },
+                attention_policy: else_protocol::thread::AttentionPolicy {
+                    allow_interrupt: true,
+                    batch_interval_minutes: 15,
+                },
+                mode: Default::default(),
+                opaque_harness_policy: Default::default(),
+                deadline: None,
+                assumptions: Vec::new(),
+                project: None,
+                origin: None,
+                connector_policy: Default::default(),
+            },
+            state,
+            decisions: Vec::new(),
+            artifacts: Vec::new(),
+            resource_budget: Default::default(),
+            resource_usage: Default::default(),
+            cursor: 0,
+            operation_id: None,
+        }
+    }
+
+    /// 一条 Thread，挂着给定的待决请求。
+    fn overview_with(requests: Vec<(&str, &str)>) -> Data {
+        let mut thread = running_thread(else_protocol::thread::ThreadState::NeedsDecision);
+        thread.decisions = requests
+            .into_iter()
+            .map(|(id, summary)| AttentionRequest {
+                summary: summary.into(),
+                ..request(id)
+            })
+            .collect();
+        Data::Overview(Box::new(crate::tui::data::OverviewData {
+            brief: else_protocol::world::PersonalBrief {
+                generated_at: chrono::Utc::now(),
+                open_commitments: Vec::new(),
+                waiting_external: Vec::new(),
+                overdue: Vec::new(),
+                action_items_due_soon: Vec::new(),
+                risks: Vec::new(),
+                upcoming_calendar: Vec::new(),
+            },
+            attention: Vec::new(),
+            threads: vec![thread],
+        }))
     }
 
     fn runtime_event() -> else_protocol::api::EventResponse {
@@ -944,6 +1174,119 @@ mod tests {
             ),
             "the cursor stops at the last actionable row"
         );
+    }
+
+    #[test]
+    fn stopping_a_running_thread_asks_once_before_it_stops() {
+        let (mut app, _loads, actions) = app();
+        app.screen = Screen::ThreadDetail;
+        app.focused_thread = Some(ThreadId::from("thread-1"));
+        app.data = Data::ThreadDetail(Box::new(crate::tui::data::ThreadDetailData {
+            thread: running_thread(ThreadState::Active),
+            scopes: Vec::new(),
+            plan: else_protocol::api::PlanView {
+                current: None,
+                history: Vec::new(),
+                impacts: Vec::new(),
+            },
+            resources: else_protocol::api::ResourceView {
+                budget: Default::default(),
+                usage: Default::default(),
+                sandboxes: Vec::new(),
+            },
+            events: Vec::new(),
+        }));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        // 停止会收敛在途副作用：先问一次，别一键就不可逆。
+        assert!(app.confirmation.is_some());
+        assert!(actions.try_recv().is_err());
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            actions.try_recv().expect("abort dispatched"),
+            ActionRequest::AbortThread { .. }
+        ));
+    }
+
+    #[test]
+    fn a_finished_thread_cannot_be_stopped() {
+        let (mut app, _loads, actions) = app();
+        app.screen = Screen::ThreadDetail;
+        app.focused_thread = Some(ThreadId::from("thread-1"));
+        app.data = Data::ThreadDetail(Box::new(crate::tui::data::ThreadDetailData {
+            thread: running_thread(ThreadState::Cancelled),
+            scopes: Vec::new(),
+            plan: else_protocol::api::PlanView {
+                current: None,
+                history: Vec::new(),
+                impacts: Vec::new(),
+            },
+            resources: else_protocol::api::ResourceView {
+                budget: Default::default(),
+                usage: Default::default(),
+                sandboxes: Vec::new(),
+            },
+            events: Vec::new(),
+        }));
+        assert!(!app.can_abort());
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(app.confirmation.is_none());
+        assert!(actions.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_command_palette_says_slash_and_offers_what_works_here() {
+        let (mut app, _loads, _actions) = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert!(app.palette.is_some());
+        let commands = app.palette.as_ref().unwrap().filtered(&app);
+        let titles: Vec<&str> = commands.iter().map(|command| command.title()).collect();
+        assert!(titles.contains(&"Review decisions"), "{titles:?}");
+        // 首屏没有"停这条运行"可言 —— 面板承诺不了它做不到的事。
+        assert!(!titles.contains(&"Stop this run"), "{titles:?}");
+    }
+
+    #[test]
+    fn the_command_palette_filters_as_you_type() {
+        let (mut app, _loads, _actions) = app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        for character in "every".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        let commands = app.palette.as_ref().unwrap().filtered(&app);
+        assert_eq!(commands.len(), 1, "{commands:?}");
+        assert_eq!(commands[0].title(), "See every thread");
+    }
+
+    #[test]
+    fn only_new_requests_are_announced_outside_the_window() {
+        let (mut app, _loads, _actions) = app();
+        app.screen = Screen::Overview;
+        let first = overview_with(vec![("request-1", "Approve the release")]);
+        app.handle(AppEvent::Loaded {
+            generation: app.generation,
+            data: first.clone(),
+        });
+        // 第一次加载是数据，不是打扰。
+        assert!(app.notification.is_none());
+
+        app.request_load();
+        app.handle(AppEvent::Loaded {
+            generation: app.generation,
+            data: first,
+        });
+        assert!(app.notification.is_none(), "nothing new happened");
+
+        app.request_load();
+        app.handle(AppEvent::Loaded {
+            generation: app.generation,
+            data: overview_with(vec![
+                ("request-1", "Approve the release"),
+                ("request-2", "Overwrite outline.md"),
+            ]),
+        });
+        assert_eq!(app.notification.as_deref(), Some("Overwrite outline.md"));
     }
 
     #[test]

@@ -23,7 +23,7 @@ const WORLD_LIMIT: usize = 2;
 
 pub fn rows(data: &OverviewData) -> Vec<Row> {
     let mut rows = Vec::new();
-    let requests = decision_requests(data);
+    let requests = waiting_requests(data);
     let running: Vec<&ThreadSnapshot> = data
         .threads
         .iter()
@@ -203,7 +203,11 @@ fn thread_meta(thread: &ThreadSnapshot) -> String {
     parts.join(" · ")
 }
 
-fn decision_requests(data: &OverviewData) -> Vec<(ThreadId, AttentionRequest)> {
+/// 现在等你裁决的全部请求，按事件顺序去重。
+///
+/// 同一个请求可能既在注意力窗口里、又挂在 Thread 上；状态条的计数、
+/// 首屏的行、以及新请求通知都用这一份，避免三个数字对不上。
+pub fn waiting_requests(data: &OverviewData) -> Vec<(ThreadId, AttentionRequest)> {
     let mut requests = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for window in &data.attention {

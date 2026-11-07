@@ -269,15 +269,8 @@ impl Entry {
             "decision_resolved" => {
                 let choice = data
                     .get("decision")
-                    .and_then(|decision| decision.get("choice"))
-                    .map(choice_text)
-                    .unwrap_or_else(|| "resolved".to_string());
-                (
-                    "·",
-                    "decided",
-                    format!("you chose {choice}"),
-                    theme::muted(),
-                )
+                    .and_then(|decision| decision.get("choice"));
+                ("·", "decided", choice_text(choice), theme::muted())
             }
             "artifact_produced" => {
                 let artifact = data.get("artifact").cloned().unwrap_or_default();
@@ -423,22 +416,34 @@ fn clip_lines(text: &str) -> String {
     clipped
 }
 
-/// DecisionChoice 是带标签的枚举：`Option(id)` / `FreeText(文本)` / `Dismissed`。
-fn choice_text(choice: &serde_json::Value) -> String {
+/// `DecisionChoice` 是带标签的枚举：`{kind:"option",value}` /
+/// `{kind:"free_text",value}` / `{kind:"dismissed"}`。
+///
+/// 时间线上要说人话：选了哪个、写了一句、还是干脆不回答。
+fn choice_text(choice: Option<&serde_json::Value>) -> String {
+    let Some(choice) = choice else {
+        return "you answered".to_string();
+    };
     if let Some(text) = choice.as_str() {
-        return text.to_string();
+        return format!("you chose {text}");
     }
-    if let Some(object) = choice.as_object() {
-        for key in ["option", "free_text", "dismissed"] {
-            if let Some(value) = object.get(key) {
-                if let Some(text) = value.as_str() {
-                    return text.to_string();
-                }
-                return key.to_string();
-            }
-        }
+    let Some(object) = choice.as_object() else {
+        return "you answered".to_string();
+    };
+    let kind = object
+        .get("kind")
+        .and_then(|kind| kind.as_str())
+        .unwrap_or_default();
+    match kind {
+        "option" => object
+            .get("value")
+            .and_then(|value| value.as_str())
+            .map(|value| format!("you chose {value}"))
+            .unwrap_or_else(|| "you answered".to_string()),
+        "free_text" => "you wrote an answer".to_string(),
+        "dismissed" => "you dismissed it".to_string(),
+        _ => "you answered".to_string(),
     }
-    "resolved".to_string()
 }
 
 /// 不知道形状的负载，压成一行短 JSON —— 宁可难看，也不要假装读懂了。
