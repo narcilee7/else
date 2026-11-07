@@ -288,8 +288,18 @@ impl App {
                 self.dirty = true;
             }
             AppEvent::RuntimeEvent(event) => {
-                let _ = event.seq;
-                self.refresh_again = true;
+                // 别的 Thread 的事件不会改变这一屏；整屏重投影是笔真开销。
+                let concerns_this_screen = match self.screen {
+                    Screen::Overview => true,
+                    Screen::ThreadDetail => self
+                        .focused_thread
+                        .as_ref()
+                        .is_some_and(|thread_id| thread_id.to_string() == event.thread_id),
+                    _ => true,
+                };
+                if concerns_this_screen {
+                    self.refresh_again = true;
+                }
             }
             AppEvent::ActionDone {
                 label,
@@ -433,20 +443,34 @@ impl App {
             },
             Screen::ThreadDetail => match key.code {
                 KeyCode::Char('a') => {
+                    if !self.can_advance() {
+                        self.status = Some(Status {
+                            text: "This thread already ended; `revise` starts a new goal".into(),
+                            failed: false,
+                        });
+                        self.dirty = true;
+                        return;
+                    }
                     if let Some(thread_id) = self.focused_thread.clone() {
                         self.dispatch(ActionRequest::AdvanceThread { thread_id });
                     }
                 }
                 // 时间线上待决的事就地回答，不必先退回去找那条请求。
                 KeyCode::Char('e') => {
-                    if let Some((thread_id, request_id)) = self.pending_decision() {
-                        self.composer.clear();
-                        self.composer_mode = ComposerMode::Decision {
-                            thread_id,
-                            request_id,
-                        };
-                        self.goto(Screen::Composer);
-                    }
+                    let Some((thread_id, request_id)) = self.pending_decision() else {
+                        self.status = Some(Status {
+                            text: "Nothing is waiting for an answer here".into(),
+                            failed: false,
+                        });
+                        self.dirty = true;
+                        return;
+                    };
+                    self.composer.clear();
+                    self.composer_mode = ComposerMode::Decision {
+                        thread_id,
+                        request_id,
+                    };
+                    self.goto(Screen::Composer);
                 }
                 // 跑飞了必须能就地停住；收尾之后这个键不存在。
                 KeyCode::Char('x') if self.can_abort() => {
@@ -743,10 +767,24 @@ impl App {
 
     /// 这条 Thread 现在还能不能被停住。收尾之后就没有"停"这回事了。
     pub fn can_abort(&self) -> bool {
+        self.thread_is_open()
+    }
+
+    /// 还能不能让它再往前走一步。同样只在没收尾的时候成立。
+    pub fn can_advance(&self) -> bool {
+        self.thread_is_open()
+    }
+
+    fn thread_is_open(&self) -> bool {
         let Data::ThreadDetail(detail) = &self.data else {
             return false;
         };
         !crate::output::is_terminal(detail.thread.state)
+    }
+
+    /// 这一屏有没有等你回答的事。
+    pub fn has_pending_decision(&self) -> bool {
+        self.pending_decision().is_some()
     }
 
     /// 当前 Thread 上还挂着的第一条请求。
@@ -997,6 +1035,27 @@ mod tests {
         assert!(app.inflight.is_none());
         assert!(app.refresh_again);
         assert!(matches!(app.data, Data::Empty));
+    }
+
+    #[test]
+    fn events_from_other_threads_do_not_repaint_this_one() {
+        let (mut app, _loads, _actions) = app();
+        app.screen = Screen::ThreadDetail;
+        app.focused_thread = Some(ThreadId::from("thread-1"));
+        app.refresh_again = false;
+
+        let mut elsewhere = runtime_event();
+        elsewhere.thread_id = "thread-2".into();
+        app.handle(AppEvent::RuntimeEvent(elsewhere));
+        assert!(
+            !app.refresh_again,
+            "another thread's event does not change this screen"
+        );
+
+        let mut here = runtime_event();
+        here.thread_id = "thread-1".into();
+        app.handle(AppEvent::RuntimeEvent(here));
+        assert!(app.refresh_again);
     }
 
     #[test]

@@ -96,8 +96,12 @@ pub fn available(app: &App) -> Vec<Command> {
             commands.push(Command::OpenConnections);
         }
         Screen::ThreadDetail => {
-            commands.push(Command::Answer);
-            commands.push(Command::Advance);
+            if app.has_pending_decision() {
+                commands.push(Command::Answer);
+            }
+            if app.can_advance() {
+                commands.push(Command::Advance);
+            }
             if app.can_abort() {
                 commands.push(Command::Stop);
             }

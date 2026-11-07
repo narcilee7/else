@@ -420,8 +420,15 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
         Screen::DecisionDetail => vec![("⏎", "choose"), ("e", "answer"), ("x", "dismiss")],
         Screen::Results => vec![("⏎", "inspect"), ("Esc", "back")],
         Screen::ThreadDetail => {
-            let mut hints = vec![("⏎", "open"), ("a", "advance"), ("e", "answer")];
-            // 只在真的能停的时候才介绍这个键。
+            let mut hints = vec![("⏎", "open")];
+            // 只在真的做得到的时候才介绍这个键：收尾的线程不能推进，
+            // 没有待决请求时也没有"回答"这回事。
+            if app.can_advance() {
+                hints.push(("a", "advance"));
+            }
+            if app.has_pending_decision() {
+                hints.push(("e", "answer"));
+            }
             if app.can_abort() {
                 hints.push(("x", "stop"));
             }
@@ -1015,6 +1022,44 @@ mod tests {
                 "first section at {width}x{height}"
             );
             assert!(content.contains("search every command"));
+        }
+    }
+
+    #[test]
+    fn the_thread_footer_only_offers_what_this_thread_allows() {
+        let mut app = app();
+        app.screen = Screen::ThreadDetail;
+        app.focused_thread = Some(ThreadId::from("thread-1"));
+        app.data = thread_detail(
+            thread(
+                "thread-1",
+                "Prepare the launch deck",
+                ThreadState::NeedsDecision,
+                vec![request("request-1", "Overwrite outline.md?")],
+            ),
+            Vec::new(),
+        );
+        let content = render_text(&app, 120, 30);
+        for key in ["advance", "answer", "stop"] {
+            assert!(content.contains(key), "{key} should be offered:\n{content}");
+        }
+
+        // 收尾之后这三个键都不该再出现。
+        app.data = thread_detail(
+            thread(
+                "thread-1",
+                "Prepare the launch deck",
+                ThreadState::Cancelled,
+                Vec::new(),
+            ),
+            Vec::new(),
+        );
+        let content = render_text(&app, 120, 30);
+        for key in ["advance", "answer", "stop"] {
+            assert!(
+                !content.contains(key),
+                "{key} must not be offered on a finished thread:\n{content}"
+            );
         }
     }
 
