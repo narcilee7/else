@@ -219,18 +219,32 @@ pub fn uninstall(runtime_dir: &Path) -> Result<ServiceStatus> {
     }
 }
 
+impl ServiceStatus {
+    /// 空状态。
+    ///
+    /// 每个平台都从这个起点填，新增字段时就不会出现"只在一个平台上漏填、
+    /// 而那段代码在本机根本不编译"的情况 —— 那种问题只会在 Linux CI 上
+    /// 冒出来。
+    fn empty(platform: &'static str) -> Self {
+        Self {
+            platform,
+            unit_path: None,
+            installed: false,
+            loaded: false,
+            running: false,
+            unit_runtime_dir: None,
+            unit_program: None,
+            detail: String::new(),
+        }
+    }
+}
+
 /// 没有后台服务支持的平台。
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn unsupported_status() -> ServiceStatus {
     ServiceStatus {
-        platform: "unsupported",
-        unit_path: None,
-        installed: false,
-        loaded: false,
-        running: false,
-        unit_runtime_dir: None,
-        unit_program: None,
         detail: "这个平台还没有后台服务支持；可以用 `else-bot serve` 前台运行。".into(),
+        ..ServiceStatus::empty("unsupported")
     }
 }
 
@@ -292,7 +306,6 @@ fn macos_status(runtime_dir: &Path) -> ServiceStatus {
         "没有注册后台服务；运行 `else-bot daemon install`".into()
     };
     ServiceStatus {
-        platform: "macos",
         unit_path,
         installed,
         loaded,
@@ -300,6 +313,7 @@ fn macos_status(runtime_dir: &Path) -> ServiceStatus {
         unit_runtime_dir,
         unit_program,
         detail,
+        ..ServiceStatus::empty("macos")
     }
     .with_runtime(runtime_dir)
 }
@@ -504,21 +518,27 @@ fn linux_status(runtime_dir: &Path) -> ServiceStatus {
     let installed = unit_path.as_ref().is_some_and(|path| path.exists());
     let active = systemctl(&["--user", "is-active", SYSTEMD_UNIT])
         .is_ok_and(|output| output.trim() == "active");
-    let unit_runtime_dir = unit_path
+    // ExecStart 里既有程序也有 --dir：两样都要读出来，否则"服务指向别处"
+    // 这件事在 Linux 上根本看不见。
+    let exec: Vec<String> = unit_path
         .as_ref()
         .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|body| {
             body.lines()
                 .find_map(|line| line.strip_prefix("ExecStart="))
-                .and_then(|command| {
+                .map(|command| {
                     command
                         .split_whitespace()
+                        .map(str::to_string)
                         .collect::<Vec<_>>()
-                        .windows(2)
-                        .find(|pair| pair[0] == "--dir")
-                        .map(|pair| PathBuf::from(pair[1]))
                 })
-        });
+        })
+        .unwrap_or_default();
+    let unit_program = exec.first().map(PathBuf::from);
+    let unit_runtime_dir = exec
+        .windows(2)
+        .find(|pair| pair[0] == "--dir")
+        .map(|pair| PathBuf::from(&pair[1]));
     let detail = if active {
         format!("systemd user unit {SYSTEMD_UNIT} 正在运行")
     } else if installed {
@@ -527,13 +547,14 @@ fn linux_status(runtime_dir: &Path) -> ServiceStatus {
         "没有注册后台服务；运行 `else-bot daemon install`".into()
     };
     ServiceStatus {
-        platform: "linux",
         unit_path,
         installed,
         loaded: active,
         running: active,
         unit_runtime_dir,
+        unit_program,
         detail,
+        ..ServiceStatus::empty("linux")
     }
     .with_runtime(runtime_dir)
 }
@@ -693,14 +714,13 @@ mod tests {
 
     fn status(program: Option<&str>, dir: Option<&str>, running: bool) -> ServiceStatus {
         ServiceStatus {
-            platform: "macos",
             unit_path: Some(PathBuf::from("/tmp/test.plist")),
             installed: true,
             loaded: running,
             running,
             unit_runtime_dir: dir.map(PathBuf::from),
             unit_program: program.map(PathBuf::from),
-            detail: String::new(),
+            ..ServiceStatus::empty("macos")
         }
     }
 
@@ -772,6 +792,40 @@ mod tests {
             None,
         );
         assert!(matches!(repair, Repair::Reinstall(_)), "{repair:?}");
+    }
+
+    /// 每个平台都必须从 `ServiceStatus::empty` 铺底再覆盖字段。
+    ///
+    /// 这就是 0.1.3 在 Linux CI 上编译失败的原因：`linux_status` 少填了一个
+    /// 新字段，而那段代码在 macOS 上根本不参与编译，本地怎么跑都是绿的。
+    /// 这个测试把"手写完整字面量"这件事本身禁掉。
+    #[test]
+    fn every_service_status_is_built_from_the_shared_default() {
+        let source = include_str!("service.rs");
+        let lines: Vec<&str> = source.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            // 只认结构体字面量本身；`-> ServiceStatus {` 是返回类型，不是构造。
+            if !trimmed.starts_with("ServiceStatus {") {
+                continue;
+            }
+            // 找到这个字面量的结尾，看中间有没有铺底。
+            let mut padded = false;
+            for look in lines.iter().skip(index).take(24) {
+                if look.contains("..ServiceStatus::empty(") {
+                    padded = true;
+                    break;
+                }
+                if look.trim() == "}" {
+                    break;
+                }
+            }
+            assert!(
+                padded,
+                "line {}: build ServiceStatus from `ServiceStatus::empty(..)` and override fields",
+                index + 1
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]

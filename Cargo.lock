@@ -664,6 +664,7 @@ dependencies = [
  "else-client",
  "else-context",
  "else-daemon",
+ "else-environment",
  "else-harness",
  "else-ledger",
  "else-protocol",

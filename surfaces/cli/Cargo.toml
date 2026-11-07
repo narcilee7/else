@@ -22,6 +22,7 @@ else-harness = { path = "../../core/else-harness", version = "0.1.3" }
 else-protocol = { path = "../../core/else-protocol", version = "0.1.3" }
 else-ledger = { path = "../../core/else-ledger", version = "0.1.3" }
 else-context = { path = "../../core/else-context", version = "0.1.3" }
+else-environment = { path = "../../core/else-environment", version = "0.1.3" }
 else-daemon = { path = "../daemon", version = "0.1.3" }
 clap = { version = "4", features = ["derive"] }
 ratatui.workspace = true

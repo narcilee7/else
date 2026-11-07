@@ -99,6 +99,15 @@ impl Backend {
         }
     }
 
+    /// 这个后端能不能兑现"所有出网都经过本地代理"这条策略。
+    ///
+    /// 只有 Seatbelt 能做到：我们把 harness 的出网指到本地代理上，再由白名单
+    /// 决定放行什么。bubblewrap 下没有等价能力，所以带 `Proxy` 策略的执行会
+    /// 被拒绝（失败关闭），而不是悄悄放开网络。
+    pub fn supports_local_proxy(self) -> bool {
+        matches!(self, Self::Seatbelt)
+    }
+
     fn executable(self) -> Option<PathBuf> {
         let candidates: &[&str] = match self {
             Self::Seatbelt => &["/usr/bin/sandbox-exec"],
@@ -181,7 +190,7 @@ impl Sandbox {
                 "Seatbelt workspace path must be valid UTF-8".into(),
             ));
         }
-        if backend == Backend::Bubblewrap && matches!(profile.network, NetworkPolicy::Proxy { .. })
+        if !backend.supports_local_proxy() && matches!(profile.network, NetworkPolicy::Proxy { .. })
         {
             return Err(SandboxError::ProxyUnsupported {
                 backend: backend.name(),

@@ -128,10 +128,13 @@ fn diagnose(client: &RuntimeClient, runtime_dir: &Path) -> Diagnosis {
         false
     };
 
-    // 7) Ledger 可写。
+    // 7) 这台机器能把 agent 关进什么样的盒子里。
+    checks.push(check_sandbox());
+
+    // 8) Ledger 可写。
     checks.push(check_ledger_writable(runtime_dir));
 
-    // 8) Connector 健康。
+    // 9) Connector 健康。
     checks.push(if routes_ok {
         check_connectors(client)
     } else {
@@ -568,6 +571,50 @@ fn process_is_alive(pid: i32) -> bool {
 #[cfg(not(unix))]
 fn process_is_alive(_pid: i32) -> bool {
     true
+}
+
+/// 沙箱能力。
+///
+/// 平台上跑得起来，不等于能力一样：Linux 的 bubblewrap 兑现不了"出网走本地
+/// 代理 + 白名单"这条策略，带网络的 opaque harness 在那里会被拒绝执行。
+/// 这种差异必须由 `doctor` 说出来，而不是等用户跑到一半才撞上。
+fn check_sandbox() -> Check {
+    let backend = match else_environment::Backend::native() {
+        Ok(backend) => backend,
+        Err(error) => {
+            return Check {
+                name: "sandbox".into(),
+                ok: false,
+                detail: format!("no sandbox backend on this platform: {error}"),
+                hint: Some(
+                    "没有沙箱就不会执行任何 agent —— else 不会在没有边界的情况下跑你的工具。"
+                        .into(),
+                ),
+            }
+        }
+    };
+    if backend.supports_local_proxy() {
+        return Check {
+            name: "sandbox".into(),
+            ok: true,
+            detail: format!(
+                "{} · network goes through a local allowlist proxy",
+                backend.name()
+            ),
+            hint: None,
+        };
+    }
+    // 这不是失败，是这台机器的能力边界 —— 所以要写进 detail，
+    // 而不是放进只在失败时才打印的 hint 里。
+    Check {
+        name: "sandbox".into(),
+        ok: true,
+        detail: format!(
+            "{} · networked harnesses are refused (no local allowlist proxy on this backend)",
+            backend.name()
+        ),
+        hint: None,
+    }
 }
 
 /// Ledger 可写检查。

@@ -210,12 +210,22 @@ Beta and RC tags are published as GitHub prereleases. They are not marked
 
 ## Platform Support
 
-| Platform | CLI/TUI |
-| --- | --- |
-| macOS arm64 | Supported |
-| macOS x86_64 | Supported |
-| Linux arm64 | Supported |
-| Linux x86_64 | Supported |
+| Platform | CLI/TUI | Tested in CI | Sandbox | Networked harnesses |
+| --- | --- | --- | --- | --- |
+| macOS arm64 | Supported | yes | seatbelt | yes |
+| macOS x86_64 | Supported | build only | seatbelt | yes |
+| Linux x86_64 | Supported | yes | bubblewrap | **no** |
+| Linux arm64 | Supported | build only | bubblewrap | **no** |
+
+"Build only" means a release artifact exists but no test runs on that
+architecture. On Linux, harnesses that open their own network connections
+(`claude-code`, `codex`) are refused: bubblewrap cannot enforce the local
+allowlist proxy that macOS gets from seatbelt, and else fails closed rather
+than letting an agent out with no allowlist. `else-bot doctor` reports which
+backend this machine has and what it can enforce.
+
+Details, including how to avoid the class of bug that only appears on the
+other OS, are in [docs/platforms.md](docs/platforms.md).
 
 macOS CLI archives are ad-hoc signed until Developer ID credentials are
 available. The macOS App is not part of the current public release line.
