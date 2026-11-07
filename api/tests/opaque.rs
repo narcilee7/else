@@ -300,6 +300,9 @@ fn tool_gateway_forces_workspace_writes_and_records_authorized_events() {
 }
 
 /// Thread 的执行位置：Scratch 模式下每个 Thread 一个目录。
+// 只有 macOS 的文件系统观察测试用它；不加这个 cfg，别的平台上它会变成
+// 死代码，而 CI 是 `-D warnings`。
+#[cfg(target_os = "macos")]
 fn workspace(runtime: &Runtime, spec: &else_protocol::thread::ThreadSpec) -> std::path::PathBuf {
     runtime.thread_workspace(spec).unwrap()
 }

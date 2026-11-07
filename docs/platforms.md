@@ -67,6 +67,10 @@ aarch64 Linux 与 x86_64 macOS 在发布矩阵里，但不在 CI 的测试矩阵
 填了，`linux_status` 没填。macOS 上 `./scripts/dev.sh check` 全绿、238 个测试
 全过；推上去之后 Linux CI 直接编译失败（clippy exit 101）。
 
+修完第一处之后再推，Linux 又炸了第二次，还是同一类：`api/tests/opaque.rs` 里
+的 `workspace()` 只被 macOS 专属测试调用，在 Linux 上它是死代码，而 CI 跑的是
+`-D warnings`。两个问题在 macOS 上都看不见。
+
 ### 规则
 
 1. **平台专属代码只能由那个平台的构建来证明。** 本地的绿是一件平台上的绿。
@@ -74,7 +78,9 @@ aarch64 Linux 与 x86_64 macOS 在发布矩阵里，但不在 CI 的测试矩阵
    `ServiceStatus::empty(platform)` 铺底、再用 `..` 覆盖字段 —— 这样新增字段
    不可能只在一个平台漏填。测试
    `every_service_status_is_built_from_the_shared_default` 把这条规则钉死。
-3. **能力差异要么实现，要么说出来。** 不许让"这台机器做不到"只体现在一段
+3. **只被某个平台测试调用的辅助函数，要和调用方挂同一个 `cfg`。** 否则它在
+   别的平台上就是死代码，而 CI 是 `-D warnings`。
+4. **能力差异要么实现，要么说出来。** 不许让"这台机器做不到"只体现在一段
    读不到的代码里：`doctor`、能力声明（`else-bot harnesses`）、文档三处之一
    必须讲清楚。
 
