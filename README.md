@@ -208,6 +208,24 @@ versions. `1.0.0` marks the first compatibility promise.
 Beta and RC tags are published as GitHub prereleases. They are not marked
 `Latest` and do not update the Homebrew stable formula.
 
+### Cutting a release
+
+Releases are cut in CI, not from a laptop. **Actions → Cut Release → Run
+workflow** takes a `bump` (patch/minor/major/none) or an explicit version such
+as `0.2.0-beta.1`, and a dry-run switch. It:
+
+1. runs format and the full test suite on `master`,
+2. rewrites the version in every `Cargo.toml`, the README and the release
+   workflow's default (`scripts/bump-version.py`, also runnable locally),
+3. commits `chore: <version>` and pushes `v<version>`,
+
+and then the tag triggers **Release CLI**, which builds the four targets,
+creates the GitHub Release, and updates the Homebrew formula and tap. Nothing
+after step 3 needs a human.
+
+Manual `scripts/release.sh <version>` still exists for local dogfood artifacts;
+it does not publish.
+
 ## Platform Support
 
 | Platform | CLI/TUI | Tested in CI | Sandbox | Networked harnesses |
