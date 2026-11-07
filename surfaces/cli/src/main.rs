@@ -121,7 +121,14 @@ enum Command {
     /// 列出可用的 Harness 适配器及其能力声明
     Harnesses,
     /// 诊断：一次说清这台机器上的 else 是什么状态
-    Doctor,
+    Doctor {
+        /// 顺手把能自己修的部分修好（指向错的常驻服务、没在跑的服务）
+        #[arg(long)]
+        fix: bool,
+        /// 只说明会修什么，不动手
+        #[arg(long, requires = "fix")]
+        dry_run: bool,
+    },
     /// 管理后台常驻的 Runtime 服务
     Daemon {
         #[command(subcommand)]
@@ -742,21 +749,63 @@ fn dispatch(cli: Cli) -> Result<()> {
             let projection = client.run(&thread_id, Some(&harness))?;
             emit_or(cli.json, &projection, print_snapshot)?;
         }
-        Command::Doctor => {
+        Command::Doctor { fix, dry_run } => {
             let runtime_dir = session::resolve_runtime_dir(cli.dir.as_deref());
-            let report = doctor::run(client, &runtime_dir);
-            if cli.json {
-                emit_json(&report)?;
+            if !fix {
+                let report = doctor::run(client, &runtime_dir);
+                if cli.json {
+                    emit_json(&report)?;
+                } else {
+                    report.print();
+                }
             } else {
-                report.print();
+                // 先修，再照原样报一遍：修完还是不是绿的，由用户自己看。
+                let outcome = doctor::fix(client, &runtime_dir, dry_run);
+                if cli.json {
+                    emit_json(&serde_json::json!({
+                        "actions": outcome.actions,
+                        "blocked": outcome.blocked,
+                        "report": outcome.report,
+                    }))?;
+                } else {
+                    for action in &outcome.actions {
+                        println!("- {action}");
+                    }
+                    if outcome.actions.is_empty() {
+                        println!("- nothing to repair");
+                    }
+                    if let Some(blocked) = &outcome.blocked {
+                        println!("\nblocked: {blocked}");
+                    }
+                    println!();
+                    outcome.report.print();
+                }
             }
         }
         Command::Daemon { action } => {
             let runtime_dir = session::resolve_runtime_dir(cli.dir.as_deref());
-            let status = match action {
-                DaemonCommand::Install => service::install(&runtime_dir)?,
-                DaemonCommand::Uninstall => service::uninstall(&runtime_dir)?,
-                DaemonCommand::Status => service::status(&runtime_dir),
+            let report = match action {
+                DaemonCommand::Install => Some(service::install(&runtime_dir)?),
+                DaemonCommand::Uninstall => None,
+                DaemonCommand::Status => None,
+            };
+            if let Some(report) = report.as_ref() {
+                // 对账做了什么必须说出来：静默"成功"正是这类问题的温床。
+                if !cli.json {
+                    for action in &report.actions {
+                        println!("- {action}");
+                    }
+                    if report.actions.is_empty() {
+                        println!("- the background service already matched this binary");
+                    }
+                }
+            }
+            let status = match report {
+                Some(report) => report.status,
+                None => match action {
+                    DaemonCommand::Uninstall => service::uninstall(&runtime_dir)?,
+                    _ => service::status(&runtime_dir),
+                },
             };
             if cli.json {
                 emit_json(&status)?;
@@ -783,7 +832,13 @@ fn dispatch(cli: Cli) -> Result<()> {
                         CliError::usage(format!("cannot secure the runtime directory: {error}"))
                     })?;
             }
-            let status = service::install(&runtime_dir)?;
+            let report = service::install(&runtime_dir)?;
+            for action in &report.actions {
+                if !cli.json {
+                    println!("- {action}");
+                }
+            }
+            let status = report.status;
             let output = serde_json::json!({ "runtime_dir": runtime_dir, "service": status });
             emit_or(cli.json, &output, |output| {
                 println!(

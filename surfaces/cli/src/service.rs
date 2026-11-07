@@ -67,8 +67,19 @@ pub fn status(runtime_dir: &Path) -> ServiceStatus {
     }
 }
 
-/// 注册后台服务。
-pub fn install(runtime_dir: &Path) -> Result<ServiceStatus> {
+/// 一次注册实际做了什么。
+///
+/// 注册是**对账**，不是"文件不在就写一份"：服务定义指向别的程序或别的
+/// runtime 目录时，它必须被改回来，否则端口上跑的永远是上一次装的那个。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InstallReport {
+    pub status: ServiceStatus,
+    /// 这次实际改动的地方。空表示本来就已经是对的。
+    pub actions: Vec<String>,
+}
+
+/// 注册后台服务。已经装过也会对账：指向不对就改回当前这个二进制。
+pub fn install(runtime_dir: &Path) -> Result<InstallReport> {
     #[cfg(target_os = "macos")]
     {
         macos_install(runtime_dir)
@@ -82,6 +93,111 @@ pub fn install(runtime_dir: &Path) -> Result<ServiceStatus> {
         Err(CliError::usage(
             "这个平台还没有后台服务支持；可以用 `else-bot serve` 前台运行。",
         ))
+    }
+}
+
+/// 服务定义与实际不符时的说明。对账要说出**改了什么**，否则用户没法判断
+/// 它到底修没修好。
+#[cfg(target_os = "macos")]
+fn describe_change(existing: Option<&str>, program: &Path, runtime_dir: &Path) -> Vec<String> {
+    let Some(existing) = existing else {
+        return vec![format!(
+            "wrote a new service definition for {}",
+            program.display()
+        )];
+    };
+    let old_program = plist_first_program_argument(existing);
+    let old_dir = plist_argument(existing, "--dir");
+    let mut changes = Vec::new();
+    match old_program {
+        Some(old) if old != program => changes.push(format!(
+            "the service started {}, it now starts {}",
+            old.display(),
+            program.display()
+        )),
+        None => changes.push(format!(
+            "the service did not name a program, it now starts {}",
+            program.display()
+        )),
+        _ => {}
+    }
+    match old_dir {
+        Some(old) if old != runtime_dir => changes.push(format!(
+            "the service served {}, it now serves {}",
+            old.display(),
+            runtime_dir.display()
+        )),
+        None => changes.push(format!(
+            "the service did not name a runtime directory, it now serves {}",
+            runtime_dir.display()
+        )),
+        _ => {}
+    }
+    if changes.is_empty() {
+        changes.push("the definition format changed; it was regenerated".to_string());
+    }
+    changes
+}
+
+/// 对账之后该做什么。
+///
+/// 这是一个**纯判断**：真正动手会 bootout 用户的 LaunchAgent，所以先把
+/// 决定和动作分开，决定可以随便测。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Repair {
+    /// 已经一致。
+    Nothing,
+    /// 重装一次就能对上。
+    Reinstall(Vec<String>),
+    /// 问题不在服务定义上，重装解决不了 —— 说清楚卡在哪。
+    CannotFix(String),
+}
+
+/// 判断要不要重装，以及为什么。
+///
+/// `foreign_holder` 是端口上那个"不是我们启动的进程"的描述。定义本身指向
+/// 别处时优先重装：那种情况下占着端口的往往正是上一次装的那个进程，
+/// bootout 会把它带走。定义已经对了却还有别人占端口，就不是重装能解决的。
+pub fn plan_repair(
+    status: &ServiceStatus,
+    current_program: Option<&Path>,
+    runtime_dir: &Path,
+    foreign_holder: Option<&str>,
+) -> Repair {
+    let mut reasons = Vec::new();
+    if let (Some(installed), Some(current)) = (status.unit_program.as_deref(), current_program) {
+        if installed != current {
+            reasons.push(format!(
+                "the service starts {}, this command is {}",
+                installed.display(),
+                current.display()
+            ));
+        }
+    }
+    if let Some(unit_dir) = status.unit_runtime_dir.as_deref() {
+        if unit_dir != runtime_dir {
+            reasons.push(format!(
+                "the service serves {}, this command manages {}",
+                unit_dir.display(),
+                runtime_dir.display()
+            ));
+        }
+    }
+    if !reasons.is_empty() {
+        return Repair::Reinstall(reasons);
+    }
+    if !status.installed {
+        return Repair::Reinstall(vec!["no background service is registered".into()]);
+    }
+    if !status.running {
+        return Repair::Reinstall(vec!["the service is registered but not running".into()]);
+    }
+    match foreign_holder {
+        Some(holder) => Repair::CannotFix(format!(
+            "{holder} 占着端口，而服务定义本身是对的 —— 重装不会让它让开。\
+             先停掉那个进程，再运行 `else-bot doctor`。"
+        )),
+        None => Repair::Nothing,
     }
 }
 
@@ -298,44 +414,72 @@ fn macos_plist(program: &Path, runtime_dir: &Path) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_install(runtime_dir: &Path) -> Result<ServiceStatus> {
+fn macos_install(runtime_dir: &Path) -> Result<InstallReport> {
     let unit_path = macos_unit_path()
         .ok_or_else(|| CliError::usage("cannot locate HOME to write the LaunchAgent"))?;
-    if unit_path.exists() {
-        // 已经有服务在管这个 runtime 了 —— 可能来自 macOS App。
-        // 不覆盖它：一个机器只有一个 Runtime。
-        let loaded = launchctl("list").is_ok_and(|output| output.contains(LAUNCH_AGENT_LABEL));
-        if loaded {
-            return Ok(macos_status(runtime_dir));
-        }
-    }
     let program = current_exe()?;
-    let plist = macos_plist(&program, runtime_dir);
-    if let Some(parent) = unit_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            CliError::usage(format!("cannot create {}: {error}", parent.display()))
+    let desired = macos_plist(&program, runtime_dir);
+    let existing = std::fs::read_to_string(&unit_path).ok();
+    let loaded = launchctl("list").is_ok_and(|output| output.contains(LAUNCH_AGENT_LABEL));
+    let mut actions = Vec::new();
+
+    // 定义已经一致、而且进程真的在跑：什么都不用做。
+    let matches = existing.as_deref() == Some(desired.as_str());
+    if matches && loaded {
+        return Ok(InstallReport {
+            status: macos_status(runtime_dir),
+            actions,
+        });
+    }
+
+    if !matches {
+        actions.extend(describe_change(existing.as_deref(), &program, runtime_dir));
+        if let Some(parent) = unit_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                CliError::usage(format!("cannot create {}: {error}", parent.display()))
+            })?;
+        }
+        std::fs::write(&unit_path, &desired).map_err(|error| {
+            CliError::usage(format!("cannot write {}: {error}", unit_path.display()))
         })?;
     }
-    std::fs::write(&unit_path, plist).map_err(|error| {
-        CliError::usage(format!("cannot write {}: {error}", unit_path.display()))
-    })?;
 
-    // 已经在跑就别重复 bootstrap。
-    if !launchctl("list").is_ok_and(|output| output.contains(LAUNCH_AGENT_LABEL)) {
+    // 已经加载过就要先卸掉再装：只改文件不会让新程序接管这个 label。
+    if loaded {
         launchctl(&format!(
-            "bootstrap gui/{} {}",
-            current_uid(),
-            unit_path.display()
+            "bootout gui/{}/{LAUNCH_AGENT_LABEL}",
+            current_uid()
         ))
         .map_err(|error| {
             CliError::usage(format!(
-                "cannot load the LaunchAgent ({}). 你可以手动运行 `else-bot --dir {} serve`。",
-                error,
-                runtime_dir.display()
+                "cannot stop the running LaunchAgent ({error}). \
+                     手动执行 `launchctl bootout gui/{}/{LAUNCH_AGENT_LABEL}` 后再试。",
+                current_uid()
             ))
         })?;
+        actions.push("stopped the previous instance".to_string());
     }
-    Ok(macos_status(runtime_dir))
+
+    launchctl(&format!(
+        "bootstrap gui/{} {}",
+        current_uid(),
+        unit_path.display()
+    ))
+    .map_err(|error| {
+        CliError::usage(format!(
+            "cannot load the LaunchAgent ({error}). 你可以手动运行 `else-bot --dir {} serve`。",
+            runtime_dir.display()
+        ))
+    })?;
+    actions.push(format!(
+        "started the background runtime from {}",
+        program.display()
+    ));
+
+    Ok(InstallReport {
+        status: macos_status(runtime_dir),
+        actions,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -416,19 +560,28 @@ fn linux_unit(program: &Path, runtime_dir: &Path) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_install(runtime_dir: &Path) -> Result<ServiceStatus> {
+fn linux_install(runtime_dir: &Path) -> Result<InstallReport> {
     let unit_path = linux_unit_path()
         .ok_or_else(|| CliError::usage("cannot locate the systemd user unit directory"))?;
     let program = current_exe()?;
     let unit = linux_unit(&program, runtime_dir);
-    if let Some(parent) = unit_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            CliError::usage(format!("cannot create {}: {error}", parent.display()))
+    let existing = std::fs::read_to_string(&unit_path).ok();
+    let mut actions = Vec::new();
+    if existing.as_deref() != Some(unit.as_str()) {
+        actions.push(format!(
+            "wrote a service definition for {} serving {}",
+            program.display(),
+            runtime_dir.display()
+        ));
+        if let Some(parent) = unit_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                CliError::usage(format!("cannot create {}: {error}", parent.display()))
+            })?;
+        }
+        std::fs::write(&unit_path, unit).map_err(|error| {
+            CliError::usage(format!("cannot write {}: {error}", unit_path.display()))
         })?;
     }
-    std::fs::write(&unit_path, unit).map_err(|error| {
-        CliError::usage(format!("cannot write {}: {error}", unit_path.display()))
-    })?;
     systemctl(&["--user", "daemon-reload"])
         .map_err(|error| CliError::usage(format!("cannot reload systemd user units: {error}")))?;
     systemctl(&["--user", "enable", "--now", SYSTEMD_UNIT]).map_err(|error| {
@@ -437,7 +590,14 @@ fn linux_install(runtime_dir: &Path) -> Result<ServiceStatus> {
              登出后还想继续运行的话，执行 `loginctl enable-linger $USER`。"
         ))
     })?;
-    Ok(linux_status(runtime_dir))
+    actions.push(format!(
+        "started the background runtime from {}",
+        program.display()
+    ));
+    Ok(InstallReport {
+        status: linux_status(runtime_dir),
+        actions,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -529,5 +689,126 @@ mod tests {
             "ExecStart=/usr/local/bin/else --dir /home/someone/.local/share/else/runtime serve"
         ));
         assert!(unit.contains("WantedBy=default.target"));
+    }
+
+    fn status(program: Option<&str>, dir: Option<&str>, running: bool) -> ServiceStatus {
+        ServiceStatus {
+            platform: "macos",
+            unit_path: Some(PathBuf::from("/tmp/test.plist")),
+            installed: true,
+            loaded: running,
+            running,
+            unit_runtime_dir: dir.map(PathBuf::from),
+            unit_program: program.map(PathBuf::from),
+            detail: String::new(),
+        }
+    }
+
+    /// 端口上跑的是上一次装的那个二进制时，重装是解药。
+    #[test]
+    fn a_service_pointing_at_another_binary_is_reinstalled() {
+        let current = PathBuf::from("/opt/else/bin/else-bot");
+        let repair = plan_repair(
+            &status(Some("/Users/x/.local/bin/else"), Some("/data/else"), true),
+            Some(&current),
+            Path::new("/data/else"),
+            Some("pid 42（它比这条命令旧）"),
+        );
+        let Repair::Reinstall(reasons) = repair else {
+            panic!("expected a reinstall, got {repair:?}");
+        };
+        let joined = reasons.join(" | ");
+        assert!(joined.contains("/Users/x/.local/bin/else"), "{joined}");
+        assert!(joined.contains("/opt/else/bin/else-bot"), "{joined}");
+    }
+
+    #[test]
+    fn a_service_serving_another_runtime_directory_is_reinstalled() {
+        let current = PathBuf::from("/opt/else/bin/else-bot");
+        let repair = plan_repair(
+            &status(Some("/opt/else/bin/else-bot"), Some("/other"), true),
+            Some(&current),
+            Path::new("/data/else"),
+            None,
+        );
+        assert!(matches!(repair, Repair::Reinstall(_)), "{repair:?}");
+    }
+
+    #[test]
+    fn a_matching_definition_that_is_running_is_left_alone() {
+        let current = PathBuf::from("/opt/else/bin/else-bot");
+        let repair = plan_repair(
+            &status(Some("/opt/else/bin/else-bot"), Some("/data/else"), true),
+            Some(&current),
+            Path::new("/data/else"),
+            None,
+        );
+        assert_eq!(repair, Repair::Nothing);
+    }
+
+    /// 定义是对的、端口却还被别人占着：重装只会白折腾，也不替用户杀进程。
+    #[test]
+    fn a_foreign_process_holding_the_port_is_not_killed_for_you() {
+        let current = PathBuf::from("/opt/else/bin/else-bot");
+        let repair = plan_repair(
+            &status(Some("/opt/else/bin/else-bot"), Some("/data/else"), true),
+            Some(&current),
+            Path::new("/data/else"),
+            Some("pid 777（它不报自己替哪个目录服务）"),
+        );
+        let Repair::CannotFix(reason) = repair else {
+            panic!("expected a refusal, got {repair:?}");
+        };
+        assert!(reason.contains("pid 777"), "{reason}");
+    }
+
+    #[test]
+    fn a_registered_service_that_is_not_running_is_started() {
+        let current = PathBuf::from("/opt/else/bin/else-bot");
+        let repair = plan_repair(
+            &status(Some("/opt/else/bin/else-bot"), Some("/data/else"), false),
+            Some(&current),
+            Path::new("/data/else"),
+            None,
+        );
+        assert!(matches!(repair, Repair::Reinstall(_)), "{repair:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_plist_names_the_program_and_the_runtime_directory() {
+        let body = macos_plist(
+            Path::new("/opt/else/bin/else-bot"),
+            Path::new("/Users/x/Library/Application Support/else/runtime"),
+        );
+        assert_eq!(
+            plist_first_program_argument(&body).as_deref(),
+            Some(Path::new("/opt/else/bin/else-bot"))
+        );
+        assert_eq!(
+            plist_argument(&body, "--dir").as_deref(),
+            Some(Path::new(
+                "/Users/x/Library/Application Support/else/runtime"
+            ))
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_changed_definition_explains_what_changed() {
+        let old = macos_plist(
+            Path::new("/Users/x/.local/bin/else"),
+            Path::new("/old/runtime"),
+        );
+        let changes = describe_change(
+            Some(&old),
+            Path::new("/opt/else/bin/else-bot"),
+            Path::new("/new/runtime"),
+        );
+        let joined = changes.join(" | ");
+        assert!(joined.contains("/Users/x/.local/bin/else"), "{joined}");
+        assert!(joined.contains("/opt/else/bin/else-bot"), "{joined}");
+        assert!(joined.contains("/old/runtime"), "{joined}");
+        assert!(joined.contains("/new/runtime"), "{joined}");
     }
 }

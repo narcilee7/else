@@ -66,6 +66,16 @@ impl DoctorReport {
 /// 端口被别人的进程占着时，后面每一项都会报出误导性的结论 ——
 /// 这也是最常发生的一种。
 pub fn run(client: &RuntimeClient, runtime_dir: &Path) -> DoctorReport {
+    diagnose(client, runtime_dir).report
+}
+
+/// 一次诊断的完整结果：报告 + "端口上应答的是谁"。
+struct Diagnosis {
+    report: DoctorReport,
+    identity: Option<Identity>,
+}
+
+fn diagnose(client: &RuntimeClient, runtime_dir: &Path) -> Diagnosis {
     let mut checks = Vec::new();
 
     // 1) Runtime 目录。
@@ -131,10 +141,62 @@ pub fn run(client: &RuntimeClient, runtime_dir: &Path) -> DoctorReport {
         )
     });
 
-    DoctorReport {
-        runtime_dir: runtime_dir.to_path_buf(),
-        runtime_url: client.base_url().to_string(),
-        checks,
+    Diagnosis {
+        report: DoctorReport {
+            runtime_dir: runtime_dir.to_path_buf(),
+            runtime_url: client.base_url().to_string(),
+            checks,
+        },
+        identity,
+    }
+}
+
+/// 一次自愈尝试的结果。
+pub struct FixOutcome {
+    /// 实际做了什么。
+    pub actions: Vec<String>,
+    /// 修不了的部分（有值就说明还没好）。
+    pub blocked: Option<String>,
+    /// 修完之后重新诊断的报告。
+    pub report: DoctorReport,
+}
+
+/// 能自己修的就自己修，修不了的说清楚卡在哪。
+///
+/// 只动自己的东西：自己的服务定义、自己的常驻进程。别人的进程一律只报
+/// pid，不替用户杀。
+pub fn fix(client: &RuntimeClient, runtime_dir: &Path, dry_run: bool) -> FixOutcome {
+    let diagnosis = diagnose(client, runtime_dir);
+    let holder = diagnosis
+        .identity
+        .as_ref()
+        .filter(|identity| !identity.ours)
+        .map(Identity::describe);
+    let status = service::status(runtime_dir);
+    let current = std::env::current_exe().ok();
+
+    let mut actions = Vec::new();
+    let mut blocked = None;
+    match service::plan_repair(&status, current.as_deref(), runtime_dir, holder.as_deref()) {
+        service::Repair::Nothing => {}
+        service::Repair::Reinstall(reasons) => {
+            actions.extend(reasons.into_iter().map(|reason| format!("found: {reason}")));
+            if dry_run {
+                actions.push("would reinstall the background service".to_string());
+            } else {
+                match service::install(runtime_dir) {
+                    Ok(report) => actions.extend(report.actions),
+                    Err(error) => blocked = Some(error.to_string()),
+                }
+            }
+        }
+        service::Repair::CannotFix(reason) => blocked = Some(reason),
+    }
+
+    FixOutcome {
+        actions,
+        blocked,
+        report: run(client, runtime_dir),
     }
 }
 
@@ -197,6 +259,21 @@ fn check_identity(client: &RuntimeClient, runtime_dir: &Path) -> Option<Identity
     })
 }
 
+impl Identity {
+    /// 让人能拿这个描述去指认进程。
+    fn describe(&self) -> String {
+        let pid = self
+            .version
+            .pid
+            .map(|pid| format!("pid {pid}"))
+            .unwrap_or_else(|| "一个不报 pid 的进程".to_string());
+        match self.mismatch.as_deref() {
+            Some(reason) => format!("{pid}（{reason}）"),
+            None => pid,
+        }
+    }
+}
+
 fn identity_check(identity: Option<&Identity>, client: &RuntimeClient) -> Check {
     let Some(identity) = identity else {
         return Check {
@@ -238,7 +315,9 @@ fn identity_check(identity: Option<&Identity>, client: &RuntimeClient) -> Check 
                 Some(pid) => format!(
                     "先停掉那个进程（pid {pid}），再 `else-bot daemon install` —— 端口被占时它装不上。"
                 ),
-                None => "先找出占用该端口的进程并停掉，再 `else-bot daemon install`。".into(),
+                None => "运行 `else-bot doctor --fix`：它会把后台服务指回这个二进制并重启；\
+                         若端口是被别人的进程占着，它只会告诉你那个进程，不会替你杀。"
+                    .into(),
             }),
         },
     }
