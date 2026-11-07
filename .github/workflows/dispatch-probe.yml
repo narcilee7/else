@@ -94,22 +94,3 @@ jobs:
       - name: Stop here on a dry run
         if: inputs.dry_run
         run: echo "dry run: nothing committed, nothing tagged"
-
-      - name: Commit the version and tag it
-        if: ${{ !inputs.dry_run }}
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "version already at ${VERSION}; tagging the current commit"
-          else
-            git commit -m "chore: ${VERSION}"
-            git push origin HEAD:master
-          fi
-          git tag -a "v${VERSION}" -m "else-bot ${VERSION}"
-          git push origin "v${VERSION}"
-
