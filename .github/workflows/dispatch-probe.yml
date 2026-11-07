@@ -38,7 +38,56 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  probe:
+  cut:
     runs-on: ubuntu-latest
     steps:
-      - run: echo probe ok
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      # 先证明这次要打标签的那棵树是好的。标签一旦推出去就会发制品，
+      # 事后补救要删标签，所以宁可在这里多花两分钟。
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Decide the version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${INPUT_VERSION}" ]]; then
+            python3 scripts/bump-version.py "${INPUT_VERSION}"
+          elif [[ "${INPUT_BUMP}" != "none" ]]; then
+            python3 scripts/bump-version.py --next "${INPUT_BUMP}"
+          fi
+          version="$(grep -m1 '^version = ' surfaces/cli/Cargo.toml | cut -d'"' -f2)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "releasing ${version}"
+
+      - name: Refuse a version that is already tagged
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git rev-parse --verify --quiet "refs/tags/v${VERSION}" >/dev/null; then
+            echo "tag v${VERSION} already exists — bump or pass a different version" >&2
+            exit 1
+          fi
+
+      - name: Show what will be committed
+        run: |
+          git status --short
+          git --no-pager diff --stat
+
