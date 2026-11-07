@@ -21,7 +21,11 @@ pub fn rows(threads: &[ThreadSnapshot]) -> Vec<Row> {
     for thread in ordered {
         rows.push(
             Row::action(
-                format!(" {} {}", marker(thread.state), thread.spec.outcome),
+                format!(
+                    " {} {}",
+                    super::thread_glyph(thread.state),
+                    thread.spec.outcome
+                ),
                 thread_style(thread.state),
                 RowAction::OpenThread(thread.spec.id.clone()),
             )
@@ -50,7 +54,7 @@ pub fn thread_picker_rows(threads: &[ThreadSnapshot]) -> Vec<Row> {
                 theme::text(),
                 RowAction::OpenConnectors(thread.spec.id.clone()),
             )
-            .with_meta(format!("{} artifacts", thread.artifacts.len())),
+            .with_meta(super::count_label(thread.artifacts.len(), "artifact")),
         );
     }
     rows
@@ -74,17 +78,5 @@ fn rank(state: ThreadState) -> u8 {
         ThreadState::Failed => 4,
         ThreadState::Completed => 5,
         ThreadState::Cancelled => 6,
-    }
-}
-
-fn marker(state: ThreadState) -> &'static str {
-    match state {
-        ThreadState::Completed => "✓",
-        ThreadState::Failed => "×",
-        ThreadState::Cancelled => "—",
-        ThreadState::NeedsDecision => "▸",
-        ThreadState::Paused => "⏸",
-        ThreadState::WaitingExternal => "…",
-        ThreadState::Active => "●",
     }
 }

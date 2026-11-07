@@ -30,6 +30,9 @@ use session::Session;
 #[command(
     name = "else-bot",
     about = "You do what matters. Else handles the rest.",
+    // 最常问的问题：界面在哪。没有子命令就是界面，但 help 里从不提这件事。
+    after_help = "Run `else-bot` with no arguments for the terminal interface.\n\
+                  Subcommands print plain text for you, and JSON with --json for scripts.",
     version = env!("CARGO_PKG_VERSION")
 )]
 struct Cli {

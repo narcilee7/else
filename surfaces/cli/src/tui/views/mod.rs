@@ -64,6 +64,29 @@ pub fn flat_rows(app: &App) -> Vec<Row> {
 /// 状态的说法只有一份，在 `output` 里 —— CLI 与终端界面不该各说一套。
 pub use crate::output::thread_state_label;
 
+/// 一条 Thread 的状态字形。全界面只有这一套。
+pub fn thread_glyph(state: else_protocol::thread::ThreadState) -> &'static str {
+    use else_protocol::thread::ThreadState;
+    match state {
+        ThreadState::NeedsDecision => "▸",
+        ThreadState::Active => "●",
+        ThreadState::WaitingExternal => "…",
+        ThreadState::Paused => "⏸",
+        ThreadState::Completed => "✓",
+        ThreadState::Failed => "✗",
+        ThreadState::Cancelled => "—",
+    }
+}
+
+/// `1 artifact` / `3 artifacts` —— 别让界面说 "1 artifacts"。
+pub fn count_label(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("{count} {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
 pub fn thread_style(state: else_protocol::thread::ThreadState) -> Style {
     use else_protocol::thread::ThreadState;
     match state {
@@ -824,6 +847,49 @@ mod tests {
             "the thing that waits for you must come first:\n{content}"
         );
         assert!(content.contains("Approve running a shell command"));
+    }
+
+    #[test]
+    fn a_finished_thread_is_not_dressed_up_as_a_success() {
+        let mut app = app();
+        app.data = overview(vec![
+            thread(
+                "thread-1",
+                "Something abandoned",
+                ThreadState::Cancelled,
+                Vec::new(),
+            ),
+            thread(
+                "thread-2",
+                "Something broken",
+                ThreadState::Failed,
+                Vec::new(),
+            ),
+        ]);
+        let content = render_text(&app, 100, 24);
+        assert!(
+            content.contains('—'),
+            "cancelled is not a check:\n{content}"
+        );
+        assert!(content.contains('✗'), "failed is not a check:\n{content}");
+        assert!(!content.contains("✓"), "nothing here succeeded:\n{content}");
+    }
+
+    #[test]
+    fn counts_are_written_in_the_singular_when_they_are_one() {
+        let mut app = app();
+        app.data = overview(vec![thread(
+            "thread-1",
+            "One artifact only",
+            ThreadState::Completed,
+            Vec::new(),
+        )]);
+        let content = render_text(&app, 100, 24);
+        assert!(
+            content.contains("0 artifacts"),
+            "zero is plural:\n{content}"
+        );
+        assert!(!content.contains("1 artifacts"), "\n{content}");
     }
 
     #[test]

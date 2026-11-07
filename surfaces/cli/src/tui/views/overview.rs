@@ -124,13 +124,18 @@ fn push_recent(rows: &mut Vec<Row>, finished: &[&ThreadSnapshot]) {
     for thread in finished.iter().take(RECENT_LIMIT) {
         rows.push(
             Row::action(
-                format!(" ✓ {}", thread.spec.outcome),
+                // 收尾有好几种，不是都用对勾：取消和失败得看得出来。
+                format!(
+                    " {} {}",
+                    super::thread_glyph(thread.state),
+                    thread.spec.outcome
+                ),
                 thread_style(thread.state),
                 RowAction::OpenThread(thread.spec.id.clone()),
             )
             .with_meta(format!(
-                "{} artifacts · {}",
-                thread.artifacts.len(),
+                "{} · {}",
+                super::count_label(thread.artifacts.len(), "artifact"),
                 super::thread_state_label(thread.state)
             )),
         );
